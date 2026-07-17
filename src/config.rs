@@ -15,6 +15,7 @@ pub struct Settings {
     pub google_client_secret: String,
     pub github_client_id: String,
     pub github_client_secret: String,
+    pub solved_ac_enabled: bool,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -52,6 +53,7 @@ impl Settings {
         let test_identity_enabled = value("TEST_IDENTITY_ENABLED") == "true";
         let payments_enabled = value("PAYMENTS_ENABLED") == "true";
         let payment_provider = value("PAYMENT_PROVIDER");
+        let solved_ac_enabled = value("SOLVED_AC_ENABLED") == "true";
 
         if app_env == "production" && test_identity_enabled {
             return Err(ConfigError::ProductionTestIdentity);
@@ -102,6 +104,7 @@ impl Settings {
             google_client_secret,
             github_client_id,
             github_client_secret,
+            solved_ac_enabled,
         })
     }
 }

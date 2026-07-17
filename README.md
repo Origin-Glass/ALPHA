@@ -5,6 +5,7 @@
 ## 구성
 
 - `src/bin/api.rs`: Rust/Axum API
+- `src/bin/metadata_worker.rs`: 외부 문제 메타데이터 주기 갱신 작업자
 - `migrations/`: PostgreSQL 스키마
 - `web/`: React/Vite 웹
 
@@ -33,3 +34,5 @@ npm run dev
 
 - 결제와 AI는 기본값이 `disabled`입니다.
 - BOJ·solved.ac 실시간 연동은 2026년 4월 28일 이후 상태를 반영해 `blocked`로 다루며, 확인되지 않은 난이도나 태그를 생성하지 않습니다.
+
+solved.ac 연동은 서버 전용 API v3 어댑터 뒤에 격리되어 있습니다. 레벨 `0`은 미평가로 보존하고, 응답 해시·가져온 시각·어댑터 버전·한국어 태그·신선도 상태를 캐시합니다. 일시 실패 시 마지막 정상 값을 `stale`로 유지하며, 정상 값이 없으면 `blocked`로 표시합니다. 현재는 `SOLVED_AC_ENABLED=false`가 기본값이므로 주기 작업자와 관리자 갱신 모두 외부 요청을 보내지 않습니다. 정책과 접근 허가를 다시 확인한 뒤에만 활성화해야 합니다.
