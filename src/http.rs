@@ -106,6 +106,19 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/tracks/{slug}", get(crate::activities::track))
         .route(
+            "/api/v1/progression/dashboard",
+            get(crate::gamification::dashboard),
+        )
+        .route(
+            "/api/v1/profile",
+            axum::routing::put(crate::gamification::update_profile),
+        )
+        .route(
+            "/api/v1/profiles/{handle}",
+            get(crate::gamification::profile),
+        )
+        .route("/api/v1/rankings", get(crate::gamification::rankings))
+        .route(
             "/api/v1/admin/metadata/solved-ac/{external_problem_id}/refresh",
             axum::routing::post(crate::metadata::admin_refresh),
         )

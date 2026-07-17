@@ -340,6 +340,45 @@ pub async fn complete_job_with_output(
         .bind(verdict.as_str())
         .execute(&mut *transaction)
         .await?;
+    if verdict == Verdict::Accepted {
+        let reward_source: Option<(Uuid, Uuid, String, String)> = sqlx::query_as(
+            r#"
+            SELECT submission.user_id, submission.problem_id, problem.learning_axis, submission.run_kind
+            FROM submissions submission
+            JOIN problems problem ON problem.id = submission.problem_id
+            WHERE submission.id = $1
+            "#,
+        )
+        .bind(submission_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some((user_id, problem_id, learning_axis, run_kind)) = reward_source
+            && run_kind == "formal"
+        {
+            let axis = match learning_axis.as_str() {
+                "code_literacy" => "code_reading",
+                "docs_learning" => "documentation",
+                "independent_coding" => "framework",
+                _ => "algorithm",
+            };
+            crate::gamification::apply_reward(
+                &mut transaction,
+                crate::gamification::RewardSpec {
+                    event_id: submission_id,
+                    user_id,
+                    reward_key: format!("problem:{problem_id}"),
+                    source_kind: "problem",
+                    source_id: Some(problem_id),
+                    xp: 80,
+                    reason_ko: "문제 독립 해결",
+                    axis,
+                    mastery_points: 40,
+                    mastery_class: "independent",
+                },
+            )
+            .await?;
+        }
+    }
     transaction.commit().await?;
     Ok(())
 }

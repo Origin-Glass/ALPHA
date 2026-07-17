@@ -3,6 +3,7 @@ pub mod auth;
 pub mod classes;
 pub mod config;
 pub mod db;
+pub mod gamification;
 pub mod http;
 pub mod judge;
 pub mod metadata;
