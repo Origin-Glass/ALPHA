@@ -144,6 +144,7 @@ impl DockerSandbox {
         let memory = format!("{}m", memory_mb.clamp(64, 2048));
         let mut args = vec![
             "run".to_owned(),
+            "--interactive".to_owned(),
             "--name".to_owned(),
             name.to_owned(),
             "--network".to_owned(),
