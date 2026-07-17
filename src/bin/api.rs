@@ -1,6 +1,7 @@
 use std::{collections::HashMap, env, net::SocketAddr};
 
 use alpha::config::Settings;
+use alpha::{db, http::AppState};
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -17,8 +18,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
         .parse::<SocketAddr>()?;
     let listener = TcpListener::bind(address).await?;
+    let pool = db::connect(&settings.database_url).await?;
+    db::migrate(&pool).await?;
 
     info!(%address, app_env = %settings.app_env, "ALPHA API 시작");
-    axum::serve(listener, alpha::http::router()).await?;
+    axum::serve(listener, alpha::http::router(AppState::new(pool))).await?;
     Ok(())
 }
