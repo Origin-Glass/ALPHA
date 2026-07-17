@@ -46,6 +46,32 @@ async fn verdict(sandbox: &DockerSandbox, job: LeasedJob) -> Verdict {
     sandbox.judge(&job, &cases()).await.unwrap().verdict
 }
 
+fn docs_capstone_cases() -> Vec<JudgeTestCase> {
+    vec![
+        JudgeTestCase {
+            ordinal: 1,
+            input: "HTTPS://Example.COM/path?b=2&a=1#section\n".to_owned(),
+            expected_output: "https://example.com/path?a=1&b=2\n".to_owned(),
+            score_weight: 1,
+            group_key: "main".to_owned(),
+        },
+        JudgeTestCase {
+            ordinal: 2,
+            input: "https://EXAMPLE.com/p?z=&a=2&a=1#frag\n".to_owned(),
+            expected_output: "https://example.com/p?a=1&a=2&z=\n".to_owned(),
+            score_weight: 1,
+            group_key: "main".to_owned(),
+        },
+        JudgeTestCase {
+            ordinal: 3,
+            input: "HTTP://Example.COM/%7Euser\n".to_owned(),
+            expected_output: "http://example.com/%7Euser\n".to_owned(),
+            score_weight: 1,
+            group_key: "main".to_owned(),
+        },
+    ]
+}
+
 #[tokio::test]
 #[ignore = "Docker 격리 런타임이 있는 CI에서 별도 실행"]
 async fn three_languages_and_abuse_cases_receive_real_sandbox_verdicts() {
@@ -189,5 +215,24 @@ int main(){for(int i=0;i<10000;i++){if(fork()<0)return 0;}return 0;}
         .await,
         Verdict::Accepted,
         "프로세스 폭주 뒤에도 다음 격리 작업이 정상 실행돼야 한다"
+    );
+
+    let docs_source = r#"
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+url = input().strip()
+parts = urlsplit(url)
+query = urlencode(sorted(parse_qsl(parts.query, keep_blank_values=True)))
+print(urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, query, '')))
+"#;
+    let mut docs_job = job("python3", docs_source, 2000, 128);
+    docs_job.checker_kind = "exact".to_owned();
+    assert_eq!(
+        sandbox
+            .judge(&docs_job, &docs_capstone_cases())
+            .await
+            .unwrap()
+            .verdict,
+        Verdict::Accepted,
+        "공식 문서 트랙의 최종 프로그램이 실제 격리 판정 경계를 통과해야 한다"
     );
 }

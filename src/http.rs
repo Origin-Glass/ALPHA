@@ -10,6 +10,7 @@ pub struct AppState {
     pool: PgPool,
     settings: Arc<Settings>,
     http_client: reqwest::Client,
+    ai_provider: Arc<dyn crate::activities::AiAssistanceProvider>,
 }
 
 impl AppState {
@@ -23,6 +24,7 @@ impl AppState {
                 .user_agent("Origin-Glass-ALPHA/0.1")
                 .build()
                 .expect("고정 HTTP 클라이언트 설정은 유효하다"),
+            ai_provider: crate::activities::default_ai_provider(),
         }
     }
 
@@ -42,6 +44,10 @@ impl AppState {
 
     pub fn http_client(&self) -> &reqwest::Client {
         &self.http_client
+    }
+
+    pub fn ai_provider(&self) -> &dyn crate::activities::AiAssistanceProvider {
+        self.ai_provider.as_ref()
     }
 }
 
@@ -80,6 +86,25 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/learning/path",
             get(crate::onboarding::learning_path),
         )
+        .route("/api/v1/activities", get(crate::activities::list))
+        .route("/api/v1/activities/{slug}", get(crate::activities::detail))
+        .route(
+            "/api/v1/activities/{slug}/start",
+            axum::routing::post(crate::activities::start),
+        )
+        .route(
+            "/api/v1/activities/{slug}/attempts",
+            axum::routing::post(crate::activities::attempt),
+        )
+        .route(
+            "/api/v1/activities/{slug}/assistance/{level}",
+            axum::routing::post(crate::activities::assistance),
+        )
+        .route(
+            "/api/v1/assistance/status",
+            get(crate::activities::ai_status),
+        )
+        .route("/api/v1/tracks/{slug}", get(crate::activities::track))
         .route(
             "/api/v1/admin/metadata/solved-ac/{external_problem_id}/refresh",
             axum::routing::post(crate::metadata::admin_refresh),

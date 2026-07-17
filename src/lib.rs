@@ -1,3 +1,4 @@
+pub mod activities;
 pub mod auth;
 pub mod classes;
 pub mod config;

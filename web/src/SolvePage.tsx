@@ -24,6 +24,12 @@ const templates: Record<string, string> = {
   java21: 'import java.io.*;\nimport java.util.*;\n\npublic class Main {\n    public static void main(String[] args) throws Exception {\n    }\n}\n',
 };
 
+const problemTemplates: Record<string, Partial<Record<string, string>>> = {
+  'docs-url-normalizer': {
+    python3: 'import sys\nfrom urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit\n\n\ndef normalize(url: str) -> str:\n    # 공식 문서의 계약을 확인한 뒤 구현하세요.\n    pass\n\n\ndef main():\n    print(normalize(sys.stdin.readline().strip()))\n\n\nif __name__ == "__main__":\n    main()\n',
+  },
+};
+
 const statusLabels: Record<string, string> = {
   QUEUED: '대기 중', COMPILING: '컴파일 중', RUNNING: '실행 중', ACCEPTED: '정답',
   WRONG_ANSWER: '오답', PARTIAL_ACCEPTED: '부분 정답', TIME_LIMIT_EXCEEDED: '시간 초과',
@@ -62,6 +68,7 @@ function SolvePage({ slug }: { slug: string }) {
         setSource(draft.source);
         setSaveState(`저장본 ${draft.revision_count}회`);
       } else {
+        setSource(problemTemplates[slug]?.[language] ?? templates[language]);
         setSaveState('새 코드');
       }
       loadedDraft.current = true;
