@@ -9,6 +9,7 @@ type Problem = {
   difficulty_source: string;
   learning_axis: string;
   source_url: string | null;
+  source_kind: string;
   time_limit_ms: number;
   memory_limit_mb: number;
   tags: Array<{ tag: string; label: string }>;
@@ -46,6 +47,7 @@ function ProblemDetailPage({ slug }: { slug: string }) {
               <div><p className="eyebrow">ALGORITHM PROBLEM</p><h1>{problem.title}</h1></div>
               <div className="limit-card"><span>시간 {problem.time_limit_ms}ms</span><span>메모리 {problem.memory_limit_mb}MB</span></div>
             </div>
+            {problem.source_kind === 'original' && <a className="primary-action solve-action" href={`/solve/${problem.slug}`}>브라우저 IDE에서 풀기</a>}
             {problem.external_metadata && (
               <aside className={`metadata-notice ${problem.external_metadata.state}`}>
                 <strong>{problem.external_metadata.attribution}</strong>

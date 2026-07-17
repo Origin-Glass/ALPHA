@@ -57,3 +57,30 @@ jobs:
       - run: npm test -- --run
       - run: npm run build
       - run: npm audit --audit-level=high
+
+  judge:
+    name: 판정 샌드박스 검증
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+      JUDGE_TEST_IMAGE: alpha-judge-runner:test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 판정 이미지 빌드
+        run: docker build --tag "$JUDGE_TEST_IMAGE" judge
+      - name: 언어·오류·격리 판정
+        run: cargo test --test judge_docker -- --ignored --test-threads=1
