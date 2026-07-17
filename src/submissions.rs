@@ -76,6 +76,12 @@ pub struct SaveDraftRequest {
     source: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RejudgeRequest {
+    reason: String,
+}
+
 #[derive(Debug, Serialize, FromRow)]
 pub struct DraftView {
     problem_slug: String,
@@ -92,6 +98,7 @@ pub enum SubmissionError {
     TermsRequired,
     NotFound,
     RateLimited,
+    RoleForbidden,
     Database(sqlx::Error),
 }
 
@@ -117,6 +124,11 @@ impl IntoResponse for SubmissionError {
             Self::RateLimited => (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(serde_json::json!({"error": {"code": "submission_rate_limited", "message": "제출이 너무 빠릅니다. 잠시 후 다시 시도해 주세요"}})),
+            )
+                .into_response(),
+            Self::RoleForbidden => (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": {"code": "judge_admin_required", "message": "문제 출제자 또는 관리자 권한이 필요합니다"}})),
             )
                 .into_response(),
             Self::Database(error) => {
@@ -348,6 +360,146 @@ pub async fn detail(
 ) -> Result<Json<SubmissionView>, SubmissionError> {
     let user_id = crate::auth::authenticated_user_id(&state, &headers).await?;
     Ok(Json(submission_view(&state, user_id, submission_id).await?))
+}
+
+pub async fn cancel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(submission_id): Path<Uuid>,
+) -> Result<Json<SubmissionView>, SubmissionError> {
+    let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
+    let mut transaction = state.pool().begin().await?;
+    let owned_and_active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM submissions WHERE id=$1 AND user_id=$2 AND judged_at IS NULL)",
+    )
+    .bind(submission_id)
+    .bind(user_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    if !owned_and_active {
+        return Err(SubmissionError::NotFound);
+    }
+    sqlx::query(
+        r#"
+        UPDATE judge_jobs
+        SET status='done', lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL,
+            updated_at=now(), last_error='사용자 취소'
+        WHERE submission_id=$1 AND status IN ('ready', 'leased')
+        "#,
+    )
+    .bind(submission_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query("UPDATE submissions SET status='CANCELLED', score=0, judged_at=now() WHERE id=$1")
+        .bind(submission_id)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "INSERT INTO submission_events (submission_id,status,safe_message) VALUES ($1,'CANCELLED','사용자가 판정을 취소했습니다')",
+    )
+    .bind(submission_id)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Json(submission_view(&state, user_id, submission_id).await?))
+}
+
+pub async fn rejudge_problem(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(problem_slug): Path<String>,
+    Json(request): Json<RejudgeRequest>,
+) -> Result<Response, SubmissionError> {
+    if !(10..=500).contains(&request.reason.chars().count()) {
+        return Err(SubmissionError::InvalidInput(
+            "재채점 사유는 10~500자로 입력해 주세요",
+        ));
+    }
+    let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
+    let authorized: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM user_roles WHERE user_id=$1 AND role IN ('PROBLEM_SETTER','ADMIN'))",
+    )
+    .bind(user_id)
+    .fetch_one(state.pool())
+    .await?;
+    if !authorized {
+        return Err(SubmissionError::RoleForbidden);
+    }
+    let mut transaction = state.pool().begin().await?;
+    let problem: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT id,current_revision_id FROM problems WHERE slug=$1 AND status='published' FOR UPDATE",
+    )
+    .bind(&problem_slug)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let (problem_id, revision_id) = problem.ok_or(SubmissionError::NotFound)?;
+    let request_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO rejudge_requests (id,problem_id,requested_by,reason) VALUES ($1,$2,$3,$4)",
+    )
+    .bind(request_id)
+    .bind(problem_id)
+    .bind(user_id)
+    .bind(&request.reason)
+    .execute(&mut *transaction)
+    .await?;
+    let submission_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM submissions WHERE problem_id=$1 AND run_kind='formal' AND judged_at IS NOT NULL FOR UPDATE",
+    )
+    .bind(problem_id)
+    .fetch_all(&mut *transaction)
+    .await?;
+    for submission_id in &submission_ids {
+        sqlx::query(
+            r#"
+            UPDATE submissions SET problem_revision_id=$2, status='QUEUED', score=NULL,
+                compile_output=NULL, run_output=NULL, judged_at=NULL
+            WHERE id=$1
+            "#,
+        )
+        .bind(submission_id)
+        .bind(revision_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE judge_jobs SET status='ready', attempt_count=0, available_at=now(),
+                lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL,
+                last_error=NULL, updated_at=now()
+            WHERE submission_id=$1
+            "#,
+        )
+        .bind(submission_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO submission_events (submission_id,status,safe_message) VALUES ($1,'QUEUED','관리자 재채점 요청')",
+        )
+        .bind(submission_id)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO audit_events (actor_user_id,action,target_type,target_id,metadata)
+        VALUES ($1,'judge.rejudge.requested','problem',$2,$3)
+        "#,
+    )
+    .bind(user_id)
+    .bind(problem_id.to_string())
+    .bind(serde_json::json!({"request_id": request_id, "submission_count": submission_ids.len()}))
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "request_id": request_id,
+            "problem_slug": problem_slug,
+            "submission_count": submission_ids.len()
+        })),
+    )
+        .into_response())
 }
 
 pub async fn events(

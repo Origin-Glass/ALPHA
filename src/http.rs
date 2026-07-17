@@ -104,12 +104,20 @@ pub fn router(state: AppState) -> Router {
             get(crate::submissions::detail),
         )
         .route(
+            "/api/v1/submissions/{submission_id}/cancel",
+            axum::routing::post(crate::submissions::cancel),
+        )
+        .route(
             "/api/v1/submissions/{submission_id}/events",
             get(crate::submissions::events),
         )
         .route(
             "/api/v1/problems/{slug}/draft",
             get(crate::submissions::get_draft).put(crate::submissions::save_draft),
+        )
+        .route(
+            "/api/v1/admin/problems/{slug}/rejudge",
+            axum::routing::post(crate::submissions::rejudge_problem),
         )
         .with_state(state)
 }
