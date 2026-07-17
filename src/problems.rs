@@ -5,9 +5,11 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgPool};
+use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+use crate::http::AppState;
 
 #[derive(Debug, Serialize)]
 pub struct ProblemDetail {
@@ -117,7 +119,7 @@ impl From<sqlx::Error> for ProblemError {
 }
 
 pub async fn list(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<ProblemListResponse>, ProblemError> {
     let limit = i64::from(query.limit.unwrap_or(20).clamp(1, 100));
@@ -132,7 +134,7 @@ pub async fn list(
     )
     .bind(query.cursor)
     .bind(limit + 1)
-    .fetch_all(&pool)
+    .fetch_all(state.pool())
     .await?;
 
     let has_more = items.len() > limit as usize;
@@ -143,7 +145,7 @@ pub async fn list(
 }
 
 pub async fn detail(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> Result<Json<ProblemResponse>, ProblemError> {
     let row = sqlx::query_as::<_, ProblemRow>(
@@ -155,7 +157,7 @@ pub async fn detail(
         "#,
     )
     .bind(slug)
-    .fetch_optional(&pool)
+    .fetch_optional(state.pool())
     .await?
     .ok_or(ProblemError::NotFound)?;
 
@@ -168,14 +170,14 @@ pub async fn detail(
         "#,
     )
     .bind(row.id)
-    .fetch_all(&pool)
+    .fetch_all(state.pool())
     .await?;
 
     let tags = sqlx::query_as::<_, ProblemTag>(
         "SELECT tag, label_ko FROM problem_tags WHERE problem_id = $1 ORDER BY tag",
     )
     .bind(row.id)
-    .fetch_all(&pool)
+    .fetch_all(state.pool())
     .await?;
 
     let problem = ProblemDetail {
