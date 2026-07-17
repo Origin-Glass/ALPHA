@@ -210,6 +210,18 @@ async fn expired_lease_is_recovered_and_stale_worker_cannot_overwrite_verdict(po
         .await
         .unwrap();
     assert_eq!(verdict, "ACCEPTED");
+    let progression: (i64, i32, i32) = sqlx::query_as(
+        "SELECT xp, mastered_count, independent_mastered_count FROM progression_state WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        progression,
+        (100, 1, 1),
+        "정식 정답은 문제 보상과 첫 일일 퀘스트만 한 번 반영해야 한다"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]

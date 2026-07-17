@@ -47,6 +47,7 @@ pub fn default_ai_provider() -> Arc<dyn AiAssistanceProvider> {
 pub enum ActivityError {
     Auth(AuthError),
     InvalidInput(&'static str),
+    TermsRequired,
     NotFound,
     AssistanceLocked,
     AssistancePolicy,
@@ -60,6 +61,11 @@ impl IntoResponse for ActivityError {
         let (status, code, message) = match self {
             Self::Auth(error) => return error.into_response(),
             Self::InvalidInput(message) => (StatusCode::BAD_REQUEST, "invalid_input", message),
+            Self::TermsRequired => (
+                StatusCode::FORBIDDEN,
+                "terms_required",
+                "학습 기록을 저장하기 전에 이용약관에 동의해 주세요",
+            ),
             Self::NotFound => (
                 StatusCode::NOT_FOUND,
                 "activity_not_found",
@@ -103,6 +109,20 @@ impl IntoResponse for ActivityError {
         )
             .into_response()
     }
+}
+
+async fn require_active_terms(state: &AppState, user_id: Uuid) -> Result<(), ActivityError> {
+    let accepted: bool = sqlx::query_scalar(
+        "SELECT terms_accepted_at IS NOT NULL FROM users WHERE id = $1 AND status = 'active'",
+    )
+    .bind(user_id)
+    .fetch_optional(state.pool())
+    .await?
+    .ok_or(AuthError::Unauthorized)?;
+    if !accepted {
+        return Err(ActivityError::TermsRequired);
+    }
+    Ok(())
 }
 
 impl From<AuthError> for ActivityError {
@@ -354,6 +374,7 @@ pub async fn start(
     Path(slug): Path<String>,
 ) -> Result<Json<StartResponse>, ActivityError> {
     let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
+    require_active_terms(&state, user_id).await?;
     let activity = find_activity(&state, &slug).await?;
     let started_at: OffsetDateTime = sqlx::query_scalar(
         r#"
@@ -375,6 +396,7 @@ pub async fn start(
 struct EvaluatorRow {
     id: Uuid,
     unit_id: Option<Uuid>,
+    kind: String,
     evaluator_kind: String,
     evaluator_config: SqlJson<Value>,
 }
@@ -473,6 +495,7 @@ pub async fn attempt(
     Json(request): Json<AttemptRequest>,
 ) -> Result<Json<AttemptResponse>, ActivityError> {
     let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
+    require_active_terms(&state, user_id).await?;
     if serde_json::to_vec(&request.response)
         .map_err(|_| ActivityError::InvalidInput("답변 형식을 확인해 주세요"))?
         .len()
@@ -492,7 +515,7 @@ pub async fn attempt(
 
     let evaluator = sqlx::query_as::<_, EvaluatorRow>(
         r#"
-        SELECT id, unit_id, evaluator_kind, evaluator_config
+        SELECT id, unit_id, kind, evaluator_kind, evaluator_config
         FROM learning_activities
         WHERE slug = $1 AND status = 'published'
         "#,
@@ -634,6 +657,41 @@ pub async fn attempt(
             .await?;
         }
     }
+    if passed {
+        let (axis, points) = match evaluator.kind.as_str() {
+            "locate_bug" => ("debugging", 30),
+            "docs_checkpoint" => ("documentation", 30),
+            _ => ("code_reading", 20),
+        };
+        let event_class = match mastery_class(max_level) {
+            "independent" => "independent",
+            "reviewed" => "review_verified",
+            "explained" => "explanation_verified",
+            _ => "assisted",
+        };
+        let xp = match event_class {
+            "independent" => 50,
+            "review_verified" => 25,
+            "assisted" => 20,
+            _ => 5,
+        };
+        crate::gamification::apply_reward(
+            &mut transaction,
+            crate::gamification::RewardSpec {
+                event_id: attempt_id,
+                user_id,
+                reward_key: format!("activity:{}", evaluator.id),
+                source_kind: "activity",
+                source_id: Some(evaluator.id),
+                xp,
+                reason_ko: "학습 활동 통과",
+                axis,
+                mastery_points: points,
+                mastery_class: event_class,
+            },
+        )
+        .await?;
+    }
     transaction.commit().await?;
 
     Ok(Json(AttemptResponse {
@@ -660,6 +718,7 @@ pub async fn assistance(
     Path((slug, level)): Path<(String, i16)>,
 ) -> Result<Json<AssistanceResponse>, ActivityError> {
     let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
+    require_active_terms(&state, user_id).await?;
     if !(1..=9).contains(&level) {
         return Err(ActivityError::InvalidInput(
             "도움 단계는 1에서 9 사이여야 합니다",

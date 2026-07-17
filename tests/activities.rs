@@ -44,6 +44,19 @@ async fn authenticated_app(pool: PgPool, handle: &str) -> (axum::Router, String,
     let body: Value =
         serde_json::from_slice(&to_bytes(login.into_body(), 16_384).await.unwrap()).unwrap();
     let csrf = body["csrf_token"].as_str().unwrap().to_owned();
+    let accepted = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/auth/terms")
+                .header(header::COOKIE, &cookie)
+                .header("x-csrf-token", &csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"version": "2026-07-18"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
     (app, cookie, csrf)
 }
 

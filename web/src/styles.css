@@ -427,6 +427,79 @@ footer strong { color: var(--ink); font-style: italic; }
 .track-lesson details { margin-top: 15px; color: var(--muted); font-size: .75rem; }
 .track-lesson summary { color: #52606f; font-weight: 800; cursor: pointer; }
 .track-lesson details p { margin: 8px 0; line-height: 1.5; }
+.progression-page { background: radial-gradient(circle at 82% 5%, rgba(115,87,232,.19), transparent 30rem), radial-gradient(circle at 4% 62%, rgba(77,148,255,.14), transparent 28rem), #eef3f8; }
+.progression-dashboard, .rankings-panel { width: min(1060px, 100%); margin: 0 auto; padding: 70px 0 90px; }
+.progression-hero { display: grid; grid-template-columns: 1fr auto; gap: 40px; align-items: center; }
+.progression-hero h1, .rankings-heading h1 { font-size: clamp(2.8rem, 6vw, 5.4rem); }
+.progression-hero a, .dashboard-heading a { display: inline-block; margin-top: 22px; color: var(--violet); font-size: .8rem; font-weight: 850; }
+.level-orb { width: 250px; min-height: 250px; padding: 34px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.9); border-radius: 50%; background: rgba(255,255,255,.58); box-shadow: 16px 16px 38px rgba(106,123,145,.2), -13px -13px 34px rgba(255,255,255,.9), inset 0 0 0 10px rgba(115,87,232,.05); }
+.level-orb span { color: var(--violet); font-size: .68rem; font-weight: 900; letter-spacing: .16em; }
+.level-orb strong { font-size: 4rem; line-height: 1; }
+.level-orb progress { width: 130px; height: 8px; accent-color: var(--violet); }
+.level-orb small { color: var(--muted); }
+.progression-stats { margin-top: 56px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.progression-stats article { min-height: 150px; padding: 22px; display: grid; gap: 8px; align-content: center; border: 1px solid var(--line); border-radius: 20px; background: rgba(255,255,255,.55); box-shadow: 8px 8px 18px rgba(116,132,153,.12), -7px -7px 17px rgba(255,255,255,.74); }
+.progression-stats span, .progression-stats small, .progression-stats a { color: var(--muted); font-size: .73rem; }
+.progression-stats strong { font-size: 1.8rem; }
+.progression-stats a { color: var(--violet); font-weight: 800; }
+.dashboard-section { margin-top: 34px; padding: 26px; border: 1px solid var(--line); border-radius: 22px; background: rgba(255,255,255,.52); }
+.dashboard-section > h2, .dashboard-heading h2 { margin: 0 0 20px; font-size: 1.2rem; }
+.dashboard-heading { display: flex; justify-content: space-between; align-items: start; }
+.dashboard-heading a { margin: 0; }
+.mastery-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.mastery-grid article { padding: 16px; display: grid; gap: 9px; border-radius: 15px; background: #edf2f7; box-shadow: inset 2px 2px 6px rgba(111,127,148,.11), inset -2px -2px 6px #fff; }
+.mastery-grid span, .mastery-grid small { color: var(--muted); font-size: .67rem; }
+.mastery-grid strong { font-size: 1.45rem; }
+.mastery-grid article > div { height: 6px; overflow: hidden; border-radius: 999px; background: #dfe6ed; }
+.mastery-grid i { height: 100%; display: block; border-radius: inherit; background: linear-gradient(90deg, var(--violet), var(--blue)); }
+.dashboard-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.quest-list, .achievement-list { display: grid; gap: 10px; }
+.quest-list article { padding: 14px; display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; border-radius: 14px; background: #edf2f7; }
+.quest-list article.completed { background: #dff4ed; }
+.quest-list article > div { display: grid; gap: 4px; }
+.quest-list span, .quest-list small { color: var(--muted); font-size: .66rem; }
+.quest-list progress { width: 110px; accent-color: var(--violet); }
+.achievement-list article { padding: 13px; display: flex; gap: 12px; align-items: center; border-radius: 13px; background: rgba(115,87,232,.07); }
+.achievement-list article > span { color: var(--violet); }
+.achievement-list article > div { display: grid; gap: 3px; }
+.achievement-list small { color: var(--muted); line-height: 1.4; }
+.dashboard-empty { color: var(--muted); font-size: .8rem; line-height: 1.6; }
+.xp-ledger { margin: 0; padding: 0; list-style: none; }
+.xp-ledger li { padding: 11px 0; display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid rgba(121,138,158,.14); font-size: .78rem; }
+.xp-ledger strong { color: #28715f; }
+.profile-settings { display: grid; gap: 13px; }
+.profile-settings > h2 { margin-bottom: 4px; }
+.profile-settings > label:not(.profile-check), .profile-setting-row label { display: grid; gap: 6px; }
+.profile-settings label > span { color: #4d5a68; font-size: .72rem; font-weight: 800; }
+.profile-settings input:not([type=checkbox]), .profile-settings textarea, .profile-settings select { min-width: 0; padding: 10px; border: 1px solid rgba(121,138,158,.2); border-radius: 10px; background: #f7f9fb; font: inherit; }
+.profile-settings textarea { min-height: 70px; resize: vertical; }
+.profile-setting-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.profile-check { display: flex; gap: 8px; align-items: center; }
+.profile-check input { width: 17px; height: 17px; accent-color: var(--violet); }
+.profile-settings > button { min-height: 42px; border: 0; border-radius: 11px; color: white; background: var(--violet); font: inherit; font-weight: 850; cursor: pointer; }
+.profile-settings > small { color: #28715f; }
+.rankings-heading { display: flex; justify-content: space-between; gap: 40px; align-items: end; }
+.rankings-heading label { min-width: 180px; display: grid; gap: 7px; }
+.rankings-heading label span { color: var(--muted); font-size: .7rem; font-weight: 800; }
+.rankings-heading select { min-height: 44px; padding: 0 12px; border: 1px solid rgba(121,138,158,.2); border-radius: 12px; background: #f7f9fb; font: inherit; }
+.ranking-list { margin: 38px 0 0; padding: 0; list-style: none; counter-reset: none; }
+.ranking-list li { min-height: 76px; padding: 14px 20px; display: grid; grid-template-columns: 46px 1fr auto; gap: 15px; align-items: center; border-bottom: 1px solid rgba(121,138,158,.15); }
+.ranking-list li:first-child { border-radius: 18px; background: rgba(115,87,232,.08); }
+.ranking-list li > strong { color: var(--violet); font-size: 1.15rem; text-align: center; }
+.ranking-list a { display: grid; gap: 3px; text-decoration: none; }
+.ranking-list small { color: var(--muted); font-size: .68rem; }
+.ranking-list li > div { display: grid; justify-items: end; }
+.ranking-list b { font-size: 1.05rem; }
+.public-profile { width: min(720px, 100%); margin: 0 auto; padding: 90px 0; }
+.profile-card { position: relative; padding: clamp(30px, 7vw, 65px); overflow: hidden; border: 1px solid var(--line); border-radius: 30px; background: rgba(255,255,255,.62); box-shadow: var(--shadow); }
+.profile-card.independent-aurora { background: radial-gradient(circle at 85% 10%, rgba(77,148,255,.22), transparent 16rem), radial-gradient(circle at 10% 90%, rgba(115,87,232,.18), transparent 18rem), rgba(255,255,255,.65); }
+.profile-card h1 { font-size: clamp(2.8rem, 8vw, 5rem); }
+.profile-level { position: absolute; top: 32px; right: 36px; color: var(--violet); font-size: .8rem; font-weight: 900; }
+.profile-handle { color: var(--violet); font-weight: 800; }
+.profile-bio { min-height: 50px; margin: 30px 0; color: var(--muted); line-height: 1.7; }
+.profile-card > div { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.profile-card article { padding: 15px; display: grid; gap: 5px; border-radius: 14px; background: #edf2f7; text-align: center; }
+.profile-card article span { color: var(--muted); font-size: .67rem; }
 
 a:focus-visible { outline: 3px solid rgba(77,148,255,.42); outline-offset: 4px; }
 
@@ -444,6 +517,7 @@ a:focus-visible { outline: 3px solid rgba(77,148,255,.42); outline-offset: 4px; 
   .blocked-badge { justify-self: start; }
   .activity-workspace { grid-template-columns: 1fr; }
   .activity-answer { position: static; }
+  .mastery-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-width: 540px) {
@@ -495,6 +569,16 @@ a:focus-visible { outline: 3px solid rgba(77,148,255,.42); outline-offset: 4px; 
   .activity-fields { grid-template-columns: 1fr; }
   .track-module { grid-template-columns: 1fr; gap: 6px; }
   .track-module__number { padding: 0; }
+  .progression-dashboard, .rankings-panel { padding: 52px 4px; }
+  .progression-hero { grid-template-columns: 1fr; }
+  .level-orb { width: 210px; min-height: 210px; justify-self: center; }
+  .progression-stats, .dashboard-columns { grid-template-columns: 1fr; }
+  .mastery-grid { grid-template-columns: 1fr 1fr; }
+  .rankings-heading { align-items: start; flex-direction: column; }
+  .rankings-heading label { width: 100%; }
+  .ranking-list li { padding: 12px 7px; grid-template-columns: 34px 1fr auto; }
+  .public-profile { padding: 54px 4px; }
+  .profile-card > div { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
