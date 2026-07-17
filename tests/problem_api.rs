@@ -112,7 +112,7 @@ async fn catalog_pagination_has_no_duplicates_and_excludes_drafts(pool: PgPool) 
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/v1/problems?limit=2")
+                .uri("/api/v1/problems?limit=2&q=catalog")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -133,7 +133,9 @@ async fn catalog_pagination_has_no_duplicates_and_excludes_drafts(pool: PgPool) 
     let second_response = app
         .oneshot(
             Request::builder()
-                .uri(format!("/api/v1/problems?limit=2&cursor={cursor}"))
+                .uri(format!(
+                    "/api/v1/problems?limit=2&q=catalog&cursor={cursor}"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )

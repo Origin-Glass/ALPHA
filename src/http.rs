@@ -81,6 +81,10 @@ pub fn router(state: AppState) -> Router {
             get(crate::onboarding::learning_path),
         )
         .route(
+            "/api/v1/admin/metadata/solved-ac/{external_problem_id}/refresh",
+            axum::routing::post(crate::metadata::admin_refresh),
+        )
+        .route(
             "/api/v1/payments/checkout",
             axum::routing::post(crate::payments::create_checkout),
         )
