@@ -91,6 +91,22 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/classes/{class_id}", get(crate::classes::detail))
         .route("/api/v1/problems", get(crate::problems::list))
         .route("/api/v1/problems/{slug}", get(crate::problems::detail))
+        .route(
+            "/api/v1/submissions",
+            get(crate::submissions::list).post(crate::submissions::create),
+        )
+        .route(
+            "/api/v1/submissions/{submission_id}",
+            get(crate::submissions::detail),
+        )
+        .route(
+            "/api/v1/submissions/{submission_id}/events",
+            get(crate::submissions::events),
+        )
+        .route(
+            "/api/v1/problems/{slug}/draft",
+            get(crate::submissions::get_draft).put(crate::submissions::save_draft),
+        )
         .with_state(state)
 }
 

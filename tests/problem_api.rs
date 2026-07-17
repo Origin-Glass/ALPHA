@@ -10,6 +10,33 @@ use time::OffsetDateTime;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+async fn publish_with_initial_revision(pool: &PgPool, problem_id: Uuid) {
+    let revision_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO problem_revisions (
+            problem_id, version, statement_ko, time_limit_ms, memory_limit_mb,
+            checker_kind, content_hash
+        )
+        SELECT id, 1, statement_ko, time_limit_ms, memory_limit_mb,
+               checker_kind, digest(statement_ko, 'sha256')
+        FROM problems WHERE id = $1
+        RETURNING id
+        "#,
+    )
+    .bind(problem_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE problems SET status = 'published', published_at = now(), current_revision_id = $2 WHERE id = $1",
+    )
+    .bind(problem_id)
+    .bind(revision_id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn public_problem_detail_never_leaks_hidden_tests(pool: PgPool) {
     let problem_id = Uuid::now_v7();
@@ -17,8 +44,8 @@ async fn public_problem_detail_never_leaks_hidden_tests(pool: PgPool) {
         r#"
         INSERT INTO problems (
             id, slug, title_ko, statement_ko, difficulty, learning_axis,
-            status, source_kind, time_limit_ms, memory_limit_mb, published_at
-        ) VALUES ($1, $2, $3, $4, 4, 'code_literacy', 'published', 'original', 1000, 256, now())
+            status, source_kind, time_limit_ms, memory_limit_mb
+        ) VALUES ($1, $2, $3, $4, 4, 'code_literacy', 'draft', 'original', 1000, 256)
         "#,
     )
     .bind(problem_id)
@@ -28,6 +55,7 @@ async fn public_problem_detail_never_leaks_hidden_tests(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
+    publish_with_initial_revision(&pool, problem_id).await;
 
     sqlx::query(
         r#"
@@ -94,17 +122,24 @@ async fn catalog_pagination_has_no_duplicates_and_excludes_drafts(pool: PgPool) 
             r#"
             INSERT INTO problems (
                 id, slug, title_ko, statement_ko, difficulty, learning_axis,
-                status, source_kind, time_limit_ms, memory_limit_mb, published_at
-            ) VALUES ($1, $2, $2, '문제 설명', 1, 'algorithmic_reasoning', $3, 'original', 1000, 256, $4)
+                status, source_kind, time_limit_ms, memory_limit_mb
+            ) VALUES ($1, $2, $2, '문제 설명', 1, 'algorithmic_reasoning', 'draft', 'original', 1000, 256)
             "#,
         )
         .bind(Uuid::parse_str(id).unwrap())
         .bind(slug)
-        .bind(status)
-        .bind(published_at)
         .execute(&pool)
         .await
         .unwrap();
+        if status == "published" {
+            publish_with_initial_revision(&pool, Uuid::parse_str(id).unwrap()).await;
+            sqlx::query("UPDATE problems SET published_at = $2 WHERE id = $1")
+                .bind(Uuid::parse_str(id).unwrap())
+                .bind(published_at)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
     }
 
     let app = router(AppState::for_test(pool));

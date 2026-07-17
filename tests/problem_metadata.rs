@@ -25,6 +25,33 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+async fn publish_with_initial_revision(pool: &PgPool, problem_id: Uuid) {
+    let revision_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO problem_revisions (
+            problem_id, version, statement_ko, time_limit_ms, memory_limit_mb,
+            checker_kind, content_hash
+        )
+        SELECT id, 1, statement_ko, time_limit_ms, memory_limit_mb,
+               checker_kind, digest(statement_ko, 'sha256')
+        FROM problems WHERE id = $1
+        RETURNING id
+        "#,
+    )
+    .bind(problem_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE problems SET status = 'published', published_at = now(), current_revision_id = $2 WHERE id = $1",
+    )
+    .bind(problem_id)
+    .bind(revision_id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 async fn solved_fixture(State(calls): State<Arc<AtomicUsize>>) -> Response {
     if calls.fetch_add(1, Ordering::SeqCst) == 0 {
         Json(json!({
@@ -115,8 +142,8 @@ async fn catalog_combines_keyword_tag_level_and_axis_filters(pool: PgPool) {
             r#"
             INSERT INTO problems (
                 id, slug, title_ko, statement_ko, difficulty, learning_axis,
-                status, source_kind, time_limit_ms, memory_limit_mb, published_at
-            ) VALUES ($1, $2, $3, 'ALPHA 작성 문제', $4, $5, 'published', 'original', 1000, 256, now())
+                status, source_kind, time_limit_ms, memory_limit_mb
+            ) VALUES ($1, $2, $3, 'ALPHA 작성 문제', $4, $5, 'draft', 'original', 1000, 256)
             "#,
         )
         .bind(id)
@@ -127,6 +154,7 @@ async fn catalog_combines_keyword_tag_level_and_axis_filters(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
+        publish_with_initial_revision(&pool, id).await;
         sqlx::query("INSERT INTO problem_tags (problem_id, tag, label_ko) VALUES ($1, $2, $3)")
             .bind(id)
             .bind(tag)

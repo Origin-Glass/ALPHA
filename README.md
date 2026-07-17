@@ -6,6 +6,8 @@
 
 - `src/bin/api.rs`: Rust/Axum API
 - `src/bin/metadata_worker.rs`: 외부 문제 메타데이터 주기 갱신 작업자
+- `src/bin/judge_worker.rs`: 신뢰성 큐를 소비하는 별도 Docker 판정 작업자
+- `judge/Dockerfile`: C++20·Python 3·Java 21 실행 이미지
 - `migrations/`: PostgreSQL 스키마
 - `web/`: React/Vite 웹
 
