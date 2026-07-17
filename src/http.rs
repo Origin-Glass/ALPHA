@@ -71,6 +71,15 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/auth/logout",
             axum::routing::post(crate::auth::logout),
         )
+        .route("/api/v1/onboarding", get(crate::onboarding::questions))
+        .route(
+            "/api/v1/onboarding/complete",
+            axum::routing::post(crate::onboarding::complete),
+        )
+        .route(
+            "/api/v1/learning/path",
+            get(crate::onboarding::learning_path),
+        )
         .route(
             "/api/v1/payments/checkout",
             axum::routing::post(crate::payments::create_checkout),

@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import './styles.css';
 import LoginPage from './LoginPage';
 import TermsPage from './TermsPage';
+import OnboardingPage from './OnboardingPage';
+import LearningPathPage from './LearningPathPage';
 
 const learningAxes = [
   { number: '01', title: '알고리즘 추론', description: '정답보다 사고 과정을 단단하게 만듭니다.' },
@@ -134,6 +136,8 @@ function LandingPage() {
 function App() {
   if (window.location.pathname === '/login') return <LoginPage />;
   if (window.location.pathname === '/terms') return <TermsPage />;
+  if (window.location.pathname === '/onboarding') return <OnboardingPage />;
+  if (window.location.pathname === '/learn') return <LearningPathPage />;
   return <LandingPage />;
 }
 

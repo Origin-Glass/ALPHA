@@ -784,6 +784,31 @@ pub async fn authenticated_user_id(
     Ok(user_id)
 }
 
+pub async fn authenticated_user_id_with_csrf(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Uuid, AuthError> {
+    let session_token = cookie_value(headers, SESSION_COOKIE).ok_or(AuthError::Unauthorized)?;
+    let csrf_token = headers
+        .get("x-csrf-token")
+        .and_then(|value| value.to_str().ok())
+        .ok_or(AuthError::Forbidden)?;
+    let session: Option<(Uuid, Vec<u8>)> = sqlx::query_as(
+        r#"
+        SELECT user_id, csrf_token_hash FROM sessions
+        WHERE session_token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
+        "#,
+    )
+    .bind(token_hash(&session_token))
+    .fetch_optional(state.pool())
+    .await?;
+    let (user_id, stored_csrf_hash) = session.ok_or(AuthError::Unauthorized)?;
+    if !bool::from(stored_csrf_hash.ct_eq(&token_hash(csrf_token))) {
+        return Err(AuthError::Forbidden);
+    }
+    Ok(user_id)
+}
+
 pub async fn accept_terms(
     State(state): State<AppState>,
     headers: HeaderMap,
