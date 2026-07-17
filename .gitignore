@@ -1,6 +1,6 @@
 /target/
 /web/node_modules/
 /web/dist/
+/web/*.tsbuildinfo
 .env
 .DS_Store
-
