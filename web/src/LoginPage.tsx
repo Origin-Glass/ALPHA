@@ -24,6 +24,10 @@ function LoginPage() {
   const [handle, setHandle] = useState('verified-learner');
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState('');
+  const redirectAfter = (() => {
+    const value = new URLSearchParams(window.location.search).get('redirect_after');
+    return value?.startsWith('/') && !value.startsWith('//') ? value : '/';
+  })();
 
   useEffect(() => {
     fetch('/api/v1/auth/providers')
@@ -51,7 +55,7 @@ function LoginPage() {
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error?.message ?? '로그인하지 못했습니다');
-      window.location.assign(body.user?.terms_accepted ? '/' : '/terms');
+      window.location.assign(body.user?.terms_accepted ? redirectAfter : '/terms');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '로그인하지 못했습니다');
       setSubmitting(false);
@@ -68,7 +72,7 @@ function LoginPage() {
 
         <div className="provider-list" aria-label="OAuth 로그인">
           {providers.map((provider) => provider.available ? (
-            <a className="provider-button" href={`/api/v1/auth/${provider.id}/start?redirect_after=/terms`} key={provider.id}>
+            <a className="provider-button" href={`/api/v1/auth/${provider.id}/start?redirect_after=${encodeURIComponent(redirectAfter)}`} key={provider.id}>
               {provider.label}로 계속
             </a>
           ) : (
