@@ -7,6 +7,9 @@ import LearningPathPage from './LearningPathPage';
 import ProblemsPage from './ProblemsPage';
 import ProblemDetailPage from './ProblemDetailPage';
 import SolvePage from './SolvePage';
+import ActivitiesPage from './ActivitiesPage';
+import ActivityDetailPage from './ActivityDetailPage';
+import DocsTrackPage from './DocsTrackPage';
 
 const learningAxes = [
   { number: '01', title: '알고리즘 추론', description: '정답보다 사고 과정을 단단하게 만듭니다.' },
@@ -141,6 +144,9 @@ function App() {
   if (window.location.pathname === '/terms') return <TermsPage />;
   if (window.location.pathname === '/onboarding') return <OnboardingPage />;
   if (window.location.pathname === '/learn') return <LearningPathPage />;
+  if (window.location.pathname === '/activities') return <ActivitiesPage />;
+  if (window.location.pathname.startsWith('/activities/')) return <ActivityDetailPage slug={decodeURIComponent(window.location.pathname.slice('/activities/'.length))} />;
+  if (window.location.pathname === '/tracks/docs-builder') return <DocsTrackPage />;
   if (window.location.pathname === '/problems') return <ProblemsPage />;
   if (window.location.pathname.startsWith('/problems/')) return <ProblemDetailPage slug={decodeURIComponent(window.location.pathname.slice('/problems/'.length))} />;
   if (window.location.pathname.startsWith('/solve/')) return <SolvePage slug={decodeURIComponent(window.location.pathname.slice('/solve/'.length))} />;
