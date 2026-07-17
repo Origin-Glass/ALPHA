@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .await?;
             info!(job_id = %job.job_id, submission_id = %job.submission_id, attempt = job.attempt, "판정 작업 시작");
-            let outcome = match judge::load_test_cases(&pool, job.problem_id).await {
+            let outcome = match judge::load_test_cases(&pool, job.problem_id, &job.run_kind).await {
                 Ok(test_cases) => {
                     if let Err(error) =
                         judge::record_running(&pool, job.job_id, job.lease_token).await
@@ -94,6 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 verdict: Verdict::SystemError,
                                 score: 0,
                                 compile_output: None,
+                                run_output: None,
                             }
                         }
                     }
@@ -104,16 +105,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         verdict: Verdict::SystemError,
                         score: 0,
                         compile_output: None,
+                        run_output: None,
                     }
                 }
             };
-            match judge::complete_job(
+            match judge::complete_job_with_output(
                 &pool,
                 job.job_id,
                 job.lease_token,
                 outcome.verdict,
                 outcome.score,
                 outcome.compile_output,
+                outcome.run_output,
             )
             .await
             {

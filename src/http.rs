@@ -96,6 +96,10 @@ pub fn router(state: AppState) -> Router {
             get(crate::submissions::list).post(crate::submissions::create),
         )
         .route(
+            "/api/v1/runs",
+            axum::routing::post(crate::submissions::create_run),
+        )
+        .route(
             "/api/v1/submissions/{submission_id}",
             get(crate::submissions::detail),
         )

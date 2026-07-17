@@ -100,6 +100,41 @@ async fn submission_idempotency_creates_exactly_one_queue_job(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn sample_run_is_queued_without_becoming_a_formal_submission(pool: PgPool) {
+    let (app, _, cookie, csrf) = authenticated_app(pool.clone()).await;
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/runs")
+                .header(header::COOKIE, cookie)
+                .header("x-csrf-token", csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "problem_slug": "alpha-pair-sum",
+                        "language": "python3",
+                        "source": "a,b=map(int,input().split())\nprint(a+b)\n",
+                        "mode": "sample",
+                        "idempotency_key": Uuid::now_v7()
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 16_384).await.unwrap()).unwrap();
+    assert_eq!(body["run_kind"], "sample");
+    let kind: String = sqlx::query_scalar("SELECT run_kind FROM submissions WHERE id = $1")
+        .bind(Uuid::parse_str(body["id"].as_str().unwrap()).unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(kind, "sample");
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn expired_lease_is_recovered_and_stale_worker_cannot_overwrite_verdict(pool: PgPool) {
     let (_, user_id, _, _) = authenticated_app(pool.clone()).await;
     let problem: (Uuid, Uuid) = sqlx::query_as(

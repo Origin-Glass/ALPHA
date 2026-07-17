@@ -14,6 +14,8 @@ type Submission = {
   status: string;
   score: number | null;
   compile_output: string | null;
+  run_kind: 'formal' | 'sample' | 'custom';
+  run_output: string | null;
 };
 
 const templates: Record<string, string> = {
@@ -38,6 +40,7 @@ function SolvePage({ slug }: { slug: string }) {
   const [source, setSource] = useState(templates.python3);
   const [saveState, setSaveState] = useState('불러오는 중');
   const [submission, setSubmission] = useState<Submission | null>(null);
+  const [customInput, setCustomInput] = useState('1 2\n');
   const [message, setMessage] = useState('');
   const loadedDraft = useRef(false);
 
@@ -100,13 +103,16 @@ function SolvePage({ slug }: { slug: string }) {
     return () => eventSource.close();
   }, [submission?.id, submission?.status]);
 
-  const submit = async () => {
+  const enqueue = async (mode: 'formal' | 'sample' | 'custom') => {
     setMessage('');
     try {
-      const response = await fetch('/api/v1/submissions', {
+      const response = await fetch(mode === 'formal' ? '/api/v1/submissions' : '/api/v1/runs', {
         method: 'POST', credentials: 'include',
         headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken() },
-        body: JSON.stringify({ problem_slug: slug, language, source, idempotency_key: crypto.randomUUID() }),
+        body: JSON.stringify({
+          problem_slug: slug, language, source, idempotency_key: crypto.randomUUID(),
+          ...(mode === 'formal' ? {} : { mode, ...(mode === 'custom' ? { custom_input: customInput } : {}) }),
+        }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error?.message ?? '제출하지 못했습니다.');
@@ -136,11 +142,12 @@ function SolvePage({ slug }: { slug: string }) {
           <section className="editor-panel" aria-label="소스 코드 편집기">
             <div className="editor-toolbar">
               <label>언어<select value={language} onChange={(event) => { const next = event.target.value; setLanguage(next); setSource(templates[next]); }}><option value="cpp20">GNU C++20</option><option value="python3">Python 3</option><option value="java21">Java 21</option></select></label>
-              <button className="primary-action" type="button" onClick={submit}>정식 제출</button>
+              <div className="editor-actions"><button type="button" onClick={() => enqueue('sample')}>샘플 실행</button><button className="primary-action" type="button" onClick={() => enqueue('formal')}>정식 제출</button></div>
             </div>
             <textarea aria-label="소스 코드" value={source} onChange={(event) => setSource(event.target.value)} spellCheck={false} />
             <div className="verdict-panel" aria-live="polite">
-              {submission ? <><span className={`verdict ${submission.status.toLowerCase()}`}>{statusLabels[submission.status] ?? submission.status}</span>{submission.score !== null && <strong>{submission.score}점</strong>}{submission.compile_output && <pre>{submission.compile_output}</pre>}</> : <p>제출하면 큐·컴파일·실행 상태가 여기에 표시됩니다.</p>}
+              <details className="custom-run"><summary>사용자 입력</summary><div><textarea aria-label="사용자 입력" value={customInput} onChange={(event) => setCustomInput(event.target.value)} /><button type="button" onClick={() => enqueue('custom')}>실행</button></div></details>
+              {submission ? <><span className={`verdict ${submission.status.toLowerCase()}`}>{submission.status === 'ACCEPTED' && submission.run_kind === 'custom' ? '실행 완료' : submission.status === 'ACCEPTED' && submission.run_kind === 'sample' ? '샘플 통과' : statusLabels[submission.status] ?? submission.status}</span>{submission.score !== null && submission.run_kind === 'formal' && <strong>{submission.score}점</strong>}{submission.compile_output && <pre>{submission.compile_output}</pre>}{submission.run_output && <pre>{submission.run_output}</pre>}</> : <p>샘플·사용자 입력·정식 제출 상태가 여기에 표시됩니다.</p>}
               {message && <p className="auth-message" role="alert">{message}</p>}
             </div>
           </section>

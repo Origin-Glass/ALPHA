@@ -22,6 +22,17 @@ pub struct CreateSubmissionRequest {
     idempotency_key: Uuid,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateRunRequest {
+    problem_slug: String,
+    language: String,
+    source: String,
+    mode: String,
+    custom_input: Option<String>,
+    idempotency_key: Uuid,
+}
+
 #[derive(Debug, Serialize, FromRow)]
 pub struct SubmissionView {
     id: Uuid,
@@ -32,6 +43,8 @@ pub struct SubmissionView {
     status: String,
     score: Option<i16>,
     compile_output: Option<String>,
+    run_kind: String,
+    run_output: Option<String>,
     created_at: OffsetDateTime,
     judged_at: Option<OffsetDateTime>,
 }
@@ -44,6 +57,7 @@ pub struct SubmissionListItem {
     language: String,
     status: String,
     score: Option<i16>,
+    run_kind: String,
     created_at: OffsetDateTime,
     judged_at: Option<OffsetDateTime>,
 }
@@ -160,7 +174,8 @@ async fn submission_view(
         r#"
         SELECT submission.id, problem.slug AS problem_slug, problem.title_ko AS problem_title,
                submission.language, submission.source, submission.status, submission.score,
-               submission.compile_output, submission.created_at, submission.judged_at
+               submission.compile_output, submission.run_kind, submission.run_output,
+               submission.created_at, submission.judged_at
         FROM submissions submission
         JOIN problems problem ON problem.id = submission.problem_id
         WHERE submission.id = $1
@@ -182,6 +197,50 @@ pub async fn create(
     headers: HeaderMap,
     Json(request): Json<CreateSubmissionRequest>,
 ) -> Result<Response, SubmissionError> {
+    enqueue(&state, &headers, request, "formal", None).await
+}
+
+pub async fn create_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateRunRequest>,
+) -> Result<Response, SubmissionError> {
+    if !matches!(request.mode.as_str(), "sample" | "custom")
+        || (request.mode == "sample" && request.custom_input.is_some())
+        || (request.mode == "custom" && request.custom_input.is_none())
+        || request
+            .custom_input
+            .as_ref()
+            .is_some_and(|input| input.len() > 65_536)
+    {
+        return Err(SubmissionError::InvalidInput(
+            "샘플 실행 또는 64KB 이하의 사용자 입력을 선택해 주세요",
+        ));
+    }
+    let run_kind = request.mode.clone();
+    let submission = CreateSubmissionRequest {
+        problem_slug: request.problem_slug,
+        language: request.language,
+        source: request.source,
+        idempotency_key: request.idempotency_key,
+    };
+    enqueue(
+        &state,
+        &headers,
+        submission,
+        &run_kind,
+        request.custom_input,
+    )
+    .await
+}
+
+async fn enqueue(
+    state: &AppState,
+    headers: &HeaderMap,
+    request: CreateSubmissionRequest,
+    run_kind: &str,
+    custom_input: Option<String>,
+) -> Result<Response, SubmissionError> {
     if !valid_language(&request.language) {
         return Err(SubmissionError::InvalidInput(
             "지원 언어는 C++20, Python 3, Java 21입니다",
@@ -192,8 +251,8 @@ pub async fn create(
             "소스 코드는 1바이트 이상 100KB 이하여야 합니다",
         ));
     }
-    let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
-    require_active_terms(&state, user_id).await?;
+    let user_id = crate::auth::authenticated_user_id_with_csrf(state, headers).await?;
+    require_active_terms(state, user_id).await?;
     if let Some(existing_id) = sqlx::query_scalar::<_, Uuid>(
         "SELECT id FROM submissions WHERE user_id = $1 AND idempotency_key = $2",
     )
@@ -204,7 +263,7 @@ pub async fn create(
     {
         return Ok((
             StatusCode::OK,
-            Json(submission_view(&state, user_id, existing_id).await?),
+            Json(submission_view(state, user_id, existing_id).await?),
         )
             .into_response());
     }
@@ -225,7 +284,7 @@ pub async fn create(
         transaction.commit().await?;
         return Ok((
             StatusCode::OK,
-            Json(submission_view(&state, user_id, existing_id).await?),
+            Json(submission_view(state, user_id, existing_id).await?),
         )
             .into_response());
     }
@@ -249,8 +308,9 @@ pub async fn create(
     sqlx::query(
         r#"
         INSERT INTO submissions (
-            id, user_id, problem_id, problem_revision_id, language, source, idempotency_key
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            id, user_id, problem_id, problem_revision_id, language, source,
+            idempotency_key, run_kind, custom_input
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         "#,
     )
     .bind(submission_id)
@@ -260,6 +320,8 @@ pub async fn create(
     .bind(&request.language)
     .bind(&request.source)
     .bind(request.idempotency_key)
+    .bind(run_kind)
+    .bind(custom_input)
     .execute(&mut *transaction)
     .await?;
     sqlx::query("INSERT INTO judge_jobs (submission_id) VALUES ($1)")
@@ -274,7 +336,7 @@ pub async fn create(
 
     Ok((
         StatusCode::CREATED,
-        Json(submission_view(&state, user_id, submission_id).await?),
+        Json(submission_view(state, user_id, submission_id).await?),
     )
         .into_response())
 }
@@ -365,7 +427,7 @@ pub async fn list(
     let items = sqlx::query_as::<_, SubmissionListItem>(
         r#"
         SELECT submission.id, problem.slug AS problem_slug, problem.title_ko AS problem_title,
-               submission.language, submission.status, submission.score,
+               submission.language, submission.status, submission.score, submission.run_kind,
                submission.created_at, submission.judged_at
         FROM submissions submission
         JOIN problems problem ON problem.id = submission.problem_id

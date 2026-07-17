@@ -84,6 +84,8 @@ pub struct LeasedJob {
     pub memory_limit_mb: i32,
     pub checker_kind: String,
     pub float_tolerance: Option<f64>,
+    pub run_kind: String,
+    pub custom_input: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -207,7 +209,8 @@ pub async fn lease_next_job(
                job.attempt_count AS attempt, submission.language, submission.source,
                submission.problem_id, submission.problem_revision_id,
                revision.time_limit_ms, revision.memory_limit_mb,
-               revision.checker_kind, revision.float_tolerance
+               revision.checker_kind, revision.float_tolerance,
+               submission.run_kind, submission.custom_input
         FROM judge_jobs job
         JOIN submissions submission ON submission.id = job.submission_id
         JOIN problem_revisions revision ON revision.id = submission.problem_revision_id
@@ -224,16 +227,19 @@ pub async fn lease_next_job(
 pub async fn load_test_cases(
     pool: &PgPool,
     problem_id: Uuid,
+    run_kind: &str,
 ) -> Result<Vec<JudgeTestCase>, QueueError> {
     Ok(sqlx::query_as::<_, JudgeTestCase>(
         r#"
         SELECT ordinal, input, expected_output, score_weight, group_key
         FROM problem_test_cases
         WHERE problem_id = $1
+          AND ($2 <> 'sample' OR visibility = 'sample')
         ORDER BY ordinal
         "#,
     )
     .bind(problem_id)
+    .bind(run_kind)
     .fetch_all(pool)
     .await?)
 }
@@ -272,11 +278,35 @@ pub async fn complete_job(
     score: i16,
     compile_output: Option<String>,
 ) -> Result<(), QueueError> {
+    complete_job_with_output(
+        pool,
+        job_id,
+        lease_token,
+        verdict,
+        score,
+        compile_output,
+        None,
+    )
+    .await
+}
+
+pub async fn complete_job_with_output(
+    pool: &PgPool,
+    job_id: Uuid,
+    lease_token: Uuid,
+    verdict: Verdict,
+    score: i16,
+    compile_output: Option<String>,
+    run_output: Option<String>,
+) -> Result<(), QueueError> {
     if !(0..=100).contains(&score)
         || (verdict == Verdict::Accepted && score != 100)
         || compile_output
             .as_ref()
             .is_some_and(|output| output.len() > 16_384)
+        || run_output
+            .as_ref()
+            .is_some_and(|output| output.len() > 1_048_576)
     {
         return Err(QueueError::InvalidVerdict);
     }
@@ -296,12 +326,13 @@ pub async fn complete_job(
     .await?
     .ok_or(QueueError::LeaseLost)?;
     sqlx::query(
-        "UPDATE submissions SET status = $2, score = $3, compile_output = $4, judged_at = now() WHERE id = $1 AND judged_at IS NULL",
+        "UPDATE submissions SET status = $2, score = $3, compile_output = $4, run_output = $5, judged_at = now() WHERE id = $1 AND judged_at IS NULL",
     )
     .bind(submission_id)
     .bind(verdict.as_str())
     .bind(score)
     .bind(compile_output)
+    .bind(run_output)
     .execute(&mut *transaction)
     .await?;
     sqlx::query("INSERT INTO submission_events (submission_id, status) VALUES ($1, $2)")

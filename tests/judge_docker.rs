@@ -18,6 +18,8 @@ fn job(language: &str, source: &str, time_limit_ms: i32, memory_limit_mb: i32) -
         memory_limit_mb,
         checker_kind: "whitespace".to_owned(),
         float_tolerance: None,
+        run_kind: "formal".to_owned(),
+        custom_input: None,
     }
 }
 
@@ -65,6 +67,17 @@ async fn three_languages_and_abuse_cases_receive_real_sandbox_verdicts() {
         .await,
         Verdict::Accepted
     );
+    let mut custom = job(
+        "python3",
+        "values=list(map(int,input().split()))\nprint(sum(values))\n",
+        1000,
+        256,
+    );
+    custom.run_kind = "custom".to_owned();
+    custom.custom_input = Some("4 5 6\n".to_owned());
+    let custom_outcome = sandbox.judge(&custom, &cases()).await.unwrap();
+    assert_eq!(custom_outcome.verdict, Verdict::Accepted);
+    assert_eq!(custom_outcome.run_output.as_deref(), Some("15\n"));
     assert_eq!(
         verdict(
             &sandbox,

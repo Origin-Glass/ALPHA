@@ -48,6 +48,7 @@ pub struct JudgeOutcome {
     pub verdict: Verdict,
     pub score: i16,
     pub compile_output: Option<String>,
+    pub run_output: Option<String>,
 }
 
 pub struct DockerSandbox {
@@ -276,6 +277,7 @@ impl DockerSandbox {
                 verdict: Verdict::SystemError,
                 score: 0,
                 compile_output: None,
+                run_output: None,
             });
         }
         let workspace = tempfile::Builder::new().prefix("alpha-judge-").tempdir()?;
@@ -307,6 +309,7 @@ impl DockerSandbox {
                     verdict: Verdict::CompileError,
                     score: 0,
                     compile_output: Some(String::from_utf8_lossy(&stderr).into_owned()),
+                    run_output: None,
                 });
             }
             ContainerResult::Timeout => {
@@ -314,6 +317,7 @@ impl DockerSandbox {
                     verdict: Verdict::CompileError,
                     score: 0,
                     compile_output: Some("컴파일 제한 시간을 초과했습니다".to_owned()),
+                    run_output: None,
                 });
             }
             ContainerResult::OutputLimit => {
@@ -321,6 +325,7 @@ impl DockerSandbox {
                     verdict: Verdict::CompileError,
                     score: 0,
                     compile_output: Some("컴파일 출력 제한을 초과했습니다".to_owned()),
+                    run_output: None,
                 });
             }
             ContainerResult::SystemError => {
@@ -328,8 +333,73 @@ impl DockerSandbox {
                     verdict: Verdict::SystemError,
                     score: 0,
                     compile_output: None,
+                    run_output: None,
                 });
             }
+        }
+
+        if job.run_kind == "custom" {
+            let run_name = format!("alpha-{}-custom", job.job_id.simple());
+            let execution = self
+                .execute_container(
+                    &run_name,
+                    workspace.path(),
+                    &run_command,
+                    job.custom_input.as_deref().unwrap_or_default().as_bytes(),
+                    ExecutionLimits {
+                        memory_mb: job.memory_limit_mb,
+                        timeout: Duration::from_millis(
+                            u64::try_from(job.time_limit_ms).unwrap_or(30_000) + 250,
+                        ),
+                        stdout_bytes: STDOUT_LIMIT,
+                        stderr_bytes: STDERR_LIMIT,
+                    },
+                )
+                .await?;
+            return Ok(match execution {
+                ContainerResult::Timeout => JudgeOutcome {
+                    verdict: Verdict::TimeLimitExceeded,
+                    score: 0,
+                    compile_output: None,
+                    run_output: None,
+                },
+                ContainerResult::OutputLimit => JudgeOutcome {
+                    verdict: Verdict::OutputLimitExceeded,
+                    score: 0,
+                    compile_output: None,
+                    run_output: None,
+                },
+                ContainerResult::Exited {
+                    oom_killed: true, ..
+                } => JudgeOutcome {
+                    verdict: Verdict::MemoryLimitExceeded,
+                    score: 0,
+                    compile_output: None,
+                    run_output: None,
+                },
+                ContainerResult::Exited {
+                    success: false,
+                    stderr,
+                    ..
+                } => JudgeOutcome {
+                    verdict: Verdict::RuntimeError,
+                    score: 0,
+                    compile_output: None,
+                    run_output: Some(String::from_utf8_lossy(&stderr).into_owned()),
+                },
+                ContainerResult::Exited { stdout, .. } => JudgeOutcome {
+                    verdict: Verdict::Accepted,
+                    score: 100,
+                    compile_output: None,
+                    run_output: Some(String::from_utf8_lossy(&stdout).into_owned()),
+                },
+                ContainerResult::SystemError => JudgeOutcome {
+                    verdict: Verdict::SystemError,
+                    score: 0,
+                    compile_output: None,
+                    run_output: None,
+                },
+            });
         }
 
         let checker = match job.checker_kind.as_str() {
@@ -343,6 +413,7 @@ impl DockerSandbox {
                     verdict: Verdict::SystemError,
                     score: 0,
                     compile_output: None,
+                    run_output: None,
                 });
             }
         };
@@ -373,6 +444,7 @@ impl DockerSandbox {
                         verdict: Verdict::TimeLimitExceeded,
                         score: 0,
                         compile_output: None,
+                        run_output: None,
                     });
                 }
                 ContainerResult::OutputLimit => {
@@ -380,6 +452,7 @@ impl DockerSandbox {
                         verdict: Verdict::OutputLimitExceeded,
                         score: 0,
                         compile_output: None,
+                        run_output: None,
                     });
                 }
                 ContainerResult::Exited {
@@ -389,6 +462,7 @@ impl DockerSandbox {
                         verdict: Verdict::MemoryLimitExceeded,
                         score: 0,
                         compile_output: None,
+                        run_output: None,
                     });
                 }
                 ContainerResult::Exited { success: false, .. } => {
@@ -396,6 +470,7 @@ impl DockerSandbox {
                         verdict: Verdict::RuntimeError,
                         score: 0,
                         compile_output: None,
+                        run_output: None,
                     });
                 }
                 ContainerResult::Exited { stdout, .. } => {
@@ -411,6 +486,7 @@ impl DockerSandbox {
                         verdict: Verdict::SystemError,
                         score: 0,
                         compile_output: None,
+                        run_output: None,
                     });
                 }
             }
@@ -433,6 +509,7 @@ impl DockerSandbox {
             verdict,
             score,
             compile_output: None,
+            run_output: None,
         })
     }
 }
