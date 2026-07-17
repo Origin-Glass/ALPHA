@@ -21,6 +21,8 @@ cargo run --bin api
 
 API는 시작할 때 대기 중인 데이터베이스 마이그레이션을 적용합니다. 생존 상태는 `/health/live`, DB를 포함한 준비 상태는 `/health/ready`에서 확인합니다.
 
+Google·GitHub OAuth는 각 provider의 client id와 secret을 모두 설정해야 활성화됩니다. 운영 OAuth의 `PUBLIC_BASE_URL`은 HTTPS만 허용합니다. `TEST_IDENTITY_ENABLED=true`는 development/test에서만 사용할 수 있고 production 시작 단계에서 거부됩니다.
+
 ```bash
 cd web
 npm ci

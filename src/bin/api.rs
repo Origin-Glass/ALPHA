@@ -22,6 +22,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db::migrate(&pool).await?;
 
     info!(%address, app_env = %settings.app_env, "ALPHA API 시작");
-    axum::serve(listener, alpha::http::router(AppState::new(pool))).await?;
+    axum::serve(listener, alpha::http::router(AppState::new(pool, settings))).await?;
     Ok(())
 }

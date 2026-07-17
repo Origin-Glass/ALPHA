@@ -1,4 +1,7 @@
+import { useEffect, useState } from 'react';
 import './styles.css';
+import LoginPage from './LoginPage';
+import TermsPage from './TermsPage';
 
 const learningAxes = [
   { number: '01', title: '알고리즘 추론', description: '정답보다 사고 과정을 단단하게 만듭니다.' },
@@ -15,7 +18,40 @@ const navigation = [
   { href: '/rankings', label: '랭킹' },
 ];
 
-function App() {
+type SessionUser = { handle: string; terms_accepted: boolean };
+
+function SessionControl() {
+  const [user, setUser] = useState<SessionUser | null>(null);
+
+  useEffect(() => {
+    fetch('/api/v1/auth/me', { credentials: 'include' })
+      .then((response) => response.ok ? response.json() : null)
+      .then(setUser)
+      .catch(() => setUser(null));
+  }, []);
+
+  if (!user) return <a className="login-button" href="/login">로그인</a>;
+
+  const logout = async () => {
+    const csrf = document.cookie.split(';').map((cookie) => cookie.trim())
+      .find((cookie) => cookie.startsWith('alpha_csrf='))?.slice('alpha_csrf='.length) ?? '';
+    const response = await fetch('/api/v1/auth/logout', {
+      method: 'POST', credentials: 'include', headers: { 'x-csrf-token': csrf },
+    });
+    if (response.ok) window.location.assign('/');
+  };
+
+  return (
+    <div className="session-control">
+      {!user.terms_accepted && <a href="/terms">약관 확인</a>}
+      <span>{user.handle}</span>
+      <button type="button" onClick={logout}>로그아웃</button>
+    </div>
+  );
+}
+
+function LandingPage() {
+
   return (
     <div className="app-shell">
       <header className="site-header">
@@ -31,7 +67,7 @@ function App() {
             {navigation.map((item) => <a href={item.href} key={item.href}>{item.label}</a>)}
           </nav>
         </details>
-        <a className="login-button" href="/login">로그인</a>
+        <SessionControl />
       </header>
 
       <main>
@@ -93,6 +129,12 @@ function App() {
       <footer><strong>ALPHA</strong><span>한국어 우선 소프트웨어 학습 플랫폼</span></footer>
     </div>
   );
+}
+
+function App() {
+  if (window.location.pathname === '/login') return <LoginPage />;
+  if (window.location.pathname === '/terms') return <TermsPage />;
+  return <LandingPage />;
 }
 
 export default App;

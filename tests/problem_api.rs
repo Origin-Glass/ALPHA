@@ -41,7 +41,7 @@ async fn public_problem_detail_never_leaks_hidden_tests(pool: PgPool) {
     .await
     .unwrap();
 
-    let response = router(AppState::new(pool))
+    let response = router(AppState::for_test(pool))
         .oneshot(
             Request::builder()
                 .uri("/api/v1/problems/hidden-case-contract")
@@ -107,7 +107,7 @@ async fn catalog_pagination_has_no_duplicates_and_excludes_drafts(pool: PgPool) 
         .unwrap();
     }
 
-    let app = router(AppState::new(pool));
+    let app = router(AppState::for_test(pool));
     let first_response = app
         .clone()
         .oneshot(

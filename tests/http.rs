@@ -8,7 +8,7 @@ async fn liveness_reports_the_running_api() {
     let pool = PgPoolOptions::new()
         .connect_lazy("postgres://alpha:alpha@127.0.0.1:1/alpha")
         .unwrap();
-    let response = alpha::http::router(alpha::http::AppState::new(pool))
+    let response = alpha::http::router(alpha::http::AppState::for_test(pool))
         .oneshot(
             Request::get("/health/live")
                 .body(axum::body::Body::empty())

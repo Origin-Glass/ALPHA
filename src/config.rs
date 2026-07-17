@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Settings {
     pub app_env: String,
     pub database_url: String,
@@ -10,6 +10,11 @@ pub struct Settings {
     pub test_identity_enabled: bool,
     pub payments_enabled: bool,
     pub payment_provider: String,
+    pub public_base_url: String,
+    pub google_client_id: String,
+    pub google_client_secret: String,
+    pub github_client_id: String,
+    pub github_client_secret: String,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -22,6 +27,12 @@ pub enum ConfigError {
     MissingDatabaseUrl,
     #[error("production SESSION_SECRET은 32바이트 이상이어야 합니다")]
     ShortSessionSecret,
+    #[error("{0} OAuth client id와 secret은 함께 설정해야 합니다")]
+    IncompleteOauthProvider(&'static str),
+    #[error("OAuth를 설정하려면 PUBLIC_BASE_URL이 필요합니다")]
+    MissingPublicBaseUrl,
+    #[error("production OAuth PUBLIC_BASE_URL은 https://로 시작해야 합니다")]
+    InsecureOauthPublicBaseUrl,
 }
 
 impl Settings {
@@ -56,6 +67,28 @@ impl Settings {
         if payments_enabled && (payment_provider.is_empty() || payment_provider == "disabled") {
             return Err(ConfigError::MissingPaymentProvider);
         }
+        let google_client_id = value("GOOGLE_CLIENT_ID");
+        let google_client_secret = value("GOOGLE_CLIENT_SECRET");
+        if google_client_id.is_empty() != google_client_secret.is_empty() {
+            return Err(ConfigError::IncompleteOauthProvider("Google"));
+        }
+        let github_client_id = value("GITHUB_CLIENT_ID");
+        let github_client_secret = value("GITHUB_CLIENT_SECRET");
+        if github_client_id.is_empty() != github_client_secret.is_empty() {
+            return Err(ConfigError::IncompleteOauthProvider("GitHub"));
+        }
+        let public_base_url = value("PUBLIC_BASE_URL");
+        if public_base_url.is_empty()
+            && (!google_client_id.is_empty() || !github_client_id.is_empty())
+        {
+            return Err(ConfigError::MissingPublicBaseUrl);
+        }
+        if app_env == "production"
+            && (!google_client_id.is_empty() || !github_client_id.is_empty())
+            && !public_base_url.starts_with("https://")
+        {
+            return Err(ConfigError::InsecureOauthPublicBaseUrl);
+        }
 
         Ok(Self {
             app_env,
@@ -64,6 +97,11 @@ impl Settings {
             test_identity_enabled,
             payments_enabled,
             payment_provider,
+            public_base_url,
+            google_client_id,
+            google_client_secret,
+            github_client_id,
+            github_client_secret,
         })
     }
 }
