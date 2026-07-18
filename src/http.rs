@@ -107,6 +107,14 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(crate::governance::cancel_data_request),
         )
         .route(
+            "/api/v1/content/providers",
+            axum::routing::post(crate::content_factory::create_provider),
+        )
+        .route(
+            "/api/v1/content/jobs",
+            axum::routing::post(crate::content_factory::create_job),
+        )
+        .route(
             "/api/v1/auth/{provider}/start",
             get(crate::auth::oauth_start),
         )

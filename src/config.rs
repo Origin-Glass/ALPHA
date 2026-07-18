@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
@@ -17,6 +17,8 @@ pub struct Settings {
     pub github_client_secret: String,
     pub solved_ac_enabled: bool,
     pub trust_proxy_headers: bool,
+    pub content_ai_enabled: bool,
+    content_ai_credentials: HashSet<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -56,6 +58,17 @@ impl Settings {
         let payment_provider = value("PAYMENT_PROVIDER");
         let solved_ac_enabled = value("SOLVED_AC_ENABLED") == "true";
         let trust_proxy_headers = value("TRUST_PROXY_HEADERS") == "true";
+        let content_ai_enabled = value("CONTENT_AI_ENABLED") == "true";
+        let content_ai_credentials = [
+            "CONTENT_AI_CUSTOM_API_KEY",
+            "OPENROUTER_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+        ]
+        .into_iter()
+        .filter(|name| !value(name).is_empty())
+        .map(str::to_owned)
+        .collect();
 
         if app_env == "production" && test_identity_enabled {
             return Err(ConfigError::ProductionTestIdentity);
@@ -108,6 +121,12 @@ impl Settings {
             github_client_secret,
             solved_ac_enabled,
             trust_proxy_headers,
+            content_ai_enabled,
+            content_ai_credentials,
         })
+    }
+
+    pub fn has_content_ai_credential(&self, name: &str) -> bool {
+        self.content_ai_credentials.contains(name)
     }
 }
