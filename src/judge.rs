@@ -5,6 +5,8 @@ use sqlx::{FromRow, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+pub const MAX_JOB_LEASE: Duration = Duration::from_secs(7_200);
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Verdict {
@@ -166,8 +168,12 @@ pub async fn lease_next_job(
     .await?;
 
     let lease_token = Uuid::now_v7();
-    let lease_seconds = i64::try_from(visibility_timeout.as_secs().clamp(5, 3600))
-        .expect("제한된 초 값은 i64에 들어간다");
+    let lease_seconds = i64::try_from(
+        visibility_timeout
+            .as_secs()
+            .clamp(5, MAX_JOB_LEASE.as_secs()),
+    )
+    .expect("제한된 초 값은 i64에 들어간다");
     let lease_expires_at = OffsetDateTime::now_utc() + time::Duration::seconds(lease_seconds);
     let leased: Option<(Uuid, Uuid, i16)> = sqlx::query_as(
         r#"

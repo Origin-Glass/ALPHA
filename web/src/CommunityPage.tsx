@@ -104,7 +104,7 @@ function CommunityPage() {
       <main className="community-page">
         <div className="community-hero">
           <div>
-            <p className="eyebrow">ALPHA COMMUNITY</p>
+            <p className="eyebrow">ALPHA 커뮤니티</p>
             <h1>
               답보다 먼저,
               <br />
@@ -164,7 +164,7 @@ function CommunityPage() {
 
         <section className="community-compose">
           <div>
-            <p className="eyebrow">SHARE YOUR CONTEXT</p>
+            <p className="eyebrow">맥락 공유하기</p>
             <h2>질문 또는 토론 열기</h2>
             <p>정답 코드 대신 재현 조건, 시도한 방법, 예상과 실제의 차이를 적어 주세요.</p>
           </div>

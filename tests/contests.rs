@@ -12,7 +12,7 @@ use axum::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use time::{Duration, OffsetDateTime};
+use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -103,16 +103,17 @@ async fn seed_submission(
 #[sqlx::test(migrations = "./migrations")]
 async fn private_contest_stays_hidden_until_the_invite_code_is_verified(pool: PgPool) {
     let now = OffsetDateTime::now_utc();
+    let invite_code = "0123456789abcdefghijklmnopqrstuv";
     sqlx::query(
         "UPDATE contests SET visibility = 'private', join_code_hash = $1, starts_at = $2, freezes_at = NULL, ends_at = $3 WHERE slug = 'alpha-launch-sprint'",
     )
-    .bind(Sha256::digest(b"alpha-invite").to_vec())
+    .bind(Sha256::digest(invite_code.as_bytes()).to_vec())
     .bind(now - Duration::hours(1))
     .bind(now + Duration::hours(1))
     .execute(&pool)
     .await
     .unwrap();
-    let (app, _user_id, cookie, csrf) = authenticated_app(pool, "private-contest").await;
+    let (app, user_id, cookie, csrf) = authenticated_app(pool.clone(), "private-contest").await;
     let detail = || {
         Request::get("/api/v1/contests/alpha-launch-sprint")
             .header(header::COOKIE, &cookie)
@@ -147,16 +148,190 @@ async fn private_contest_stays_hidden_until_the_invite_code_is_verified(pool: Pg
                 .header(header::COOKIE, &cookie)
                 .header("x-csrf-token", &csrf)
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(json!({"join_code": "alpha-invite"}).to_string()))
+                .body(Body::from(json!({"join_code": invite_code}).to_string()))
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(joined.status(), StatusCode::NO_CONTENT);
     assert_eq!(
-        app.oneshot(detail()).await.unwrap().status(),
+        app.clone().oneshot(detail()).await.unwrap().status(),
         StatusCode::OK
     );
+    sqlx::query("UPDATE contest_registrations SET status = 'disqualified' WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let rejoin = app
+        .oneshot(
+            Request::post("/api/v1/contests/alpha-launch-sprint/join")
+                .header(header::COOKIE, cookie)
+                .header("x-csrf-token", csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"join_code": invite_code}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejoin.status(), StatusCode::FORBIDDEN);
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM contest_registrations WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "disqualified");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn private_contest_creation_issues_a_server_generated_192_bit_code(pool: PgPool) {
+    let now = OffsetDateTime::now_utc();
+    let (app, manager_id, cookie, csrf) = authenticated_app(pool.clone(), "token-manager").await;
+    sqlx::query("INSERT INTO user_roles (user_id, role) VALUES ($1, 'CONTEST_MANAGER')")
+        .bind(manager_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let starts_at = (now + Duration::hours(1)).format(&Rfc3339).unwrap();
+    let ends_at = (now + Duration::hours(2)).format(&Rfc3339).unwrap();
+    let body = |join_code: Option<&str>| {
+        json!({
+            "slug": "generated-private-contest",
+            "title": "서버 발급 초대 대회",
+            "description": "예측 가능한 운영자 코드를 받지 않습니다.",
+            "visibility": "private",
+            "organization_id": null,
+            "join_code": join_code,
+            "scoring_mode": "icpc",
+            "starts_at": starts_at,
+            "freezes_at": null,
+            "ends_at": ends_at,
+            "problem_slugs": ["alpha-pair-sum"]
+        })
+        .to_string()
+    };
+    let create = |body: String| {
+        Request::post("/api/v1/admin/contests")
+            .header(header::COOKIE, &cookie)
+            .header("x-csrf-token", &csrf)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    assert_eq!(
+        app.clone()
+            .oneshot(create(body(Some("1234"))))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let created = app.oneshot(create(body(None))).await.unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: Value =
+        serde_json::from_slice(&to_bytes(created.into_body(), 16_384).await.unwrap()).unwrap();
+    let code = created["join_code"].as_str().unwrap();
+    assert_eq!(code.len(), 32);
+    assert!(
+        code.bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    );
+    let stored: Vec<u8> = sqlx::query_scalar("SELECT join_code_hash FROM contests WHERE slug = $1")
+        .bind("generated-private-contest")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, Sha256::digest(code.as_bytes()).to_vec());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn private_contest_failures_lock_one_account_and_the_whole_contest(pool: PgPool) {
+    let now = OffsetDateTime::now_utc();
+    let invite_code = "0123456789abcdefghijklmnopqrstuv";
+    let contest_id: Uuid = sqlx::query_scalar(
+        "UPDATE contests SET visibility = 'private', join_code_hash = $1, starts_at = $2, freezes_at = NULL, ends_at = $3 WHERE slug = 'alpha-launch-sprint' RETURNING id",
+    )
+    .bind(Sha256::digest(invite_code.as_bytes()).to_vec())
+    .bind(now - Duration::hours(1))
+    .bind(now + Duration::hours(1))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let (first_app, first_id, first_cookie, first_csrf) =
+        authenticated_app(pool.clone(), "failed-join-first").await;
+    let request = |cookie: &str, csrf: &str, code: &str| {
+        Request::post("/api/v1/contests/alpha-launch-sprint/join")
+            .header(header::COOKIE, cookie)
+            .header("x-csrf-token", csrf)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({"join_code": code}).to_string()))
+            .unwrap()
+    };
+    for _ in 0..5 {
+        assert_eq!(
+            first_app
+                .clone()
+                .oneshot(request(&first_cookie, &first_csrf, "wrong"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(
+        first_app
+            .oneshot(request(&first_cookie, &first_csrf, invite_code))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let user_budget: (i32, bool) = sqlx::query_as(
+        "SELECT failures, locked_until > now() FROM contest_join_user_failures WHERE contest_id = $1 AND user_id = $2",
+    )
+    .bind(contest_id)
+    .bind(first_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(user_budget, (5, true));
+
+    sqlx::query(
+        "UPDATE contest_join_global_failures SET failures = 59, window_started_at = now(), locked_until = NULL WHERE contest_id = $1",
+    )
+    .bind(contest_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (second_app, _, second_cookie, second_csrf) =
+        authenticated_app(pool.clone(), "failed-join-second").await;
+    assert_eq!(
+        second_app
+            .oneshot(request(&second_cookie, &second_csrf, "wrong"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let (third_app, _, third_cookie, third_csrf) =
+        authenticated_app(pool.clone(), "failed-join-third").await;
+    assert_eq!(
+        third_app
+            .oneshot(request(&third_cookie, &third_csrf, invite_code))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let global_budget: (i32, bool) = sqlx::query_as(
+        "SELECT failures, locked_until > now() FROM contest_join_global_failures WHERE contest_id = $1",
+    )
+    .bind(contest_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(global_budget, (60, true));
 }
 
 #[sqlx::test(migrations = "./migrations")]

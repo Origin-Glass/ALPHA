@@ -3,7 +3,7 @@ use std::{collections::HashMap, time::Duration};
 use alpha::{
     config::Settings,
     http::{AppState, router},
-    judge::{Checker, Verdict, complete_job, lease_next_job},
+    judge::{Checker, MAX_JOB_LEASE, Verdict, complete_job, lease_next_job},
 };
 use axum::{
     body::{Body, to_bytes},
@@ -100,9 +100,169 @@ async fn submission_idempotency_creates_exactly_one_queue_job(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn pending_job_budget_backpressures_one_user_then_recovers(pool: PgPool) {
+    let (app, _, cookie, csrf) = authenticated_app(pool.clone()).await;
+    let submit = || {
+        Request::post("/api/v1/submissions")
+            .header(header::COOKIE, &cookie)
+            .header("x-csrf-token", &csrf)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({
+                    "problem_slug": "alpha-pair-sum", "language": "python3",
+                    "source": "print(sum(map(int,input().split())))",
+                    "idempotency_key": Uuid::now_v7()
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    for _ in 0..4 {
+        assert_eq!(
+            app.clone().oneshot(submit()).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+    }
+    assert_eq!(
+        app.clone().oneshot(submit()).await.unwrap().status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+
+    let completed = lease_next_job(&pool, "capacity-worker", Duration::from_secs(30))
+        .await
+        .unwrap()
+        .unwrap();
+    complete_job(
+        &pool,
+        completed.job_id,
+        completed.lease_token,
+        Verdict::WrongAnswer,
+        0,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        app.oneshot(submit()).await.unwrap().status(),
+        StatusCode::CREATED
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn global_queue_budget_rejects_new_work_before_persisting_it(pool: PgPool) {
+    let backlog_user: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (handle, display_name) VALUES ('queue-backlog', '대기열 사용자') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let (problem_id, revision_id): (Uuid, Uuid) = sqlx::query_as(
+        "SELECT id, current_revision_id FROM problems WHERE slug = 'alpha-pair-sum'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"
+        INSERT INTO submissions (
+            id, user_id, problem_id, problem_revision_id, language, source, idempotency_key
+        )
+        SELECT gen_random_uuid(), $1, $2, $3, 'python3', 'print(0)', gen_random_uuid()
+        FROM generate_series(1, 200)
+        "#,
+    )
+    .bind(backlog_user)
+    .bind(problem_id)
+    .bind(revision_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO judge_jobs (submission_id) SELECT id FROM submissions")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (app, _, cookie, csrf) = authenticated_app(pool.clone()).await;
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/submissions")
+                .header(header::COOKIE, cookie)
+                .header("x-csrf-token", csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "problem_slug": "alpha-pair-sum", "language": "python3",
+                        "source": "print(3)", "idempotency_key": Uuid::now_v7()
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let submissions: i64 = sqlx::query_scalar("SELECT count(*) FROM submissions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(submissions, 200);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn sse_connection_budget_is_released_when_a_stream_closes(pool: PgPool) {
+    let (app, _, cookie, csrf) = authenticated_app(pool).await;
+    let created = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/submissions")
+                .header(header::COOKIE, &cookie)
+                .header("x-csrf-token", csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "problem_slug": "alpha-pair-sum", "language": "python3",
+                        "source": "print(3)", "idempotency_key": Uuid::now_v7()
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let created: Value =
+        serde_json::from_slice(&to_bytes(created.into_body(), 16_384).await.unwrap()).unwrap();
+    let path = format!(
+        "/api/v1/submissions/{}/events",
+        created["id"].as_str().unwrap()
+    );
+    let stream = || {
+        Request::get(&path)
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let mut open = Vec::new();
+    for _ in 0..4 {
+        let response = app.clone().oneshot(stream()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        open.push(response);
+    }
+    assert_eq!(
+        app.clone().oneshot(stream()).await.unwrap().status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    open.pop();
+    assert_eq!(
+        app.oneshot(stream()).await.unwrap().status(),
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn sample_run_is_queued_without_becoming_a_formal_submission(pool: PgPool) {
     let (app, _, cookie, csrf) = authenticated_app(pool.clone()).await;
     let response = app
+        .clone()
         .oneshot(
             Request::post("/api/v1/runs")
                 .header(header::COOKIE, cookie)
@@ -309,10 +469,11 @@ async fn audited_admin_rejudge_returns_terminal_formal_submission_to_queue(pool:
         .unwrap();
 
     let response = app
+        .clone()
         .oneshot(
             Request::post("/api/v1/admin/problems/alpha-pair-sum/rejudge")
-                .header(header::COOKIE, cookie)
-                .header("x-csrf-token", csrf)
+                .header(header::COOKIE, &cookie)
+                .header("x-csrf-token", &csrf)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     json!({"reason": "테스트 데이터 교정 후 전체 재채점"}).to_string(),
@@ -338,6 +499,20 @@ async fn audited_admin_rejudge_returns_terminal_formal_submission_to_queue(pool:
     .await
     .unwrap();
     assert!(audited);
+    let duplicate = app
+        .oneshot(
+            Request::post("/api/v1/admin/problems/alpha-pair-sum/rejudge")
+                .header(header::COOKIE, cookie)
+                .header("x-csrf-token", csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"reason": "같은 문제의 중복 재채점 요청 차단"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(duplicate.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[test]
@@ -347,4 +522,11 @@ fn checkers_distinguish_formatting_tolerance_and_real_wrong_answers() {
     assert!(Checker::Whitespace.accepts("1  2\n3", "1 2 3\n"));
     assert!(Checker::Float { tolerance: 1e-6 }.accepts("0.3333334", "0.3333333"));
     assert!(!Checker::Float { tolerance: 1e-9 }.accepts("0.34", "0.33"));
+}
+
+#[test]
+fn production_lease_covers_the_largest_allowed_problem_budget() {
+    let compile_budget = Duration::from_secs(30);
+    let maximum_test_budget = Duration::from_millis(200 * (30_000 + 250));
+    assert!(MAX_JOB_LEASE >= compile_budget + maximum_test_budget);
 }

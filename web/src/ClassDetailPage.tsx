@@ -177,8 +177,8 @@ function ClassDetailPage({ classId }: { classId: string }) {
               <div>
                 <p className="eyebrow">
                   {detail.class.viewer_role === "INSTRUCTOR"
-                    ? "INSTRUCTOR CLASSROOM"
-                    : "MY CLASSROOM"}
+                    ? "강사 학급"
+                    : "내 학급"}
                 </p>
                 <h1>{detail.class.name}</h1>
                 <p>
@@ -314,7 +314,7 @@ function ClassDetailPage({ classId }: { classId: string }) {
                 </section>
                 <section className="assignment-create">
                   <div>
-                    <p className="eyebrow">PRIVATE PROBLEM SET</p>
+                    <p className="eyebrow">비공개 문제 세트</p>
                     <h2>새 과제 배정</h2>
                     <p>
                       항목은 쉼표로 구분해 <code>problem:슬러그</code> 또는{" "}

@@ -217,7 +217,7 @@ function AdminPage() {
       <main className="admin-page">
         <div className="admin-hero">
           <div>
-            <p className="eyebrow">ALPHA OPERATIONS</p>
+            <p className="eyebrow">ALPHA 운영</p>
             <h1>근거가 남는<br /><span>운영 콘솔</span></h1>
             <p>콘텐츠, 채점 워커, 감사 이벤트를 역할별 경계 안에서 관리합니다.</p>
           </div>
@@ -234,7 +234,7 @@ function AdminPage() {
         {canModerate && (
           <section className="admin-section">
             <div className="admin-section-heading">
-              <div><p className="eyebrow">MODERATION QUEUE</p><h2>열린 신고 {reports.length}건</h2></div>
+              <div><p className="eyebrow">신고 검토 대기열</p><h2>열린 신고 {reports.length}건</h2></div>
               <label><span>처리 근거</span><input value={resolutionNote} onChange={(event) => setResolutionNote(event.target.value)} placeholder="정책 조항과 판단 근거" /></label>
             </div>
             <div className="report-queue">
@@ -253,7 +253,7 @@ function AdminPage() {
 
         {canSetProblems && (
           <section className="admin-section problem-authoring">
-            <div><p className="eyebrow">REVISION-SAFE AUTHORING</p><h2>원본 문제 출제</h2><p>새 리비전은 이전 제출의 테스트를 바꾸지 않습니다. 출제자는 자신이 만든 문제만 개정할 수 있습니다.</p><form className="rejudge-form" onSubmit={rejudge}><h3>감사 가능한 재채점</h3><label><span>문제 식별자</span><input value={rejudgeSlug} onChange={(event) => setRejudgeSlug(event.target.value.toLowerCase())} required /></label><label><span>재채점 사유 · 10자 이상</span><textarea minLength={10} maxLength={500} value={rejudgeReason} onChange={(event) => setRejudgeReason(event.target.value)} required /></label><button type="submit">재채점 요청</button></form></div>
+            <div><p className="eyebrow">리비전 보존 출제</p><h2>원본 문제 출제</h2><p>새 리비전은 이전 제출의 테스트를 바꾸지 않습니다. 출제자는 자신이 만든 문제만 개정할 수 있습니다.</p><form className="rejudge-form" onSubmit={rejudge}><h3>감사 가능한 재채점</h3><label><span>문제 식별자</span><input value={rejudgeSlug} onChange={(event) => setRejudgeSlug(event.target.value.toLowerCase())} required /></label><label><span>재채점 사유 · 10자 이상</span><textarea minLength={10} maxLength={500} value={rejudgeReason} onChange={(event) => setRejudgeReason(event.target.value)} required /></label><button type="submit">재채점 요청</button></form></div>
             <form onSubmit={saveProblem}>
               <div className="admin-form-row">
                 <label><span>작업</span><select value={problemMode} onChange={(event) => setProblemMode(event.target.value as "create" | "revise")}><option value="create">새 문제</option><option value="revise">기존 문제 개정</option></select></label>
@@ -280,16 +280,16 @@ function AdminPage() {
           <>
             <section className="admin-grid">
               <section className="admin-section notice-authoring">
-                <p className="eyebrow">NOTICE</p><h2>공지 게시</h2>
+                <p className="eyebrow">공지</p><h2>공지 게시</h2>
                 <form onSubmit={createNotice}><label><span>제목</span><input value={noticeTitle} onChange={(event) => setNoticeTitle(event.target.value)} required /></label><label><span>내용</span><textarea value={noticeBody} onChange={(event) => setNoticeBody(event.target.value)} required /></label><label className="admin-check"><input type="checkbox" checked={noticePinned} onChange={(event) => setNoticePinned(event.target.checked)} /><span>상단 고정</span></label><button type="submit">공지 게시</button></form>
               </section>
               <section className="admin-section">
-                <p className="eyebrow">JUDGE WORKERS</p><h2>채점 워커</h2>
+                <p className="eyebrow">채점 워커</p><h2>채점 워커</h2>
                 <div className="worker-list">{workers.map((worker) => <article key={worker.worker_id}><div><strong>{worker.worker_id}</strong><span className={worker.health}>{worker.health === "healthy" ? "정상" : "응답 지연"}</span></div><small>{worker.status} · protocol {worker.protocol_version}</small><code>{worker.image_reference}</code><span>마지막 신호 {date(worker.last_heartbeat_at)}</span></article>)}{!workers.length && <p className="dashboard-empty">등록된 워커가 없습니다.</p>}</div>
               </section>
             </section>
             <section className="admin-section audit-section">
-              <p className="eyebrow">AUDIT TRAIL</p><h2>최근 감사 이벤트</h2>
+              <p className="eyebrow">감사 기록</p><h2>최근 감사 이벤트</h2>
               <div>{audits.map((audit) => <article key={audit.id}><span>{date(audit.occurred_at)}</span><strong>{audit.action}</strong><span>{audit.actor_handle ? `@${audit.actor_handle}` : "시스템"}</span><small>{audit.target_type} · {audit.target_id ?? "-"}</small></article>)}</div>
             </section>
           </>

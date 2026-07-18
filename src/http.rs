@@ -68,6 +68,10 @@ impl AppState {
     pub fn runtime(&self) -> &crate::observability::RuntimeMetrics {
         &self.runtime
     }
+
+    pub fn runtime_handle(&self) -> Arc<crate::observability::RuntimeMetrics> {
+        Arc::clone(&self.runtime)
+    }
 }
 
 pub fn router(state: AppState) -> Router {

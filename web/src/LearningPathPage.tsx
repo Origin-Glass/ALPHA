@@ -54,7 +54,7 @@ function LearningPathPage() {
       <main className="path-panel">
         {path ? (
           <>
-            <p className="eyebrow">PERSONAL LEARNING PATH</p>
+            <p className="eyebrow">개인 학습 경로</p>
             <h1>{path.track.title}</h1>
             <p className="path-description">{path.track.description}</p>
             <ol className="unit-list">
@@ -78,7 +78,7 @@ function LearningPathPage() {
           </>
         ) : needsDiagnostic ? (
           <section className="empty-path">
-            <p className="eyebrow">PATH NOT SET</p>
+            <p className="eyebrow">학습 경로 미설정</p>
             <h1>나에게 맞는<br /><span>출발점을 찾아요</span></h1>
             <p>네 가지 역량을 짧게 확인하면 첫 학습 경로를 추천합니다.</p>
             <a className="primary-action result-action" href="/onboarding">역량 진단 시작</a>

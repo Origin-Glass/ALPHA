@@ -363,4 +363,87 @@ async fn invitation_assignment_progress_and_export_keep_real_class_boundaries(po
     .await
     .unwrap();
     assert!(audited);
+
+    let pending_invitation = app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/classes/{class_id}/invitations"))
+                .header(header::COOKIE, &instructor_cookie)
+                .header("x-csrf-token", &instructor_csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"role": "learner", "expires_in_days": 7}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pending_invitation.status(), StatusCode::CREATED);
+    let pending_code = json_body(pending_invitation).await["code"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    sqlx::query("UPDATE organizations SET status = 'suspended' WHERE id = $1")
+        .bind(Uuid::parse_str(&organization_id).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    for path in [
+        format!("/api/v1/classes/{class_id}"),
+        format!("/api/v1/classes/{class_id}/instructor-dashboard"),
+        format!("/api/v1/classes/{class_id}/export.csv"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(path)
+                    .header(header::COOKIE, &instructor_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+    let blocked_invitation = app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/classes/{class_id}/invitations"))
+                .header(header::COOKIE, &instructor_cookie)
+                .header("x-csrf-token", &instructor_csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"role": "learner", "expires_in_days": 7}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked_invitation.status(), StatusCode::NOT_FOUND);
+    let blocked_class = app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/organizations/{organization_id}/classes"))
+                .header(header::COOKIE, &instructor_cookie)
+                .header("x-csrf-token", &instructor_csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"name": "정지 조직 학급"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked_class.status(), StatusCode::NOT_FOUND);
+    let blocked_accept = app
+        .oneshot(
+            Request::post("/api/v1/class-invitations/accept")
+                .header(header::COOKIE, outsider_cookie)
+                .header("x-csrf-token", outsider_csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"code": pending_code}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked_accept.status(), StatusCode::BAD_REQUEST);
 }

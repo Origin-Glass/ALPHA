@@ -88,7 +88,7 @@ function OnboardingPage() {
       <div className="learning-page">
         <PortalHeader />
         <main className="result-panel">
-          <p className="eyebrow">YOUR STARTING PATH</p>
+          <p className="eyebrow">내 시작 경로</p>
           <span className="result-kicker">가장 먼저 키울 역량</span>
           <h1>{result.recommended_track.title}</h1>
           <p className="result-description">{result.recommended_track.description}</p>
@@ -111,7 +111,7 @@ function OnboardingPage() {
       <main className="diagnostic-panel" aria-labelledby="diagnostic-title">
         <div className="diagnostic-heading">
           <div>
-            <p className="eyebrow">SKILL DIAGNOSTIC</p>
+            <p className="eyebrow">역량 진단</p>
             <h1 id="diagnostic-title">현재의 출발점을<br /><span>정확히 찾아요</span></h1>
           </div>
           {question && <span className="step-count">{step + 1} / {questions.length}</span>}

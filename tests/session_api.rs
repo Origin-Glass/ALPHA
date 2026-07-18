@@ -125,7 +125,9 @@ async fn logout_requires_csrf_and_immediately_invalidates_the_session(pool: PgPo
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn oauth_state_is_hashed_and_can_only_be_consumed_once(pool: PgPool) {
+async fn oauth_transaction_is_browser_bound_single_use_and_retained_only_while_active(
+    pool: PgPool,
+) {
     let settings = Settings::from_pairs(HashMap::from([
         ("APP_ENV", "test"),
         ("DATABASE_URL", "postgres://test"),
@@ -134,6 +136,23 @@ async fn oauth_state_is_hashed_and_can_only_be_consumed_once(pool: PgPool) {
         ("GOOGLE_CLIENT_ID", "google-client"),
         ("GOOGLE_CLIENT_SECRET", "google-secret"),
     ]))
+    .unwrap();
+    sqlx::query(
+        r#"
+        INSERT INTO oauth_transactions
+            (state_hash, browser_nonce_hash, provider, pkce_verifier, expires_at, used_at)
+        VALUES
+            ($1, $2, 'google', $3, now() - interval '1 minute', NULL),
+            ($4, $5, 'google', $3, now() + interval '1 minute', now())
+        "#,
+    )
+    .bind(vec![1_u8; 32])
+    .bind(vec![2_u8; 32])
+    .bind("x".repeat(43))
+    .bind(vec![3_u8; 32])
+    .bind(vec![4_u8; 32])
+    .execute(&pool)
+    .await
     .unwrap();
     let app = router(AppState::new(pool.clone(), settings));
 
@@ -146,6 +165,18 @@ async fn oauth_state_is_hashed_and_can_only_be_consumed_once(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let browser_nonce = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .find(|value| value.starts_with("alpha_oauth_browser="))
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .trim_start_matches("alpha_oauth_browser=")
+        .to_owned();
     let location = response.headers()[header::LOCATION].to_str().unwrap();
     let authorization_url = Url::parse(location).unwrap();
     assert_eq!(authorization_url.host_str(), Some("accounts.google.com"));
@@ -168,16 +199,95 @@ async fn oauth_state_is_hashed_and_can_only_be_consumed_once(pool: PgPool) {
             .await
             .unwrap();
     assert!(!raw_state_was_stored);
+    let retained: (i64, i64) = sqlx::query_as(
+        "SELECT count(*), count(*) FILTER (WHERE used_at IS NOT NULL OR expires_at <= now()) FROM oauth_transactions",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(retained, (1, 0));
 
     let secret = "0123456789abcdef0123456789abcdef";
-    let first = consume_oauth_transaction(&pool, "google", &state, secret)
+    let other_browser = consume_oauth_transaction(&pool, "google", &state, "other-browser", secret)
         .await
         .unwrap();
-    let replay = consume_oauth_transaction(&pool, "google", &state, secret)
+    assert!(other_browser.is_none());
+    let first = consume_oauth_transaction(&pool, "google", &state, &browser_nonce, secret)
+        .await
+        .unwrap();
+    let replay = consume_oauth_transaction(&pool, "google", &state, &browser_nonce, secret)
         .await
         .unwrap();
     assert_eq!(first.unwrap().redirect_after, "/learn");
     assert!(replay.is_none());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn account_status_change_revokes_old_sessions_even_after_reactivation(pool: PgPool) {
+    let settings = Settings::from_pairs(HashMap::from([
+        ("APP_ENV", "test"),
+        ("DATABASE_URL", "postgres://test"),
+        ("TEST_IDENTITY_ENABLED", "true"),
+    ]))
+    .unwrap();
+    let app = router(AppState::new(pool.clone(), settings));
+    let login = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/auth/test-session")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"handle": "suspended-user"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cookie = login
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .find(|value| value.starts_with("alpha_session="))
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let body: Value =
+        serde_json::from_slice(&to_bytes(login.into_body(), 16_384).await.unwrap()).unwrap();
+    let user_id = Uuid::parse_str(body["user"]["id"].as_str().unwrap()).unwrap();
+
+    sqlx::query("UPDATE users SET status = 'suspended' WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let suspended = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/auth/me")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(suspended.status(), StatusCode::UNAUTHORIZED);
+
+    sqlx::query("UPDATE users SET status = 'active' WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let reactivated = app
+        .oneshot(
+            Request::get("/api/v1/auth/me")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reactivated.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[sqlx::test(migrations = "./migrations")]

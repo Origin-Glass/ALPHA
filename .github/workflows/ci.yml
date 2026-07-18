@@ -106,6 +106,7 @@ jobs:
       - name: API·워커 준비 확인
         run: |
           curl --fail --retry 30 --retry-delay 2 http://127.0.0.1:18080/api/v1/problems
+          ./ops/gateway-smoke.sh http://127.0.0.1:18080
           docker compose exec -T api curl --fail --silent http://127.0.0.1:8080/metrics | grep 'alpha_judge_workers{health="healthy"} 1'
       - name: Chromium 설치
         working-directory: web
@@ -184,7 +185,16 @@ jobs:
           ALPHA_JUDGE_WORKER_IMAGE: registry.example/alpha-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
           JUDGE_IMAGE: registry.example/alpha-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
           ALPHA_JUDGE_WORKSPACE: /srv/alpha/judge-work
-        run: docker compose -f compose.production.yaml config --quiet
+        run: |
+          docker compose -f compose.production.yaml config --quiet
+          if grep '^FROM ' Dockerfile | grep -Ev '(@sha256:[0-9a-f]{64}([[:space:]]|$)|^FROM runtime AS worker$)'; then
+            echo "Dockerfile 기반 이미지가 digest로 고정되지 않았습니다." >&2
+            exit 1
+          fi
+          if docker compose -f compose.production.yaml config --images | grep -Ev '@sha256:[0-9a-f]{64}$'; then
+            echo "운영 Compose 이미지가 digest로 고정되지 않았습니다." >&2
+            exit 1
+          fi
       - name: OpenAPI 라우트 일치
         run: ruby ops/check-openapi.rb
       - name: main 대상 개발 문서 차단

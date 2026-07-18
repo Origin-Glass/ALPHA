@@ -17,6 +17,8 @@ use crate::http::AppState;
 
 const SESSION_COOKIE: &str = "alpha_session";
 const SESSION_SECONDS: i64 = 60 * 60 * 24 * 30;
+const OAUTH_BROWSER_COOKIE: &str = "alpha_oauth_browser";
+const OAUTH_SECONDS: i64 = 60 * 10;
 
 #[derive(Debug, Deserialize)]
 pub struct TestSessionRequest {
@@ -138,6 +140,13 @@ fn random_token() -> Result<String, AuthError> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).map_err(|_| AuthError::Randomness)?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn valid_security_token(token: &str) -> bool {
+    token.len() == 43
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 fn token_hash(secret: &str, token: &str) -> Vec<u8> {
@@ -343,27 +352,34 @@ pub async fn oauth_start(
     State(state): State<AppState>,
     Path(provider_name): Path<String>,
     Query(query): Query<OAuthStartQuery>,
-) -> Result<Redirect, AuthError> {
+) -> Result<Response, AuthError> {
     let provider = oauth_provider(&state, &provider_name)?;
     let redirect_after = safe_redirect_after(query.redirect_after)?;
     let oauth_state = random_token()?;
+    let browser_nonce = random_token()?;
     let pkce_verifier = random_token()?;
     let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(pkce_verifier.as_bytes()));
 
+    let mut transaction = state.pool().begin().await?;
+    sqlx::query("DELETE FROM oauth_transactions WHERE used_at IS NOT NULL OR expires_at <= now()")
+        .execute(&mut *transaction)
+        .await?;
     sqlx::query(
         r#"
         INSERT INTO oauth_transactions
-            (state_hash, provider, pkce_verifier, redirect_after, expires_at)
-        VALUES ($1, $2, $3, $4, $5)
+            (state_hash, browser_nonce_hash, provider, pkce_verifier, redirect_after, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
         "#,
     )
     .bind(token_hash(&state.settings().session_secret, &oauth_state))
+    .bind(token_hash(&state.settings().session_secret, &browser_nonce))
     .bind(provider.name)
     .bind(&pkce_verifier)
     .bind(&redirect_after)
-    .bind(OffsetDateTime::now_utc() + Duration::minutes(10))
-    .execute(state.pool())
+    .bind(OffsetDateTime::now_utc() + Duration::seconds(OAUTH_SECONDS))
+    .execute(&mut *transaction)
     .await?;
+    transaction.commit().await?;
 
     let callback_url = format!(
         "{}/api/v1/auth/{}/callback",
@@ -382,24 +398,39 @@ pub async fn oauth_start(
         .append_pair("code_challenge", &code_challenge)
         .append_pair("code_challenge_method", "S256");
 
-    Ok(Redirect::to(authorization_url.as_str()))
+    let secure = if state.settings().app_env == "production" {
+        "; Secure"
+    } else {
+        ""
+    };
+    let mut headers = HeaderMap::new();
+    headers.append(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&format!(
+            "{OAUTH_BROWSER_COOKIE}={browser_nonce}; Path=/api/v1/auth; HttpOnly; SameSite=Lax; Max-Age={OAUTH_SECONDS}{secure}"
+        ))
+        .expect("생성된 OAuth nonce는 유효한 쿠키다"),
+    );
+    Ok((headers, Redirect::to(authorization_url.as_str())).into_response())
 }
 
 pub async fn consume_oauth_transaction(
     pool: &sqlx::PgPool,
     provider: &str,
     state: &str,
+    browser_nonce: &str,
     secret: &str,
 ) -> Result<Option<OAuthTransaction>, sqlx::Error> {
     sqlx::query_as::<_, OAuthTransaction>(
         r#"
-        UPDATE oauth_transactions
-        SET used_at = now()
-        WHERE state_hash = $1 AND provider = $2 AND used_at IS NULL AND expires_at > now()
+        DELETE FROM oauth_transactions
+        WHERE state_hash = $1 AND browser_nonce_hash = $2 AND provider = $3
+          AND used_at IS NULL AND expires_at > now()
         RETURNING pkce_verifier, redirect_after
         "#,
     )
     .bind(token_hash(secret, state))
+    .bind(token_hash(secret, browser_nonce))
     .bind(provider)
     .fetch_optional(pool)
     .await
@@ -595,6 +626,7 @@ async fn fetch_oauth_profile(
 pub async fn oauth_callback(
     State(state): State<AppState>,
     Path(provider_name): Path<String>,
+    headers: HeaderMap,
     Query(query): Query<OAuthCallbackQuery>,
 ) -> Result<Response, AuthError> {
     if query.error.is_some() {
@@ -609,10 +641,14 @@ pub async fn oauth_callback(
         .filter(|state| !state.is_empty() && state.len() <= 256)
         .ok_or(AuthError::InvalidOauthState)?;
     let provider = oauth_provider(&state, &provider_name)?;
+    let browser_nonce = cookie_value(&headers, OAUTH_BROWSER_COOKIE)
+        .filter(|nonce| valid_security_token(nonce))
+        .ok_or(AuthError::InvalidOauthState)?;
     let transaction = consume_oauth_transaction(
         state.pool(),
         provider.name,
         &oauth_state,
+        &browser_nonce,
         &state.settings().session_secret,
     )
     .await?
@@ -627,7 +663,19 @@ pub async fn oauth_callback(
             IdentityResolutionError::UnsupportedProvider => AuthError::UnsupportedProvider,
             IdentityResolutionError::Database(error) => AuthError::Database(error),
         })?;
-    let (headers, _, _) = issue_session(&state, user_id).await?;
+    let (mut headers, _, _) = issue_session(&state, user_id).await?;
+    let secure = if state.settings().app_env == "production" {
+        "; Secure"
+    } else {
+        ""
+    };
+    headers.append(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&format!(
+            "{OAUTH_BROWSER_COOKIE}=; Path=/api/v1/auth; HttpOnly; SameSite=Lax; Max-Age=0{secure}"
+        ))
+        .expect("고정 OAuth 쿠키 삭제 헤더는 유효하다"),
+    );
     Ok((headers, Redirect::to(&transaction.redirect_after)).into_response())
 }
 
@@ -780,11 +828,15 @@ pub async fn authenticated_user_id(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<Uuid, AuthError> {
-    let session_token = cookie_value(headers, SESSION_COOKIE).ok_or(AuthError::Unauthorized)?;
+    let session_token = cookie_value(headers, SESSION_COOKIE)
+        .filter(|token| valid_security_token(token))
+        .ok_or(AuthError::Unauthorized)?;
     let user_id: Uuid = sqlx::query_scalar(
         r#"
-        SELECT user_id FROM sessions
-        WHERE session_token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
+        SELECT session.user_id FROM sessions session
+        JOIN users user_account ON user_account.id = session.user_id
+        WHERE session.session_token_hash = $1 AND session.revoked_at IS NULL
+          AND session.expires_at > now() AND user_account.status = 'active'
         "#,
     )
     .bind(token_hash(&state.settings().session_secret, &session_token))
@@ -798,15 +850,19 @@ pub async fn authenticated_user_id_with_csrf(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<Uuid, AuthError> {
-    let session_token = cookie_value(headers, SESSION_COOKIE).ok_or(AuthError::Unauthorized)?;
+    let session_token = cookie_value(headers, SESSION_COOKIE)
+        .filter(|token| valid_security_token(token))
+        .ok_or(AuthError::Unauthorized)?;
     let csrf_token = headers
         .get("x-csrf-token")
         .and_then(|value| value.to_str().ok())
         .ok_or(AuthError::Forbidden)?;
     let session: Option<(Uuid, Vec<u8>)> = sqlx::query_as(
         r#"
-        SELECT user_id, csrf_token_hash FROM sessions
-        WHERE session_token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
+        SELECT session.user_id, session.csrf_token_hash FROM sessions session
+        JOIN users user_account ON user_account.id = session.user_id
+        WHERE session.session_token_hash = $1 AND session.revoked_at IS NULL
+          AND session.expires_at > now() AND user_account.status = 'active'
         "#,
     )
     .bind(token_hash(&state.settings().session_secret, &session_token))
