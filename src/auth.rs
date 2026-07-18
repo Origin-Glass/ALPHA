@@ -140,8 +140,12 @@ fn random_token() -> Result<String, AuthError> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
-fn token_hash(token: &str) -> Vec<u8> {
-    Sha256::digest(token.as_bytes()).to_vec()
+fn token_hash(secret: &str, token: &str) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update((secret.len() as u64).to_be_bytes());
+    hasher.update(secret.as_bytes());
+    hasher.update(token.as_bytes());
+    hasher.finalize().to_vec()
 }
 
 #[derive(Debug, Deserialize)]
@@ -353,7 +357,7 @@ pub async fn oauth_start(
         VALUES ($1, $2, $3, $4, $5)
         "#,
     )
-    .bind(token_hash(&oauth_state))
+    .bind(token_hash(&state.settings().session_secret, &oauth_state))
     .bind(provider.name)
     .bind(&pkce_verifier)
     .bind(&redirect_after)
@@ -385,6 +389,7 @@ pub async fn consume_oauth_transaction(
     pool: &sqlx::PgPool,
     provider: &str,
     state: &str,
+    secret: &str,
 ) -> Result<Option<OAuthTransaction>, sqlx::Error> {
     sqlx::query_as::<_, OAuthTransaction>(
         r#"
@@ -394,7 +399,7 @@ pub async fn consume_oauth_transaction(
         RETURNING pkce_verifier, redirect_after
         "#,
     )
-    .bind(token_hash(state))
+    .bind(token_hash(secret, state))
     .bind(provider)
     .fetch_optional(pool)
     .await
@@ -604,9 +609,14 @@ pub async fn oauth_callback(
         .filter(|state| !state.is_empty() && state.len() <= 256)
         .ok_or(AuthError::InvalidOauthState)?;
     let provider = oauth_provider(&state, &provider_name)?;
-    let transaction = consume_oauth_transaction(state.pool(), provider.name, &oauth_state)
-        .await?
-        .ok_or(AuthError::InvalidOauthState)?;
+    let transaction = consume_oauth_transaction(
+        state.pool(),
+        provider.name,
+        &oauth_state,
+        &state.settings().session_secret,
+    )
+    .await?
+    .ok_or(AuthError::InvalidOauthState)?;
     let access_token =
         exchange_oauth_code(&state, &provider, &code, &transaction.pkce_verifier).await?;
     let profile = fetch_oauth_profile(&state, provider.name, &access_token).await?;
@@ -670,8 +680,8 @@ async fn issue_session(
         "#,
     )
     .bind(user_id)
-    .bind(token_hash(&session_token))
-    .bind(token_hash(&csrf_token))
+    .bind(token_hash(&state.settings().session_secret, &session_token))
+    .bind(token_hash(&state.settings().session_secret, &csrf_token))
     .bind(OffsetDateTime::now_utc() + Duration::seconds(SESSION_SECONDS))
     .execute(state.pool())
     .await?;
@@ -777,7 +787,7 @@ pub async fn authenticated_user_id(
         WHERE session_token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
         "#,
     )
-    .bind(token_hash(&session_token))
+    .bind(token_hash(&state.settings().session_secret, &session_token))
     .fetch_optional(state.pool())
     .await?
     .ok_or(AuthError::Unauthorized)?;
@@ -799,11 +809,13 @@ pub async fn authenticated_user_id_with_csrf(
         WHERE session_token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
         "#,
     )
-    .bind(token_hash(&session_token))
+    .bind(token_hash(&state.settings().session_secret, &session_token))
     .fetch_optional(state.pool())
     .await?;
     let (user_id, stored_csrf_hash) = session.ok_or(AuthError::Unauthorized)?;
-    if !bool::from(stored_csrf_hash.ct_eq(&token_hash(csrf_token))) {
+    if !bool::from(
+        stored_csrf_hash.ct_eq(&token_hash(&state.settings().session_secret, csrf_token)),
+    ) {
         return Err(AuthError::Forbidden);
     }
     Ok(user_id)
@@ -828,11 +840,13 @@ pub async fn accept_terms(
         WHERE session_token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
         "#,
     )
-    .bind(token_hash(&session_token))
+    .bind(token_hash(&state.settings().session_secret, &session_token))
     .fetch_optional(state.pool())
     .await?;
     let (user_id, stored_csrf_hash) = session.ok_or(AuthError::Unauthorized)?;
-    if !bool::from(stored_csrf_hash.ct_eq(&token_hash(csrf_token))) {
+    if !bool::from(
+        stored_csrf_hash.ct_eq(&token_hash(&state.settings().session_secret, csrf_token)),
+    ) {
         return Err(AuthError::Forbidden);
     }
 
@@ -866,7 +880,7 @@ pub async fn logout(
         .get("x-csrf-token")
         .and_then(|value| value.to_str().ok())
         .ok_or(AuthError::Forbidden)?;
-    let session_hash = token_hash(&session_token);
+    let session_hash = token_hash(&state.settings().session_secret, &session_token);
     let stored_csrf_hash: Vec<u8> = sqlx::query_scalar(
         r#"
         SELECT csrf_token_hash FROM sessions
@@ -878,7 +892,9 @@ pub async fn logout(
     .await?
     .ok_or(AuthError::Unauthorized)?;
 
-    if !bool::from(stored_csrf_hash.ct_eq(&token_hash(csrf_token))) {
+    if !bool::from(
+        stored_csrf_hash.ct_eq(&token_hash(&state.settings().session_secret, csrf_token)),
+    ) {
         return Err(AuthError::Forbidden);
     }
 

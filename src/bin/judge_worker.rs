@@ -66,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     heartbeat(&pool, &worker_id, sandbox.image_reference(), "ready", None).await?;
     info!(worker_id = %worker_id, protocol_version = 1, "판정 작업자 시작");
 
+    let mut shutdown = tokio::spawn(alpha::shutdown::signal());
     loop {
         if let Some(job) =
             judge::lease_next_job(&pool, &worker_id, Duration::from_secs(600)).await?
@@ -134,8 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         heartbeat(&pool, &worker_id, sandbox.image_reference(), "ready", None).await?;
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(500)) => {}
-            signal = tokio::signal::ctrl_c() => {
-                signal?;
+            _ = &mut shutdown => {
                 heartbeat(&pool, &worker_id, sandbox.image_reference(), "draining", None).await?;
                 info!(worker_id = %worker_id, "판정 작업자 종료");
                 break;
