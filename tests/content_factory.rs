@@ -31,7 +31,7 @@ async fn app(pool: PgPool, credential: bool) -> (axum::Router, Session) {
         ("CONTENT_AI_ENABLED", "true"),
     ]);
     if credential {
-        settings.insert("OPENAI_API_KEY", "integration-only-secret");
+        settings.insert("CONTENT_AI_CREDENTIALS_AVAILABLE", "OPENAI_API_KEY");
     }
     let app = router(AppState::new(
         pool.clone(),
@@ -105,6 +105,18 @@ async fn post(
         .unwrap()
 }
 
+async fn get(app: &axum::Router, session: &Session, uri: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::get(uri)
+                .header(header::COOKIE, &session.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
 async fn json_body(response: axum::response::Response) -> Value {
     serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap()
 }
@@ -113,6 +125,7 @@ fn provider(name: &str, kind: &str, base_url: &str) -> Value {
     json!({
         "name": name,
         "kind": kind,
+        "protocol": "openai_compatible",
         "base_url": base_url,
         "model": "test-model",
         "credential_env_var": if kind == "local" { Value::Null } else { json!("OPENAI_API_KEY") },
@@ -122,7 +135,7 @@ fn provider(name: &str, kind: &str, base_url: &str) -> Value {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn provider_configuration_rejects_ssrf_endpoints(pool: PgPool) {
-    let (app, session) = app(pool, false).await;
+    let (app, session) = app(pool.clone(), false).await;
     for (index, (kind, url)) in [
         ("external", "http://api.example.com"),
         ("external", "https://user:password@api.example.com"),
@@ -131,6 +144,8 @@ async fn provider_configuration_rejects_ssrf_endpoints(pool: PgPool) {
         ("external", "https://10.0.0.8"),
         ("external", "https://169.254.169.254"),
         ("local", "https://api.example.com:11434"),
+        ("local", "https://127.0.0.1:11434"),
+        ("local", "http://127.0.0.2:11434"),
         ("local", "https://127.0.0.1:443"),
     ]
     .into_iter()
@@ -157,6 +172,22 @@ async fn provider_configuration_rejects_ssrf_endpoints(pool: PgPool) {
         .status(),
         StatusCode::CREATED
     );
+    let mut anthropic = provider("anthropic", "external", "https://api.anthropic.com");
+    anthropic["protocol"] = json!("anthropic");
+    anthropic["credential_env_var"] = json!("ANTHROPIC_API_KEY");
+    assert_eq!(
+        post(&app, &session, "/api/v1/content/providers", anthropic)
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+    let anthropic_protocol: String = sqlx::query_scalar(
+        "SELECT protocol FROM content_provider_configs WHERE name = 'anthropic'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(anthropic_protocol, "anthropic");
     let mut secret_reference = provider(
         "forbidden-secret-reference",
         "external",
@@ -179,7 +210,18 @@ async fn provider_configuration_rejects_ssrf_endpoints(pool: PgPool) {
             &app,
             &session,
             "/api/v1/content/providers",
-            provider("local", "local", "https://127.0.0.1:11434")
+            provider("local", "local", "http://127.0.0.1:11434")
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        post(
+            &app,
+            &session,
+            "/api/v1/content/providers",
+            provider("local-v6", "local", "http://[::1]:11434")
         )
         .await
         .status(),
@@ -199,6 +241,11 @@ async fn missing_credential_blocks_job_without_artifact_or_secret_persistence(po
     .await;
     assert_eq!(created.status(), StatusCode::CREATED);
     let provider_id = json_body(created).await["id"].as_str().unwrap().to_owned();
+    let provider_list = json_body(get(&app, &session, "/api/v1/content/providers").await).await;
+    let visible_provider = &provider_list["providers"][0];
+    assert_eq!(visible_provider["credential_available"], false);
+    assert!(visible_provider.get("base_url").is_none());
+    assert!(visible_provider.get("credential_env_var").is_none());
 
     let job = post(
         &app,
@@ -401,6 +448,18 @@ async fn retry_keeps_attempt_artifacts_and_settles_budget_once(pool: PgPool) {
     assert_eq!(attempts[0].1, "retryable_failure");
     assert_eq!(attempts[1].1, "completed");
     assert_ne!(attempts[0].2, attempts[1].2);
+    let snapshots: Vec<Value> = sqlx::query_scalar(
+        "SELECT provider_snapshot FROM content_generation_attempts WHERE job_id = $1 ORDER BY attempt_number",
+    )
+    .bind(job_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(
+        snapshots
+            .iter()
+            .all(|snapshot| snapshot["protocol"] == "openai_compatible")
+    );
     let artifacts: Vec<(i16, Vec<u8>, Value)> = sqlx::query_as(
         r#"SELECT attempt.attempt_number, artifact.content_hash, artifact.payload
            FROM content_artifacts artifact
@@ -443,6 +502,27 @@ async fn expired_lease_recovery_fences_stale_worker_artifacts(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
+    let delayed = lease_next_generation_job(
+        &pool,
+        "content-worker-recovery",
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .unwrap();
+    assert!(delayed.is_none());
+    let recovery_delay_seconds: f64 = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM (available_at - now()))::float8 FROM content_generation_jobs WHERE id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!((0.0..=2.0).contains(&recovery_delay_seconds));
+    sqlx::query("UPDATE content_generation_jobs SET available_at = now() WHERE id = $1")
+        .bind(job_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     let recovered = lease_next_generation_job(
         &pool,
         "content-worker-recovery",

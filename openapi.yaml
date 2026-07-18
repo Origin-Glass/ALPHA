@@ -293,6 +293,9 @@ paths:
       responses: *write_result
 
   /api/v1/content/providers:
+    get:
+      operationId: listContentProviders
+      responses: *ok
     post:
       operationId: createContentProvider
       security: *write
@@ -303,6 +306,9 @@ paths:
             schema: { $ref: "#/components/schemas/ContentProviderRequest" }
       responses: *write_result
   /api/v1/content/jobs:
+    get:
+      operationId: listContentGenerationJobs
+      responses: *ok
     post:
       operationId: createContentGenerationJob
       security: *write
@@ -311,6 +317,24 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/ContentGenerationJobRequest" }
+      responses: *write_result
+  /api/v1/content/budget:
+    get:
+      operationId: getContentBudget
+      responses: *ok
+    post:
+      operationId: updateContentBudget
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [limit_microunits]
+              properties:
+                limit_microunits: { type: integer, minimum: 0, maximum: 1000000000000 }
       responses: *write_result
   /api/v1/learning/path:
     get:
@@ -998,10 +1022,11 @@ components:
     ContentProviderRequest:
       type: object
       additionalProperties: false
-      required: [name, kind, base_url, model, credential_env_var, enabled]
+      required: [name, kind, protocol, base_url, model, credential_env_var, enabled]
       properties:
         name: { type: string, pattern: "^[a-z0-9][a-z0-9_-]{2,39}$" }
         kind: { type: string, enum: [external, local] }
+        protocol: { type: string, enum: [openai_compatible, anthropic] }
         base_url: { type: string, format: uri }
         model: { type: string, minLength: 1, maxLength: 120 }
         credential_env_var:

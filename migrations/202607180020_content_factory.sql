@@ -31,6 +31,7 @@ CREATE TABLE content_provider_configs (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL UNIQUE CHECK (name ~ '^[a-z0-9][a-z0-9_-]{2,39}$'),
     kind text NOT NULL CHECK (kind IN ('external', 'local')),
+    protocol text NOT NULL CHECK (protocol IN ('openai_compatible', 'anthropic')),
     base_url text NOT NULL CHECK (char_length(base_url) BETWEEN 8 AND 500),
     model text NOT NULL CHECK (char_length(model) BETWEEN 1 AND 120),
     credential_env_var text CHECK (credential_env_var IN (
@@ -40,7 +41,14 @@ CREATE TABLE content_provider_configs (
     created_by uuid NOT NULL REFERENCES users(id),
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CHECK ((kind = 'external') = (credential_env_var IS NOT NULL))
+    CHECK ((kind = 'external') = (credential_env_var IS NOT NULL)),
+    CHECK (
+        (kind = 'local' AND protocol = 'openai_compatible' AND credential_env_var IS NULL)
+        OR (kind = 'external' AND protocol = 'anthropic' AND credential_env_var = 'ANTHROPIC_API_KEY')
+        OR (kind = 'external' AND protocol = 'openai_compatible' AND credential_env_var IN (
+            'CONTENT_AI_CUSTOM_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY'
+        ))
+    )
 );
 
 CREATE TABLE content_budgets (

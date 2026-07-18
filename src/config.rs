@@ -59,16 +59,25 @@ impl Settings {
         let solved_ac_enabled = value("SOLVED_AC_ENABLED") == "true";
         let trust_proxy_headers = value("TRUST_PROXY_HEADERS") == "true";
         let content_ai_enabled = value("CONTENT_AI_ENABLED") == "true";
-        let content_ai_credentials = [
+        let allowed_content_ai_credentials = [
             "CONTENT_AI_CUSTOM_API_KEY",
             "OPENROUTER_API_KEY",
             "ANTHROPIC_API_KEY",
             "OPENAI_API_KEY",
-        ]
-        .into_iter()
-        .filter(|name| !value(name).is_empty())
-        .map(str::to_owned)
-        .collect();
+        ];
+        let mut content_ai_credentials: std::collections::HashSet<String> =
+            allowed_content_ai_credentials
+                .into_iter()
+                .filter(|name| !value(name).is_empty())
+                .map(str::to_owned)
+                .collect();
+        for name in value("CONTENT_AI_CREDENTIALS_AVAILABLE")
+            .split(',')
+            .map(str::trim)
+            .filter(|name| allowed_content_ai_credentials.contains(name))
+        {
+            content_ai_credentials.insert(name.to_owned());
+        }
 
         if app_env == "production" && test_identity_enabled {
             return Err(ConfigError::ProductionTestIdentity);

@@ -108,11 +108,16 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/content/providers",
-            axum::routing::post(crate::content_factory::create_provider),
+            get(crate::content_factory::list_providers)
+                .post(crate::content_factory::create_provider),
         )
         .route(
             "/api/v1/content/jobs",
-            axum::routing::post(crate::content_factory::create_job),
+            get(crate::content_factory::list_jobs).post(crate::content_factory::create_job),
+        )
+        .route(
+            "/api/v1/content/budget",
+            get(crate::content_factory::get_budget).post(crate::content_factory::update_budget),
         )
         .route(
             "/api/v1/auth/{provider}/start",

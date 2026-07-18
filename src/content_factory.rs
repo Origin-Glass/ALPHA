@@ -14,6 +14,29 @@ use uuid::Uuid;
 
 use crate::{auth::AuthError, http::AppState};
 
+type ProviderRow = (Uuid, String, String, String, String, Option<String>, bool);
+type JobRow = (
+    Uuid,
+    String,
+    String,
+    String,
+    i16,
+    Option<String>,
+    time::OffsetDateTime,
+);
+type LeaseCandidate = (
+    Uuid,
+    i16,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Value,
+    Vec<u8>,
+    i64,
+);
+
 #[derive(Debug)]
 pub enum ContentFactoryError {
     Auth(AuthError),
@@ -81,6 +104,19 @@ async fn authorize(
     Ok(user_id)
 }
 
+async fn authorize_read(
+    state: &AppState,
+    headers: &HeaderMap,
+    capability: &str,
+) -> Result<Uuid, ContentFactoryError> {
+    let user_id = crate::auth::authenticated_user_id(state, headers).await?;
+    crate::auth::require_current_policy(state, user_id).await?;
+    if !crate::governance::has_capability(state.pool(), user_id, capability).await? {
+        return Err(ContentFactoryError::Forbidden);
+    }
+    Ok(user_id)
+}
+
 fn external_ip_forbidden(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
@@ -113,14 +149,13 @@ fn external_ip_forbidden(ip: IpAddr) -> bool {
 pub fn validate_provider_url(kind: &str, raw: &str) -> Result<Url, ContentFactoryError> {
     let url = Url::parse(raw)
         .map_err(|_| ContentFactoryError::InvalidInput("제공자 URL을 확인해 주세요"))?;
-    if url.scheme() != "https"
-        || !url.username().is_empty()
+    if !url.username().is_empty()
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
     {
         return Err(ContentFactoryError::InvalidInput(
-            "제공자 URL은 사용자정보 없는 HTTPS 주소여야 합니다",
+            "제공자 URL에는 사용자정보·쿼리·프래그먼트를 넣을 수 없습니다",
         ));
     }
     let host = url.host().ok_or(ContentFactoryError::InvalidInput(
@@ -128,16 +163,16 @@ pub fn validate_provider_url(kind: &str, raw: &str) -> Result<Url, ContentFactor
     ))?;
     match kind {
         "local" => {
-            let loopback = matches!(host, Host::Ipv4(ip) if ip.is_loopback())
-                || matches!(host, Host::Ipv6(ip) if ip.is_loopback());
-            if !loopback || url.port() != Some(11434) {
+            let loopback = matches!(host, Host::Ipv4(ip) if ip == std::net::Ipv4Addr::LOCALHOST)
+                || matches!(host, Host::Ipv6(ip) if ip == std::net::Ipv6Addr::LOCALHOST);
+            if url.scheme() != "http" || !loopback || url.port() != Some(11434) {
                 return Err(ContentFactoryError::InvalidInput(
-                    "로컬 제공자는 HTTPS 루프백 11434 포트만 허용합니다",
+                    "로컬 제공자는 HTTP 루프백 11434 포트만 허용합니다",
                 ));
             }
         }
         "external" => {
-            if url.port_or_known_default() != Some(443) {
+            if url.scheme() != "https" || url.port_or_known_default() != Some(443) {
                 return Err(ContentFactoryError::InvalidInput(
                     "외부 제공자는 HTTPS 443 포트만 허용합니다",
                 ));
@@ -242,6 +277,7 @@ fn credential_name_allowed(name: &str) -> bool {
 pub struct ProviderRequest {
     name: String,
     kind: String,
+    protocol: String,
     base_url: String,
     model: String,
     credential_env_var: Option<String>,
@@ -264,12 +300,18 @@ pub async fn create_provider(
         })
         || request.model.trim().is_empty()
         || request.model.len() > 120
+        || !matches!(request.protocol.as_str(), "openai_compatible" | "anthropic")
         || (request.kind == "external"
             && !request
                 .credential_env_var
                 .as_deref()
                 .is_some_and(credential_name_allowed))
         || (request.kind == "local" && request.credential_env_var.is_some())
+        || (request.kind == "local" && request.protocol != "openai_compatible")
+        || (request.protocol == "anthropic"
+            && request.credential_env_var.as_deref() != Some("ANTHROPIC_API_KEY"))
+        || (request.protocol == "openai_compatible"
+            && request.credential_env_var.as_deref() == Some("ANTHROPIC_API_KEY"))
     {
         return Err(ContentFactoryError::InvalidInput(
             "제공자 설정을 확인해 주세요",
@@ -278,11 +320,12 @@ pub async fn create_provider(
     let mut transaction = state.pool().begin().await?;
     let id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO content_provider_configs
-           (name, kind, base_url, model, credential_env_var, enabled, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id"#,
+           (name, kind, protocol, base_url, model, credential_env_var, enabled, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id"#,
     )
     .bind(&request.name)
     .bind(&request.kind)
+    .bind(&request.protocol)
     .bind(&request.base_url)
     .bind(request.model.trim())
     .bind(&request.credential_env_var)
@@ -290,10 +333,34 @@ pub async fn create_provider(
     .bind(user_id)
     .fetch_one(&mut *transaction)
     .await?;
-    sqlx::query("INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, 'content_provider.created', 'content_provider', $2, jsonb_build_object('kind', $3::text))")
-        .bind(user_id).bind(id.to_string()).bind(&request.kind).execute(&mut *transaction).await?;
+    sqlx::query("INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, 'content_provider.created', 'content_provider', $2, jsonb_build_object('kind', $3::text, 'protocol', $4::text))")
+        .bind(user_id).bind(id.to_string()).bind(&request.kind).bind(&request.protocol).execute(&mut *transaction).await?;
     transaction.commit().await?;
     Ok((StatusCode::CREATED, Json(serde_json::json!({"id": id}))))
+}
+
+pub async fn list_providers(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ContentFactoryError> {
+    authorize_read(&state, &headers, "content.generate").await?;
+    let providers: Vec<ProviderRow> = sqlx::query_as(
+        r#"SELECT id, name, kind, protocol, model, credential_env_var, enabled
+               FROM content_provider_configs ORDER BY name"#,
+    )
+    .fetch_all(state.pool())
+    .await?;
+    Ok(Json(serde_json::json!({
+        "providers": providers.into_iter().map(|(id, name, kind, protocol, model, credential_env_var, enabled)| serde_json::json!({
+            "id": id,
+            "name": name,
+            "kind": kind,
+            "protocol": protocol,
+            "model": model,
+            "credential_available": credential_env_var.as_deref().is_none_or(|name| state.settings().has_content_ai_credential(name)),
+            "enabled": enabled,
+        })).collect::<Vec<_>>()
+    })))
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -403,6 +470,85 @@ pub async fn create_job(
     ))
 }
 
+pub async fn list_jobs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ContentFactoryError> {
+    let user_id = authorize_read(&state, &headers, "content.generate").await?;
+    let jobs: Vec<JobRow> = sqlx::query_as(
+        r#"SELECT job.id, provider.name, job.content_type, job.status, job.attempt_count,
+                      job.last_error_code, job.created_at
+               FROM content_generation_jobs job
+               JOIN content_provider_configs provider ON provider.id = job.provider_id
+               WHERE job.created_by = $1
+               ORDER BY job.created_at DESC LIMIT 50"#,
+    )
+    .bind(user_id)
+    .fetch_all(state.pool())
+    .await?;
+    Ok(Json(
+        serde_json::json!({"jobs": jobs.into_iter().map(|(id, provider, content_type, status, attempts, error, created_at)| serde_json::json!({
+        "id": id, "provider": provider, "content_type": content_type, "status": status,
+        "attempts": attempts, "last_error_code": error, "created_at": created_at,
+    })).collect::<Vec<_>>() }),
+    ))
+}
+
+pub async fn get_budget(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ContentFactoryError> {
+    authorize_read(&state, &headers, "provider.view_cost").await?;
+    let (limit, reserved, spent): (i64, i64, i64) = sqlx::query_as(
+        "SELECT limit_microunits, reserved_microunits, spent_microunits FROM content_budgets WHERE budget_key = 'global'",
+    )
+    .fetch_one(state.pool())
+    .await?;
+    Ok(Json(serde_json::json!({
+        "limit_microunits": limit,
+        "reserved_microunits": reserved,
+        "spent_microunits": spent,
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateBudgetRequest {
+    limit_microunits: i64,
+}
+
+pub async fn update_budget(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateBudgetRequest>,
+) -> Result<Json<Value>, ContentFactoryError> {
+    let user_id = authorize(&state, &headers, "provider.configure").await?;
+    if !(0..=1_000_000_000_000).contains(&request.limit_microunits) {
+        return Err(ContentFactoryError::InvalidInput(
+            "예산 한도를 확인해 주세요",
+        ));
+    }
+    let mut transaction = state.pool().begin().await?;
+    let updated = sqlx::query(
+        r#"UPDATE content_budgets SET limit_microunits = $1, updated_at = now()
+           WHERE budget_key = 'global' AND reserved_microunits + spent_microunits <= $1"#,
+    )
+    .bind(request.limit_microunits)
+    .execute(&mut *transaction)
+    .await?;
+    if updated.rows_affected() != 1 {
+        return Err(ContentFactoryError::Conflict(
+            "예약·사용 금액보다 예산을 낮출 수 없습니다",
+        ));
+    }
+    sqlx::query("INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, 'content_budget.updated', 'content_budget', 'global', jsonb_build_object('limit_microunits', $2::bigint))")
+        .bind(user_id).bind(request.limit_microunits).execute(&mut *transaction).await?;
+    transaction.commit().await?;
+    Ok(Json(
+        serde_json::json!({"limit_microunits": request.limit_microunits}),
+    ))
+}
+
 #[derive(Debug, sqlx::FromRow)]
 pub struct GenerationLease {
     pub job_id: Uuid,
@@ -410,6 +556,7 @@ pub struct GenerationLease {
     pub attempt_number: i16,
     pub lease_token: Uuid,
     pub provider_kind: String,
+    pub provider_protocol: String,
     pub base_url: String,
     pub model: String,
     pub credential_env_var: Option<String>,
@@ -491,24 +638,15 @@ pub async fn lease_next_generation_job(
     sqlx::query(
         r#"UPDATE content_generation_jobs
            SET status = 'queued', lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
-               available_at = now(), last_error_code = 'lease_expired', updated_at = now()
+               available_at = now() + make_interval(secs => (1 << LEAST(GREATEST(attempt_count - 1, 0), 6))),
+               last_error_code = 'lease_expired', updated_at = now()
            WHERE status = 'leased' AND lease_expires_at <= now() AND attempt_count < max_attempts"#,
     )
     .execute(&mut *transaction)
     .await?;
 
-    let candidate: Option<(
-        Uuid,
-        i16,
-        String,
-        String,
-        String,
-        Option<String>,
-        Value,
-        Vec<u8>,
-        i64,
-    )> = sqlx::query_as(
-        r#"SELECT job.id, job.attempt_count, provider.kind, provider.base_url,
+    let candidate: Option<LeaseCandidate> = sqlx::query_as(
+        r#"SELECT job.id, job.attempt_count, provider.kind, provider.protocol, provider.base_url,
                       provider.model, provider.credential_env_var, job.request_spec,
                       job.request_hash, job.reserved_cost_microunits
                FROM content_generation_jobs job
@@ -523,6 +661,7 @@ pub async fn lease_next_generation_job(
         job_id,
         attempt_count,
         provider_kind,
+        provider_protocol,
         base_url,
         model,
         credential_env_var,
@@ -556,6 +695,7 @@ pub async fn lease_next_generation_job(
     .await?;
     let provider_snapshot = serde_json::json!({
         "kind": &provider_kind,
+        "protocol": &provider_protocol,
         "base_url": &base_url,
         "model": &model,
         "credential_env_var": &credential_env_var,
@@ -579,6 +719,7 @@ pub async fn lease_next_generation_job(
         attempt_number,
         lease_token,
         provider_kind,
+        provider_protocol,
         base_url,
         model,
         credential_env_var,
