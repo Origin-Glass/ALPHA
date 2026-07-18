@@ -175,6 +175,61 @@ pub fn validate_provider_url(kind: &str, raw: &str) -> Result<Url, ContentFactor
     Ok(url)
 }
 
+#[derive(Debug)]
+pub struct ResolvedProviderEndpoint {
+    pub url: Url,
+    pub dns_pin: Option<(String, std::net::SocketAddr)>,
+}
+
+pub async fn resolve_provider_endpoint(
+    kind: &str,
+    raw: &str,
+) -> Result<ResolvedProviderEndpoint, ContentFactoryError> {
+    let url = validate_provider_url(kind, raw)?;
+    let host = url.host().ok_or(ContentFactoryError::InvalidInput(
+        "제공자 호스트가 필요합니다",
+    ))?;
+    let port = url.port_or_known_default().unwrap_or(443);
+    match host {
+        Host::Ipv4(ip) => Ok(ResolvedProviderEndpoint {
+            url,
+            dns_pin: Some((ip.to_string(), (ip, port).into())),
+        }),
+        Host::Ipv6(ip) => Ok(ResolvedProviderEndpoint {
+            url,
+            dns_pin: Some((ip.to_string(), (ip, port).into())),
+        }),
+        Host::Domain(domain) => {
+            if kind != "external" {
+                return Err(ContentFactoryError::InvalidInput(
+                    "로컬 제공자는 IP 루프백 주소만 허용합니다",
+                ));
+            }
+            let domain = domain.to_owned();
+            let addresses: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host((domain.as_str(), 443))
+                    .await
+                    .map_err(|_| {
+                        ContentFactoryError::InvalidInput("제공자 DNS를 확인할 수 없습니다")
+                    })?
+                    .collect();
+            if addresses.is_empty()
+                || addresses
+                    .iter()
+                    .any(|address| external_ip_forbidden(address.ip()))
+            {
+                return Err(ContentFactoryError::InvalidInput(
+                    "제공자 DNS가 사설 네트워크를 가리킵니다",
+                ));
+            }
+            Ok(ResolvedProviderEndpoint {
+                url,
+                dns_pin: Some((domain, addresses[0])),
+            })
+        }
+    }
+}
+
 fn credential_name_allowed(name: &str) -> bool {
     matches!(
         name,
@@ -274,13 +329,22 @@ pub async fn create_job(
             "생성 작업 설정을 확인해 주세요",
         ));
     }
-    let provider: Option<(bool, Option<String>)> = sqlx::query_as(
-        "SELECT enabled, credential_env_var FROM content_provider_configs WHERE id = $1",
+    let provider: Option<(bool, String, Option<String>)> = sqlx::query_as(
+        "SELECT enabled, kind, credential_env_var FROM content_provider_configs WHERE id = $1",
     )
     .bind(request.provider_id)
     .fetch_optional(state.pool())
     .await?;
-    let (enabled, credential_env_var) = provider.ok_or(ContentFactoryError::NotFound)?;
+    let (enabled, provider_kind, credential_env_var) =
+        provider.ok_or(ContentFactoryError::NotFound)?;
+    let provider_capability = if provider_kind == "local" {
+        "provider.use.local"
+    } else {
+        "provider.use.frontier"
+    };
+    if !crate::governance::has_capability(state.pool(), user_id, provider_capability).await? {
+        return Err(ContentFactoryError::Forbidden);
+    }
     let status = if !state.settings().content_ai_enabled || !enabled {
         "blocked_disabled"
     } else if credential_env_var
@@ -337,4 +401,318 @@ pub async fn create_job(
         StatusCode::CREATED,
         Json(serde_json::json!({"id": id, "status": status})),
     ))
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct GenerationLease {
+    pub job_id: Uuid,
+    pub attempt_id: Uuid,
+    pub attempt_number: i16,
+    pub lease_token: Uuid,
+    pub provider_kind: String,
+    pub base_url: String,
+    pub model: String,
+    pub credential_env_var: Option<String>,
+    pub request_spec: Value,
+    pub reserved_cost_microunits: i64,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CompleteGenerationError {
+    #[error("generation lease lost")]
+    LeaseLost,
+    #[error("actual cost exceeds reservation")]
+    CostExceeded,
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+pub async fn lease_next_generation_job(
+    pool: &sqlx::PgPool,
+    worker_id: &str,
+    lease_duration: std::time::Duration,
+) -> Result<Option<GenerationLease>, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        r#"UPDATE content_generation_attempts attempt
+           SET status = 'retryable_failure', error_code = 'lease_expired', completed_at = now()
+           FROM content_generation_jobs job
+           WHERE attempt.job_id = job.id AND attempt.attempt_number = job.attempt_count
+             AND attempt.status = 'running' AND job.status = 'leased' AND job.lease_expires_at <= now()"#,
+    )
+    .execute(&mut *transaction)
+    .await?;
+
+    let expired_leases: Vec<(Uuid, i16, i16, i64)> = sqlx::query_as(
+        r#"SELECT id, attempt_count, max_attempts, reserved_cost_microunits
+           FROM content_generation_jobs
+           WHERE status = 'leased' AND lease_expires_at <= now() AND NOT settled
+           FOR UPDATE"#,
+    )
+    .fetch_all(&mut *transaction)
+    .await?;
+    let terminal_reserved: i64 = expired_leases
+        .iter()
+        .filter(|(_, attempt, max_attempts, _)| attempt >= max_attempts)
+        .map(|(_, _, _, reserved)| *reserved)
+        .sum();
+    if terminal_reserved > 0 {
+        sqlx::query(
+            "UPDATE content_budgets SET reserved_microunits = reserved_microunits - $1, updated_at = now() WHERE budget_key = 'global'",
+        )
+        .bind(terminal_reserved)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    sqlx::query(
+        r#"UPDATE content_generation_jobs
+           SET status = 'failed', settled = true, reserved_cost_microunits = 0,
+               lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+               last_error_code = 'lease_attempts_exhausted', updated_at = now()
+           WHERE status = 'leased' AND lease_expires_at <= now() AND attempt_count >= max_attempts"#,
+    )
+    .execute(&mut *transaction)
+    .await?;
+    for (job_id, attempt, max_attempts, _) in &expired_leases {
+        let outcome = if attempt >= max_attempts {
+            "failed"
+        } else {
+            "requeued"
+        };
+        sqlx::query(
+            "INSERT INTO audit_events (action, target_type, target_id, metadata) VALUES ('content_job.lease_expired', 'content_generation_job', $1, jsonb_build_object('attempt', $2::smallint, 'outcome', $3::text))",
+        )
+        .bind(job_id.to_string())
+        .bind(*attempt)
+        .bind(outcome)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    sqlx::query(
+        r#"UPDATE content_generation_jobs
+           SET status = 'queued', lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+               available_at = now(), last_error_code = 'lease_expired', updated_at = now()
+           WHERE status = 'leased' AND lease_expires_at <= now() AND attempt_count < max_attempts"#,
+    )
+    .execute(&mut *transaction)
+    .await?;
+
+    let candidate: Option<(
+        Uuid,
+        i16,
+        String,
+        String,
+        String,
+        Option<String>,
+        Value,
+        Vec<u8>,
+        i64,
+    )> = sqlx::query_as(
+        r#"SELECT job.id, job.attempt_count, provider.kind, provider.base_url,
+                      provider.model, provider.credential_env_var, job.request_spec,
+                      job.request_hash, job.reserved_cost_microunits
+               FROM content_generation_jobs job
+               JOIN content_provider_configs provider ON provider.id = job.provider_id
+               WHERE job.status = 'queued' AND job.available_at <= now()
+               ORDER BY job.available_at, job.created_at
+               FOR UPDATE OF job SKIP LOCKED LIMIT 1"#,
+    )
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some((
+        job_id,
+        attempt_count,
+        provider_kind,
+        base_url,
+        model,
+        credential_env_var,
+        request_spec,
+        request_hash,
+        reserved_cost_microunits,
+    )) = candidate
+    else {
+        transaction.commit().await?;
+        return Ok(None);
+    };
+    let attempt_number = attempt_count + 1;
+    let lease_token = Uuid::now_v7();
+    let attempt_id = Uuid::now_v7();
+    let lease_seconds = i64::try_from(lease_duration.as_secs())
+        .unwrap_or(i64::MAX)
+        .clamp(1, 300);
+    let lease_expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(lease_seconds);
+    sqlx::query(
+        r#"UPDATE content_generation_jobs
+           SET status = 'leased', attempt_count = $2, lease_owner = $3,
+               lease_token = $4, lease_expires_at = $5, updated_at = now()
+           WHERE id = $1"#,
+    )
+    .bind(job_id)
+    .bind(attempt_number)
+    .bind(worker_id)
+    .bind(lease_token)
+    .bind(lease_expires_at)
+    .execute(&mut *transaction)
+    .await?;
+    let provider_snapshot = serde_json::json!({
+        "kind": &provider_kind,
+        "base_url": &base_url,
+        "model": &model,
+        "credential_env_var": &credential_env_var,
+    });
+    sqlx::query(
+        r#"INSERT INTO content_generation_attempts
+           (id, job_id, attempt_number, provider_snapshot, request_hash, status)
+           VALUES ($1,$2,$3,$4,$5,'running')"#,
+    )
+    .bind(attempt_id)
+    .bind(job_id)
+    .bind(attempt_number)
+    .bind(&provider_snapshot)
+    .bind(request_hash)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Some(GenerationLease {
+        job_id,
+        attempt_id,
+        attempt_number,
+        lease_token,
+        provider_kind,
+        base_url,
+        model,
+        credential_env_var,
+        request_spec,
+        reserved_cost_microunits,
+    }))
+}
+
+fn payload_hash(payload: &Value) -> Vec<u8> {
+    Sha256::digest(serde_json::to_vec(payload).unwrap_or_default()).to_vec()
+}
+
+pub async fn complete_generation_job(
+    pool: &sqlx::PgPool,
+    job_id: Uuid,
+    attempt_id: Uuid,
+    lease_token: Uuid,
+    payload: Value,
+    actual_cost_microunits: i64,
+) -> Result<(), CompleteGenerationError> {
+    let mut transaction = pool.begin().await?;
+    let lease: Option<(i64, i16)> = sqlx::query_as(
+        r#"SELECT reserved_cost_microunits, attempt_count FROM content_generation_jobs
+           WHERE id = $1 AND lease_token = $2 AND status = 'leased'
+             AND lease_expires_at > now() AND NOT settled FOR UPDATE"#,
+    )
+    .bind(job_id)
+    .bind(lease_token)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let (reserved, attempt_number) = lease.ok_or(CompleteGenerationError::LeaseLost)?;
+    if actual_cost_microunits < 0 || actual_cost_microunits > reserved {
+        return Err(CompleteGenerationError::CostExceeded);
+    }
+    let hash = payload_hash(&payload);
+    let attempt = sqlx::query(
+        "UPDATE content_generation_attempts SET status = 'completed', response_hash = $3, completed_at = now() WHERE id = $1 AND job_id = $2 AND status = 'running'",
+    ).bind(attempt_id).bind(job_id).bind(&hash).execute(&mut *transaction).await?;
+    if attempt.rows_affected() != 1 {
+        return Err(CompleteGenerationError::LeaseLost);
+    }
+    sqlx::query(
+        "INSERT INTO content_artifacts (job_id, attempt_id, artifact_kind, payload, content_hash) VALUES ($1,$2,'candidate',$3,$4)",
+    ).bind(job_id).bind(attempt_id).bind(&payload).bind(&hash).execute(&mut *transaction).await?;
+    sqlx::query(
+        r#"UPDATE content_generation_jobs SET status = 'completed', settled = true,
+           reserved_cost_microunits = 0, lease_owner = NULL, lease_token = NULL,
+           lease_expires_at = NULL, updated_at = now() WHERE id = $1"#,
+    )
+    .bind(job_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r#"UPDATE content_budgets SET reserved_microunits = reserved_microunits - $1,
+           spent_microunits = spent_microunits + $2, updated_at = now() WHERE budget_key = 'global'"#,
+    ).bind(reserved).bind(actual_cost_microunits).execute(&mut *transaction).await?;
+    sqlx::query("INSERT INTO audit_events (action, target_type, target_id, metadata) VALUES ('content_job.completed', 'content_generation_job', $1, jsonb_build_object('attempt', $2::smallint, 'cost_microunits', $3::bigint))")
+        .bind(job_id.to_string()).bind(attempt_number).bind(actual_cost_microunits).execute(&mut *transaction).await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+pub async fn fail_generation_job(
+    pool: &sqlx::PgPool,
+    job_id: Uuid,
+    attempt_id: Uuid,
+    lease_token: Uuid,
+    error_code: &str,
+    receipt: Value,
+    retryable: bool,
+) -> Result<(), CompleteGenerationError> {
+    let mut transaction = pool.begin().await?;
+    let lease: Option<(i16, i16, i64)> = sqlx::query_as(
+        r#"SELECT attempt_count, max_attempts, reserved_cost_microunits
+           FROM content_generation_jobs WHERE id = $1 AND lease_token = $2
+             AND status = 'leased' AND lease_expires_at > now() AND NOT settled FOR UPDATE"#,
+    )
+    .bind(job_id)
+    .bind(lease_token)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let (attempt_count, max_attempts, reserved) =
+        lease.ok_or(CompleteGenerationError::LeaseLost)?;
+    let will_retry = retryable && attempt_count < max_attempts;
+    let hash = payload_hash(&receipt);
+    let attempt = sqlx::query(
+        "UPDATE content_generation_attempts SET status = $3, response_hash = $4, error_code = $5, completed_at = now() WHERE id = $1 AND job_id = $2 AND status = 'running'",
+    ).bind(attempt_id).bind(job_id).bind(if will_retry { "retryable_failure" } else { "failed" })
+        .bind(&hash).bind(error_code).execute(&mut *transaction).await?;
+    if attempt.rows_affected() != 1 {
+        return Err(CompleteGenerationError::LeaseLost);
+    }
+    sqlx::query(
+        "INSERT INTO content_artifacts (job_id, attempt_id, artifact_kind, payload, content_hash) VALUES ($1,$2,'error_receipt',$3,$4)",
+    ).bind(job_id).bind(attempt_id).bind(&receipt).bind(&hash).execute(&mut *transaction).await?;
+    if will_retry {
+        let backoff_seconds = 1_i64 << u32::from(attempt_count.saturating_sub(1).min(6) as u16);
+        sqlx::query(
+            r#"UPDATE content_generation_jobs SET status = 'queued', lease_owner = NULL,
+               lease_token = NULL, lease_expires_at = NULL,
+               available_at = now() + make_interval(secs => $3),
+               last_error_code = $2, updated_at = now() WHERE id = $1"#,
+        )
+        .bind(job_id)
+        .bind(error_code)
+        .bind(backoff_seconds)
+        .execute(&mut *transaction)
+        .await?;
+    } else {
+        sqlx::query(
+            r#"UPDATE content_generation_jobs SET status = 'failed', settled = true,
+               reserved_cost_microunits = 0, lease_owner = NULL, lease_token = NULL,
+               lease_expires_at = NULL, last_error_code = $2, updated_at = now() WHERE id = $1"#,
+        )
+        .bind(job_id)
+        .bind(error_code)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query("UPDATE content_budgets SET reserved_microunits = reserved_microunits - $1, updated_at = now() WHERE budget_key = 'global'")
+            .bind(reserved).execute(&mut *transaction).await?;
+    }
+    sqlx::query(
+        "INSERT INTO audit_events (action, target_type, target_id, metadata) VALUES ($1, 'content_generation_job', $2, jsonb_build_object('attempt', $3::smallint, 'error_code', $4::text))",
+    )
+    .bind(if will_retry {
+        "content_job.retry_scheduled"
+    } else {
+        "content_job.failed"
+    })
+    .bind(job_id.to_string())
+    .bind(attempt_count)
+    .bind(error_code)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(())
 }
