@@ -241,6 +241,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/projects",
             axum::routing::post(crate::projects::create),
         )
+        .route("/api/v1/projects/{id}", get(crate::projects::detail))
         .route(
             "/api/v1/projects/{id}/assistance/evidence",
             axum::routing::post(crate::adaptive::evidence),

@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -271,6 +271,18 @@ async fn project_detail(
         assistance_policy: row.4,
         milestones,
     })
+}
+
+pub async fn detail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ProjectResponse>, ProjectError> {
+    let user = crate::auth::authenticated_user_id(&state, &headers).await?;
+    let mut tx = state.pool().begin().await?;
+    let result = project_detail(&mut tx, user, id).await?;
+    tx.commit().await?;
+    Ok(Json(result))
 }
 
 pub(crate) async fn owned_project(

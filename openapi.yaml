@@ -1093,6 +1093,71 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/learning/plans:
+    post:
+      operationId: createLearningPlan
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/LearningPlanRequest" } } } }
+      responses:
+        "200": { description: 멱등 재요청, content: { application/json: { schema: { $ref: "#/components/schemas/LearningPlanResponse" } } } }
+        "201": { description: 계획 생성, content: { application/json: { schema: { $ref: "#/components/schemas/LearningPlanResponse" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/learning/recommendations/{key}/reject:
+    parameters:
+      - { name: key, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9-]{3,64}$" } }
+    post:
+      operationId: rejectLearningRecommendation
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/RecommendationRejectRequest" } } } }
+      responses: *write_result
+  /api/v1/projects/ideas:
+    post:
+      operationId: createProjectIdea
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ProjectIdeaRequest" } } } }
+      responses:
+        "200": { description: 멱등 재요청, content: { application/json: { schema: { $ref: "#/components/schemas/ProjectIdeaResponse" } } } }
+        "201": { description: 범위가 검증된 아이디어, content: { application/json: { schema: { $ref: "#/components/schemas/ProjectIdeaResponse" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/projects:
+    post:
+      operationId: createLearnerProject
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ProjectCreateRequest" } } } }
+      responses:
+        "200": { description: 기존 프로젝트, content: { application/json: { schema: { $ref: "#/components/schemas/ProjectResponse" } } } }
+        "201": { description: 프로젝트 생성, content: { application/json: { schema: { $ref: "#/components/schemas/ProjectResponse" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/projects/{id}:
+    parameters: [*id]
+    get:
+      operationId: learnerProjectDetail
+      responses:
+        "200": { description: 내 프로젝트, content: { application/json: { schema: { $ref: "#/components/schemas/ProjectResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/projects/{id}/assistance/evidence:
+    parameters: [*id]
+    post:
+      operationId: recordProjectAssistanceEvidence
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AssistanceEvidenceRequest" } } } }
+      responses: *write_result
+  /api/v1/projects/{id}/assistance:
+    parameters: [*id]
+    post:
+      operationId: requestProjectAssistance
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AssistanceRequest" } } } }
+      responses: *write_result
+
 components:
   securitySchemes:
     sessionCookie:
@@ -1210,6 +1275,117 @@ components:
               idempotency_key: { type: string, format: uuid }
 
   schemas:
+    LearningPlanRequest:
+      type: object
+      additionalProperties: false
+      required: [rule_version, idempotency_key, target_outcome, weekly_minutes, preferred_language, path_mode, interests, goals, diagnostic_scores]
+      properties:
+        rule_version: { type: string, const: project-learning-v1 }
+        idempotency_key: { type: string, format: uuid }
+        target_outcome: { type: string, minLength: 1, maxLength: 300 }
+        weekly_minutes: { type: integer, minimum: 30, maximum: 2400 }
+        preferred_language: { type: string, pattern: "^[a-z0-9+#.-]{1,32}$" }
+        path_mode: { type: string, enum: [structured, exploratory] }
+        interests: { type: array, minItems: 1, maxItems: 10, items: { type: string, minLength: 1, maxLength: 80 } }
+        goals: { type: array, minItems: 1, maxItems: 10, items: { type: string, minLength: 1, maxLength: 120 } }
+        diagnostic_scores:
+          type: object
+          additionalProperties: false
+          required: [algorithmic_reasoning, code_literacy, docs_learning, independent_coding]
+          properties:
+            algorithmic_reasoning: { type: integer, minimum: 0, maximum: 100 }
+            code_literacy: { type: integer, minimum: 0, maximum: 100 }
+            docs_learning: { type: integer, minimum: 0, maximum: 100 }
+            independent_coding: { type: integer, minimum: 0, maximum: 100 }
+    LearningPlanResponse:
+      type: object
+      additionalProperties: false
+      required: [id, revision, rule_version, target_outcome, weekly_minutes, preferred_language, path_mode, recommendation_key, reason_codes, items, plan_hash, provider_used]
+      properties:
+        id: { type: string, format: uuid }
+        revision: { type: integer, minimum: 1 }
+        rule_version: { type: string, const: project-learning-v1 }
+        target_outcome: { type: string }
+        weekly_minutes: { type: integer }
+        preferred_language: { type: string }
+        path_mode: { type: string }
+        recommendation_key: { type: string }
+        reason_codes: { type: array, items: { type: string } }
+        items: { type: array, minItems: 1, maxItems: 12, items: { type: object, additionalProperties: false, required: [kind, title, estimated_minutes, reason_code], properties: { kind: { type: string }, title: { type: string }, estimated_minutes: { type: integer, minimum: 1 }, reason_code: { type: string } } } }
+        plan_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        provider_used: { type: boolean, const: false }
+    RecommendationRejectRequest:
+      type: object
+      additionalProperties: false
+      required: [reason, idempotency_key]
+      properties: { reason: { type: string, minLength: 1, maxLength: 500 }, idempotency_key: { type: string, format: uuid } }
+    ProjectIdeaRequest:
+      type: object
+      additionalProperties: false
+      required: [title, motivation, target_user, intended_outcome, core_feature, technology, weekly_minutes, requested_features, assistance_policy, idempotency_key]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 120 }
+        motivation: { type: string, minLength: 1, maxLength: 500 }
+        target_user: { type: string, minLength: 1, maxLength: 200 }
+        intended_outcome: { type: string, minLength: 1, maxLength: 300 }
+        core_feature: { type: string, minLength: 1, maxLength: 120 }
+        technology: { type: string, pattern: "^[a-z0-9+#.-]{1,32}$" }
+        weekly_minutes: { type: integer, minimum: 30, maximum: 2400 }
+        requested_features: { type: array, minItems: 1, maxItems: 20, items: { type: string, minLength: 1, maxLength: 120 } }
+        assistance_policy: { type: string, enum: [guided_ai, socratic_ai, documentation_navigator, curated_documentation, cheat_sheet_only, independent, transfer_challenge] }
+        idempotency_key: { type: string, format: uuid }
+    ProjectMilestone:
+      type: object
+      additionalProperties: false
+      required: [position, title, estimated_minutes, visible_result]
+      properties: { id: { type: string, format: uuid }, position: { type: integer, minimum: 1, maximum: 3 }, title: { type: string }, estimated_minutes: { type: integer, minimum: 30, maximum: 120 }, visible_result: { type: boolean }, status: { type: string, enum: [planned, active, completed] } }
+    ProjectIdeaResponse:
+      type: object
+      additionalProperties: false
+      required: [id, revision, title, motivation, target_user, intended_outcome, core_feature, technology, weekly_minutes, assistance_policy, features, milestones, scope_reduced, provider_used, rule_version]
+      properties:
+        id: { type: string, format: uuid }
+        revision: { type: integer, minimum: 1 }
+        title: { type: string }
+        motivation: { type: string }
+        target_user: { type: string }
+        intended_outcome: { type: string }
+        core_feature: { type: string }
+        technology: { type: string }
+        weekly_minutes: { type: integer }
+        assistance_policy: { type: string }
+        features: { type: array, minItems: 1, maxItems: 5, items: { type: string } }
+        milestones: { type: array, minItems: 1, maxItems: 3, items: { $ref: "#/components/schemas/ProjectMilestone" } }
+        scope_reduced: { type: boolean }
+        provider_used: { type: boolean, const: false }
+        rule_version: { type: string, const: project-learning-v1 }
+    ProjectCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [idea_id, idempotency_key]
+      properties: { idea_id: { type: string, format: uuid }, idempotency_key: { type: string, format: uuid } }
+    ProjectResponse:
+      type: object
+      additionalProperties: false
+      required: [id, idea_id, status, title, technology, assistance_policy, milestones]
+      properties:
+        id: { type: string, format: uuid }
+        idea_id: { type: string, format: uuid }
+        status: { type: string, enum: [active, completed, archived] }
+        title: { type: string }
+        technology: { type: string }
+        assistance_policy: { type: string }
+        milestones: { type: array, minItems: 1, maxItems: 3, items: { $ref: "#/components/schemas/ProjectMilestone" } }
+    AssistanceEvidenceRequest:
+      type: object
+      additionalProperties: false
+      required: [milestone_id, skill, kind, successful, idempotency_key]
+      properties: { milestone_id: { type: string, format: uuid }, skill: { type: string, pattern: "^[a-z0-9+#.-]{1,32}$" }, kind: { type: string, enum: [mastery, attempt] }, successful: { type: boolean }, idempotency_key: { type: string, format: uuid } }
+    AssistanceRequest:
+      type: object
+      additionalProperties: false
+      required: [milestone_id, skill]
+      properties: { milestone_id: { type: string, format: uuid }, skill: { type: string, pattern: "^[a-z0-9+#.-]{1,32}$" } }
     Error:
       type: object
       additionalProperties: false

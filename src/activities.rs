@@ -837,6 +837,8 @@ pub struct AiStatusResponse {
     provider: String,
     available_levels: Vec<i16>,
     ai_levels: Vec<i16>,
+    deterministic_project_learning: bool,
+    project_learning_rule_version: &'static str,
 }
 
 pub async fn ai_status(State(state): State<AppState>) -> Json<AiStatusResponse> {
@@ -845,6 +847,8 @@ pub async fn ai_status(State(state): State<AppState>) -> Json<AiStatusResponse> 
         provider: state.ai_provider().name().to_owned(),
         available_levels: (1..=6).collect(),
         ai_levels: vec![7, 8, 9],
+        deterministic_project_learning: true,
+        project_learning_rule_version: "project-learning-v1",
     })
 }
 

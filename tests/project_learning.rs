@@ -135,6 +135,35 @@ async fn same_input_and_rule_produce_same_auditable_plan(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn concurrent_plan_idempotency_creates_one_revision(pool: PgPool) {
+    let app = app(pool.clone());
+    let user = session(&app).await;
+    let key = Uuid::now_v7();
+    let (left, right) = tokio::join!(
+        post(&app, &user, "/api/v1/learning/plans", plan_request(key)),
+        post(&app, &user, "/api/v1/learning/plans", plan_request(key))
+    );
+    assert!(matches!(
+        left.status(),
+        StatusCode::CREATED | StatusCode::OK
+    ));
+    assert!(matches!(
+        right.status(),
+        StatusCode::CREATED | StatusCode::OK
+    ));
+    let left = json_body(left).await;
+    let right = json_body(right).await;
+    assert_eq!(left["id"], right["id"]);
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM learning_plan_revisions WHERE idempotency_key=$1")
+            .bind(key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(rows, 1);
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn rejection_is_recorded_and_not_forced_on_replan(pool: PgPool) {
     let app = app(pool.clone());
     let user = session(&app).await;
