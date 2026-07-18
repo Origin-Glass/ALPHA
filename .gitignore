@@ -1,6 +1,9 @@
 /target/
 /web/node_modules/
 /web/dist/
+/web/*.tsbuildinfo
+/web/test-results/
+/web/playwright-report/
 .env
+/backups/
 .DS_Store
-

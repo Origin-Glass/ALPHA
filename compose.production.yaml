@@ -1,0 +1,152 @@
+name: alpha-production
+
+x-app-environment: &app-environment
+  APP_ENV: production
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+  SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
+  TEST_IDENTITY_ENABLED: "false"
+  TRUST_PROXY_HEADERS: "true"
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+  GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+  PAYMENTS_ENABLED: "false"
+  PAYMENT_PROVIDER: disabled
+  AI_ENABLED: "false"
+  AI_PROVIDER: disabled
+  SOLVED_AC_ENABLED: ${SOLVED_AC_ENABLED:-false}
+
+x-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+services:
+  db:
+    image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
+    environment:
+      POSTGRES_DB: alpha
+      POSTGRES_USER: alpha
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - alpha-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alpha -d alpha"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 2g
+    pids_limit: 256
+    logging: *bounded-logging
+    restart: unless-stopped
+
+  migrate:
+    image: ${ALPHA_API_IMAGE:?ALPHA_API_IMAGE digest is required}
+    command: ["migrate"]
+    environment: *app-environment
+    depends_on:
+      db:
+        condition: service_healthy
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging: *bounded-logging
+    restart: "no"
+
+  api:
+    image: ${ALPHA_API_IMAGE:?ALPHA_API_IMAGE digest is required}
+    environment: *app-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    mem_limit: 512m
+    pids_limit: 128
+    stop_grace_period: 30s
+    logging: *bounded-logging
+    restart: unless-stopped
+
+  web:
+    image: ${ALPHA_WEB_IMAGE:?ALPHA_WEB_IMAGE digest is required}
+    ports:
+      - "${ALPHA_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+      - /var/cache/nginx:size=16m,noexec,nosuid,nodev
+      - /var/run:size=4m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    pids_limit: 128
+    logging: *bounded-logging
+    restart: unless-stopped
+
+  metadata-worker:
+    image: ${ALPHA_API_IMAGE:?ALPHA_API_IMAGE digest is required}
+    command: ["metadata_worker"]
+    environment:
+      <<: *app-environment
+      METADATA_REFRESH_INTERVAL_SECONDS: ${METADATA_REFRESH_INTERVAL_SECONDS:-3600}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    pids_limit: 128
+    stop_grace_period: 30s
+    logging: *bounded-logging
+    restart: unless-stopped
+
+  judge-image:
+    image: ${JUDGE_IMAGE:?JUDGE_IMAGE digest is required}
+    command: ["/bin/true"]
+    restart: "no"
+
+  judge-worker:
+    image: ${ALPHA_JUDGE_WORKER_IMAGE:?ALPHA_JUDGE_WORKER_IMAGE digest is required}
+    command: ["judge_worker"]
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      JUDGE_IMAGE: ${JUDGE_IMAGE:?JUDGE_IMAGE digest is required}
+      JUDGE_WORKER_ID: ${JUDGE_WORKER_ID:-production-worker-1}
+      TMPDIR: ${ALPHA_JUDGE_WORKSPACE:?ALPHA_JUDGE_WORKSPACE is required}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${ALPHA_JUDGE_WORKSPACE:?ALPHA_JUDGE_WORKSPACE is required}:${ALPHA_JUDGE_WORKSPACE:?ALPHA_JUDGE_WORKSPACE is required}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      judge-image:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    pids_limit: 128
+    stop_grace_period: 15m
+    logging: *bounded-logging
+    restart: unless-stopped
+
+volumes:
+  alpha-db:
