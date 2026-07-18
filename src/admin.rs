@@ -469,6 +469,17 @@ pub async fn workers(
     Ok(Json(WorkerListResponse { items }))
 }
 
+pub async fn operations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<crate::observability::OperationalSnapshot>, AdminError> {
+    let user_id = crate::auth::authenticated_user_id(&state, &headers).await?;
+    require_role(&state, user_id, &["ADMIN"]).await?;
+    Ok(Json(
+        crate::observability::operational_snapshot(state.pool()).await?,
+    ))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AuditQuery {
     limit: Option<u16>,

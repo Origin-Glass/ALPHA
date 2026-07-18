@@ -931,6 +931,10 @@ paths:
     get:
       operationId: adminJudgeWorkers
       responses: *ok
+  /api/v1/admin/operations:
+    get:
+      operationId: adminOperations
+      responses: *ok
   /api/v1/admin/audit:
     get:
       operationId: adminAuditLog

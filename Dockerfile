@@ -21,6 +21,7 @@ COPY --from=builder /build/target/release/metadata_worker /usr/local/bin/metadat
 COPY --from=builder /build/target/release/content_worker /usr/local/bin/content_worker
 COPY --from=builder /build/target/release/workspace_worker /usr/local/bin/workspace_worker
 COPY --from=builder /build/target/release/migrate /usr/local/bin/migrate
+COPY --from=builder /build/target/release/publication_gate /usr/local/bin/publication_gate
 
 ENV BIND_ADDRESS=0.0.0.0:8080
 EXPOSE 8080

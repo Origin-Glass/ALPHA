@@ -435,6 +435,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(crate::community::resolve_report),
         )
         .route("/api/v1/admin/judge/workers", get(crate::admin::workers))
+        .route("/api/v1/admin/operations", get(crate::admin::operations))
         .route("/api/v1/admin/audit", get(crate::admin::audit_log))
         .route(
             "/api/v1/payments/checkout",
@@ -571,9 +572,10 @@ async fn metrics(State(state): State<AppState>) -> Response {
     )
     .fetch_one(state.pool())
     .await;
-    let (jobs, workers) = match (jobs, workers) {
-        (Ok(jobs), Ok(workers)) => (jobs, workers),
-        (Err(error), _) | (_, Err(error)) => {
+    let operations = crate::observability::operational_snapshot(state.pool()).await;
+    let (jobs, workers, operations) = match (jobs, workers, operations) {
+        (Ok(jobs), Ok(workers), Ok(operations)) => (jobs, workers, operations),
+        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
             tracing::warn!(%error, "운영 지표 조회 실패");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -596,6 +598,31 @@ async fn metrics(State(state): State<AppState>) -> Response {
             "# TYPE alpha_judge_workers gauge\n",
             "alpha_judge_workers{{health=\"healthy\"}} {}\n",
             "alpha_judge_workers{{health=\"stale\"}} {}\n",
+            "# TYPE alpha_content_providers gauge\n",
+            "alpha_content_providers{{state=\"unhealthy\"}} {}\n",
+            "alpha_content_providers{{state=\"unverified\"}} {}\n",
+            "alpha_content_providers{{state=\"disabled\"}} {}\n",
+            "# TYPE alpha_content_generation_jobs gauge\n",
+            "alpha_content_generation_jobs{{state=\"queued\"}} {}\n",
+            "alpha_content_generation_jobs{{state=\"running\"}} {}\n",
+            "alpha_content_generation_jobs{{state=\"expired_lease\"}} {}\n",
+            "alpha_content_generation_jobs{{state=\"failed\"}} {}\n",
+            "alpha_content_generation_jobs{{state=\"blocked\"}} {}\n",
+            "# TYPE alpha_content_reviews gauge\n",
+            "alpha_content_reviews{{state=\"ai_pending\"}} {}\n",
+            "alpha_content_reviews{{state=\"human_pending\"}} {}\n",
+            "alpha_content_reviews{{state=\"rights_pending\"}} {}\n",
+            "alpha_content_reviews{{state=\"pilot_pending\"}} {}\n",
+            "alpha_content_reviews{{state=\"removal_pending\"}} {}\n",
+            "alpha_publication_rights_blockers {}\n",
+            "# TYPE alpha_learning_projects gauge\n",
+            "alpha_learning_projects{{state=\"active\"}} {}\n",
+            "alpha_learning_projects{{state=\"stalled\"}} {}\n",
+            "# TYPE alpha_workspace_runs gauge\n",
+            "alpha_workspace_runs{{state=\"queued\"}} {}\n",
+            "alpha_workspace_runs{{state=\"running\"}} {}\n",
+            "alpha_workspace_runs{{state=\"expired_lease\"}} {}\n",
+            "alpha_workspace_runs{{state=\"failed\"}} {}\n",
             "alpha_metrics_up 1\n"
         ),
         state.runtime().request_count(),
@@ -605,6 +632,26 @@ async fn metrics(State(state): State<AppState>) -> Response {
         jobs.2,
         workers.0,
         workers.1,
+        operations.providers.unhealthy,
+        operations.providers.unverified,
+        operations.providers.disabled,
+        operations.generation_jobs.queued,
+        operations.generation_jobs.running,
+        operations.generation_jobs.expired_leases,
+        operations.generation_jobs.failed,
+        operations.generation_jobs.blocked,
+        operations.reviews.ai_pending,
+        operations.reviews.human_pending,
+        operations.reviews.rights_pending,
+        operations.reviews.pilot_pending,
+        operations.reviews.removal_pending,
+        operations.rights.publication_blockers,
+        operations.learning.active_projects,
+        operations.learning.stalled_projects,
+        operations.workspaces.queued,
+        operations.workspaces.running,
+        operations.workspaces.expired_leases,
+        operations.workspaces.failed,
     );
     (
         StatusCode::OK,
