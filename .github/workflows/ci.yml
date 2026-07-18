@@ -106,6 +106,7 @@ jobs:
       - name: API·워커 준비 확인
         run: |
           curl --fail --retry 30 --retry-delay 2 http://127.0.0.1:18080/api/v1/problems
+          ./ops/gateway-smoke.sh http://127.0.0.1:18080
           docker compose exec -T api curl --fail --silent http://127.0.0.1:8080/metrics | grep 'alpha_judge_workers{health="healthy"} 1'
       - name: Chromium 설치
         working-directory: web
