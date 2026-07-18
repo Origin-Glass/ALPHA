@@ -186,14 +186,15 @@ async fn review(
         ));
     }
     let mut transaction = state.pool().begin().await?;
-    let (revision_id, author_id, content_reviewer, usable_rights): (
+    let (revision_id, author_id, content_reviewer, rights_reviewer, usable_rights): (
         Uuid,
         Uuid,
+        Option<Uuid>,
         Option<Uuid>,
         bool,
     ) = sqlx::query_as(
         r#"SELECT governance.problem_revision_id, governance.author_user_id,
-                  governance.content_reviewed_by,
+                  governance.content_reviewed_by, governance.rights_reviewed_by,
                   governance.commercial_use_allowed AND governance.redistribution_allowed
            FROM content_governance governance
            JOIN problems problem ON problem.id = governance.problem_id
@@ -205,7 +206,10 @@ async fn review(
     .fetch_optional(&mut *transaction)
     .await?
     .ok_or(GovernanceError::Conflict("승인된 권리 기록이 필요합니다"))?;
-    if author_id == user_id || (rights && content_reviewer == Some(user_id)) {
+    if author_id == user_id
+        || (rights && content_reviewer == Some(user_id))
+        || (!rights && rights_reviewer == Some(user_id))
+    {
         return Err(GovernanceError::Forbidden);
     }
     if rights && !usable_rights {

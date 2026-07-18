@@ -104,7 +104,10 @@ async fn publication_requires_usable_rights_and_two_non_author_reviewers(pool: P
     let content_reviewer = login(&app, "content-reviewer").await;
     let rights_reviewer = login(&app, "rights-reviewer").await;
     grant(&pool, &author, "CONTENT_CREATOR").await;
+    grant(&pool, &author, "CONTENT_REVIEWER").await;
+    grant(&pool, &author, "RIGHTS_REVIEWER").await;
     grant(&pool, &content_reviewer, "CONTENT_REVIEWER").await;
+    grant(&pool, &content_reviewer, "RIGHTS_REVIEWER").await;
     grant(&pool, &rights_reviewer, "RIGHTS_REVIEWER").await;
     for session in [&author, &content_reviewer, &rights_reviewer] {
         assert_eq!(
@@ -176,6 +179,42 @@ async fn publication_requires_usable_rights_and_two_non_author_reviewers(pool: P
         StatusCode::FORBIDDEN
     );
 
+    assert_eq!(
+        post(
+            &app,
+            &author,
+            rights_uri,
+            json!({
+                "basis": "original", "evidence": "작성자 원본 제작 기록",
+                "commercial_use_allowed": true, "redistribution_allowed": true
+            })
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        post(
+            &app,
+            &content_reviewer,
+            "/api/v1/governance/problems/rights-gated-problem/reviews/rights",
+            json!({"note": "권리부터 검토"})
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        post(
+            &app,
+            &content_reviewer,
+            "/api/v1/governance/problems/rights-gated-problem/reviews/content",
+            json!({"note": "동일인 겸임 시도"})
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
     assert_eq!(
         post(
             &app,
