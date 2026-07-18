@@ -21,6 +21,7 @@ pub enum LearningPlanError {
     Auth(AuthError),
     Invalid(&'static str),
     NotFound,
+    Forbidden,
     Conflict,
     Database(sqlx::Error),
 }
@@ -48,6 +49,11 @@ impl IntoResponse for LearningPlanError {
                 StatusCode::CONFLICT,
                 "idempotency_conflict",
                 "같은 멱등키에 다른 요청을 사용할 수 없습니다",
+            ),
+            Self::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "template_assignment_forbidden",
+                "이 학습 계획 템플릿은 현재 사용자에게 배정되지 않았습니다",
             ),
             Self::Database(e) => {
                 tracing::error!(%e, "학습 계획 처리 실패");
@@ -312,6 +318,21 @@ pub async fn create(
         .bind(user_id)
         .fetch_one(&mut *tx)
         .await?;
+    if let Some(template_id) = request.template_id {
+        let assigned: Option<SqlJson<Value>> = sqlx::query_scalar(
+            "SELECT locked_requirements FROM learning_plan_assignments WHERE user_id=$1 AND template_id=$2",
+        )
+        .bind(user_id)
+        .bind(template_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let assigned = assigned.ok_or(LearningPlanError::Forbidden)?;
+        if assigned.0 != json!(request.locked_requirements) {
+            return Err(LearningPlanError::Invalid(
+                "배정된 템플릿의 잠긴 요구사항과 정확히 일치해야 합니다",
+            ));
+        }
+    }
     if let Some(existing) = sqlx::query_scalar::<_, SqlJson<Value>>(
         "SELECT input FROM learning_plan_revisions WHERE user_id=$1 AND idempotency_key=$2",
     )

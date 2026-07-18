@@ -139,7 +139,7 @@ async fn confirm(app: &axum::Router, user: &Session, idea: &Value) {
 
 async fn activity_attempt(pool: &PgPool, user: Uuid, passed: bool, class: Option<&str>) -> Uuid {
     let activity: Uuid =
-        sqlx::query_scalar("SELECT id FROM learning_activities ORDER BY slug LIMIT 1")
+        sqlx::query_scalar("SELECT activity.id FROM learning_activities activity JOIN learning_activity_axes axis ON axis.activity_id=activity.id WHERE axis.required_skill='code_literacy' ORDER BY activity.slug LIMIT 1")
             .fetch_one(pool)
             .await
             .unwrap();
@@ -220,8 +220,29 @@ async fn same_input_and_rule_produce_same_auditable_plan(pool: PgPool) {
     );
     let mut assigned = plan_request(Uuid::now_v7());
     assigned["origin"] = json!("template_assignment");
-    assigned["template_id"] = json!(Uuid::now_v7());
+    let template_id = Uuid::now_v7();
+    assigned["template_id"] = json!(template_id);
     assigned["locked_requirements"] = json!(["필수 코드 읽기"]);
+    assert_eq!(
+        post(&app, &user, "/api/v1/learning/plans", assigned.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    sqlx::query("INSERT INTO learning_plan_templates (id,template_key,locked_requirements) VALUES ($1,'required-code-reading',$2)")
+        .bind(template_id).bind(json!(["필수 코드 읽기"])).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO learning_plan_assignments (id,user_id,template_id,locked_requirements) VALUES ($1,$2,$3,$4)")
+        .bind(Uuid::now_v7()).bind(user.user_id).bind(template_id).bind(json!(["필수 코드 읽기"])).execute(&pool).await.unwrap();
+    let mut forged = assigned.clone();
+    forged["idempotency_key"] = json!(Uuid::now_v7());
+    forged["locked_requirements"] = json!(["학습자 자기선언"]);
+    assert_eq!(
+        post(&app, &user, "/api/v1/learning/plans", forged)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assigned["idempotency_key"] = json!(Uuid::now_v7());
     let assigned = json_body(post(&app, &user, "/api/v1/learning/plans", assigned).await).await;
     assert_eq!(assigned["origin"], "template_assignment");
     assert_eq!(assigned["locked_requirements"], json!(["필수 코드 읽기"]));
@@ -351,6 +372,19 @@ async fn oversized_idea_is_reduced_to_feasible_owned_choices(pool: PgPool) {
     assert_eq!(idea["milestones"][0]["visible_result"], true);
     assert_eq!(idea["scope_reduced"], true);
     assert!(idea["feasibility_reasons"].as_array().unwrap().len() >= 4);
+    assert!(
+        idea["feasibility_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason
+                .as_str()
+                .is_some_and(|value| value.starts_with("skill_mapping:")))
+    );
+    assert!(matches!(
+        idea["milestones"][0]["required_skill"].as_str(),
+        Some("algorithmic_reasoning" | "code_literacy" | "docs_learning" | "independent_coding")
+    ));
     assert!(!idea["excluded_features"].as_array().unwrap().is_empty());
     assert_eq!(idea["confirmation_required"], true);
 }
@@ -388,15 +422,15 @@ async fn mastery_reduces_support_and_repeated_failure_raises_only_one_step(pool:
     let milestone_id = project["milestones"][0]["id"].as_str().unwrap();
     let independent = activity_attempt(&pool, user.user_id, true, Some("independent")).await;
     let mastery = json_body(post(&app, &user, &format!("/api/v1/projects/{project_id}/assistance/evidence"),
-        json!({"milestone_id":milestone_id,"skill":"typescript","kind":"mastery","successful":true,"source_attempt_id":independent,"idempotency_key":Uuid::now_v7()})).await).await;
-    assert_eq!(mastery["level"], 4);
+        json!({"milestone_id":milestone_id,"skill":project["milestones"][0]["required_skill"],"kind":"mastery","successful":true,"source_attempt_id":independent,"idempotency_key":Uuid::now_v7()})).await).await;
+    assert_eq!(mastery["level"], 4, "{mastery}");
     let failed1 = activity_attempt(&pool, user.user_id, false, None).await;
     let first_failure = json_body(post(&app, &user, &format!("/api/v1/projects/{project_id}/assistance/evidence"),
-        json!({"milestone_id":milestone_id,"skill":"typescript","kind":"attempt","successful":false,"source_attempt_id":failed1,"idempotency_key":Uuid::now_v7()})).await).await;
+        json!({"milestone_id":milestone_id,"skill":project["milestones"][0]["required_skill"],"kind":"attempt","successful":false,"source_attempt_id":failed1,"idempotency_key":Uuid::now_v7()})).await).await;
     assert_eq!(first_failure["level"], 4);
     let failed2 = activity_attempt(&pool, user.user_id, false, None).await;
     let repeated = json_body(post(&app, &user, &format!("/api/v1/projects/{project_id}/assistance/evidence"),
-        json!({"milestone_id":milestone_id,"skill":"typescript","kind":"attempt","successful":false,"source_attempt_id":failed2,"idempotency_key":Uuid::now_v7()})).await).await;
+        json!({"milestone_id":milestone_id,"skill":project["milestones"][0]["required_skill"],"kind":"attempt","successful":false,"source_attempt_id":failed2,"idempotency_key":Uuid::now_v7()})).await).await;
     assert_eq!(repeated["level"], 5);
     assert_eq!(repeated["previous_level"], 4);
 }
@@ -444,7 +478,7 @@ async fn disabled_ai_still_completes_plan_idea_project_and_help(pool: PgPool) {
                 "/api/v1/projects/{}/assistance",
                 project["id"].as_str().unwrap()
             ),
-            json!({"milestone_id":project["milestones"][0]["id"],"skill":"typescript","idempotency_key":Uuid::now_v7()}),
+            json!({"milestone_id":project["milestones"][0]["id"],"skill":project["milestones"][0]["required_skill"],"idempotency_key":Uuid::now_v7()}),
         )
         .await,
     )
@@ -469,15 +503,15 @@ async fn assisted_or_missing_receipt_cannot_reduce_support_and_success_resets_fa
     );
     let milestone = &project["milestones"][0]["id"];
     let assisted = activity_attempt(&pool, user.user_id, true, Some("assisted")).await;
-    assert_eq!(post(&app,&user,&uri,json!({"milestone_id":milestone,"skill":"typescript","kind":"mastery","successful":true,"source_attempt_id":assisted,"idempotency_key":Uuid::now_v7()})).await.status(),StatusCode::BAD_REQUEST);
-    assert_eq!(post(&app,&user,&uri,json!({"milestone_id":milestone,"skill":"typescript","kind":"mastery","successful":true,"source_attempt_id":Uuid::now_v7(),"idempotency_key":Uuid::now_v7()})).await.status(),StatusCode::BAD_REQUEST);
+    assert_eq!(post(&app,&user,&uri,json!({"milestone_id":milestone,"skill":project["milestones"][0]["required_skill"],"kind":"mastery","successful":true,"source_attempt_id":assisted,"idempotency_key":Uuid::now_v7()})).await.status(),StatusCode::BAD_REQUEST);
+    assert_eq!(post(&app,&user,&uri,json!({"milestone_id":milestone,"skill":project["milestones"][0]["required_skill"],"kind":"mastery","successful":true,"source_attempt_id":Uuid::now_v7(),"idempotency_key":Uuid::now_v7()})).await.status(),StatusCode::BAD_REQUEST);
     let failed1 = activity_attempt(&pool, user.user_id, false, None).await;
-    assert_eq!(json_body(post(&app,&user,&uri,json!({"milestone_id":milestone,"skill":"typescript","kind":"attempt","successful":false,"source_attempt_id":failed1,"idempotency_key":Uuid::now_v7()})).await).await["level"],5);
+    assert_eq!(json_body(post(&app,&user,&uri,json!({"milestone_id":milestone,"skill":project["milestones"][0]["required_skill"],"kind":"attempt","successful":false,"source_attempt_id":failed1,"idempotency_key":Uuid::now_v7()})).await).await["level"],5);
     let success = activity_attempt(&pool, user.user_id, true, Some("assisted")).await;
-    assert_eq!(json_body(post(&app,&user,&uri,json!({"milestone_id":milestone,"skill":"typescript","kind":"attempt","successful":true,"source_attempt_id":success,"idempotency_key":Uuid::now_v7()})).await).await["level"],5);
+    assert_eq!(json_body(post(&app,&user,&uri,json!({"milestone_id":milestone,"skill":project["milestones"][0]["required_skill"],"kind":"attempt","successful":true,"source_attempt_id":success,"idempotency_key":Uuid::now_v7()})).await).await["level"],5);
     for expected in [5, 6] {
         let failed = activity_attempt(&pool, user.user_id, false, None).await;
-        let body=json_body(post(&app,&user,&uri,json!({"milestone_id":milestone,"skill":"typescript","kind":"attempt","successful":false,"source_attempt_id":failed,"idempotency_key":Uuid::now_v7()})).await).await;
+        let body=json_body(post(&app,&user,&uri,json!({"milestone_id":milestone,"skill":project["milestones"][0]["required_skill"],"kind":"attempt","successful":false,"source_attempt_id":failed,"idempotency_key":Uuid::now_v7()})).await).await;
         assert_eq!(body["level"], expected);
     }
 }
@@ -492,7 +526,7 @@ async fn concurrent_help_replay_converges_and_cross_kind_key_conflicts(pool: PgP
         cheat_project["id"].as_str().unwrap()
     );
     let key = Uuid::now_v7();
-    let payload = json!({"milestone_id":cheat_project["milestones"][0]["id"],"skill":"typescript","idempotency_key":key});
+    let payload = json!({"milestone_id":cheat_project["milestones"][0]["id"],"skill":cheat_project["milestones"][0]["required_skill"],"idempotency_key":key});
     let (left, right) = tokio::join!(
         post(&app, &user, &uri, payload.clone()),
         post(&app, &user, &uri, payload)
@@ -513,10 +547,10 @@ async fn concurrent_help_replay_converges_and_cross_kind_key_conflicts(pool: PgP
     assert_eq!(events, 1);
     let attempt = activity_attempt(&pool, user.user_id, false, None).await;
     let evidence_uri = format!("{uri}/evidence");
-    assert_eq!(post(&app,&user,&evidence_uri,json!({"milestone_id":cheat_project["milestones"][0]["id"],"skill":"typescript","kind":"attempt","successful":false,"source_attempt_id":attempt,"idempotency_key":key})).await.status(),StatusCode::CONFLICT);
+    assert_eq!(post(&app,&user,&evidence_uri,json!({"milestone_id":cheat_project["milestones"][0]["id"],"skill":cheat_project["milestones"][0]["required_skill"],"kind":"attempt","successful":false,"source_attempt_id":attempt,"idempotency_key":key})).await.status(),StatusCode::CONFLICT);
     let evidence_key = Uuid::now_v7();
     let failed = activity_attempt(&pool, user.user_id, false, None).await;
-    let evidence = json!({"milestone_id":cheat_project["milestones"][0]["id"],"skill":"typescript","kind":"attempt","successful":false,"source_attempt_id":failed,"idempotency_key":evidence_key});
+    let evidence = json!({"milestone_id":cheat_project["milestones"][0]["id"],"skill":cheat_project["milestones"][0]["required_skill"],"kind":"attempt","successful":false,"source_attempt_id":failed,"idempotency_key":evidence_key});
     let (left, right) = tokio::join!(
         post(&app, &user, &evidence_uri, evidence.clone()),
         post(&app, &user, &evidence_uri, evidence)
@@ -531,7 +565,7 @@ async fn concurrent_help_replay_converges_and_cross_kind_key_conflicts(pool: PgP
             .unwrap();
     assert_eq!(events, 1);
     let transfer = project(&app, &user, "transfer_challenge").await;
-    let help=json_body(post(&app,&user,&format!("/api/v1/projects/{}/assistance",transfer["id"].as_str().unwrap()),json!({"milestone_id":transfer["milestones"][0]["id"],"skill":"typescript","idempotency_key":Uuid::now_v7()})).await).await;
+    let help=json_body(post(&app,&user,&format!("/api/v1/projects/{}/assistance",transfer["id"].as_str().unwrap()),json!({"milestone_id":transfer["milestones"][0]["id"],"skill":transfer["milestones"][0]["required_skill"],"idempotency_key":Uuid::now_v7()})).await).await;
     assert_eq!(help["mode"], "transfer_challenge");
     assert!(help["content"].as_str().unwrap().contains("다른 맥락"));
 }
@@ -645,7 +679,7 @@ async fn confirmation_and_evidence_are_bound_to_server_requirements(pool: PgPool
             "/api/v1/projects/ideas",
             idea_request(
                 Uuid::now_v7(),
-                vec!["기록", "목록"],
+                vec!["기록", "목록", "통계", "채팅", "랭킹"],
                 "documentation_navigator",
             ),
         )
@@ -655,6 +689,17 @@ async fn confirmation_and_evidence_are_bound_to_server_requirements(pool: PgPool
     let confirm_uri = format!(
         "/api/v1/projects/ideas/{}/confirm",
         idea["id"].as_str().unwrap()
+    );
+    assert_eq!(
+        post(
+            &app,
+            &user,
+            &confirm_uri,
+            json!({"scoped_features":[idea["features"][0],idea["excluded_features"][0]["feature"]],"milestones":idea["milestones"],"idempotency_key":Uuid::now_v7()})
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
     );
     assert_eq!(
         post(
@@ -694,7 +739,7 @@ async fn confirmation_and_evidence_are_bound_to_server_requirements(pool: PgPool
         StatusCode::BAD_REQUEST
     );
     confirm(&app, &user, &idea).await;
-    let project = json_body(
+    let primary_project = json_body(
         post(
             &app,
             &user,
@@ -705,11 +750,11 @@ async fn confirmation_and_evidence_are_bound_to_server_requirements(pool: PgPool
     )
     .await;
     assert_eq!(
-        project["milestones"][0]["required_activity_slug"],
+        primary_project["milestones"][0]["required_activity_slug"],
         idea["milestones"][0]["required_activity_slug"]
     );
     let unrelated_activity: Uuid =
-        sqlx::query_scalar("SELECT id FROM learning_activities ORDER BY slug OFFSET 1 LIMIT 1")
+        sqlx::query_scalar("SELECT axis.activity_id FROM learning_activity_axes axis WHERE axis.required_skill='docs_learning' LIMIT 1")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -721,20 +766,43 @@ async fn confirmation_and_evidence_are_bound_to_server_requirements(pool: PgPool
         Some("independent"),
     )
     .await;
+    let evidence_uri = format!(
+        "/api/v1/projects/{}/assistance/evidence",
+        primary_project["id"].as_str().unwrap()
+    );
     assert_eq!(
         post(
             &app,
             &user,
-            &format!(
-                "/api/v1/projects/{}/assistance/evidence",
-                project["id"].as_str().unwrap()
-            ),
-            json!({"milestone_id":project["milestones"][0]["id"],"skill":"typescript","kind":"mastery","successful":true,"source_attempt_id":receipt,"idempotency_key":Uuid::now_v7()})
+            &evidence_uri,
+            json!({"milestone_id":primary_project["milestones"][0]["id"],"skill":"typescript","kind":"mastery","successful":true,"source_attempt_id":receipt,"idempotency_key":Uuid::now_v7()})
         )
         .await
         .status(),
         StatusCode::BAD_REQUEST
     );
+    assert_eq!(
+        post(
+            &app,
+            &user,
+            &evidence_uri,
+            json!({"milestone_id":primary_project["milestones"][0]["id"],"skill":"code_literacy","kind":"mastery","successful":true,"source_attempt_id":receipt,"idempotency_key":Uuid::now_v7()})
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let other = project(&app, &user, "independent").await;
+    let wrong_project: Uuid = other["id"].as_str().unwrap().parse().unwrap();
+    let milestone_id: Uuid = primary_project["milestones"][0]["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(sqlx::query("INSERT INTO project_assistance_states (project_id,milestone_id,user_id,skill,level,mode) VALUES ($1,$2,$3,'code_literacy',2,'independent')")
+        .bind(wrong_project).bind(milestone_id).bind(user.user_id).execute(&pool).await.is_err());
+    assert!(sqlx::query("INSERT INTO project_learning_events (id,user_id,project_id,milestone_id,event_kind,skill,idempotency_key) VALUES ($1,$2,$3,$4,'assistance_requested','code_literacy',$5)")
+        .bind(Uuid::now_v7()).bind(user.user_id).bind(wrong_project).bind(milestone_id).bind(Uuid::now_v7()).execute(&pool).await.is_err());
 }
 
 #[sqlx::test(migrations = "./migrations")]

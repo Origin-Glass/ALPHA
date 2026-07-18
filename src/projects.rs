@@ -243,28 +243,34 @@ pub async fn create_idea(
     };
     let features: Vec<String> = candidates.iter().take(capacity).cloned().collect();
     let excluded_features:Vec<Value>=candidates.iter().skip(capacity).map(|feature|json!({"feature":feature,"reason_code":if request.weekly_minutes<=90{"time_budget"}else{"scope_limit"}})).collect();
-    let feasibility_reasons = json!([
+    let mut feasibility_reasons = vec![
         format!("weekly_minutes:{}", request.weekly_minutes),
         format!("skill_level:{}", request.skill_level),
         format!("runtime:{}", request.runtime),
-        format!("infrastructure:{}", request.infrastructure)
-    ]);
+        format!("infrastructure:{}", request.infrastructure),
+    ];
     let milestone_count = features.len().clamp(1, 3);
-    let activity_slugs: Vec<String> = sqlx::query_scalar(
-        "SELECT slug FROM learning_activities WHERE status='published' ORDER BY slug LIMIT 3",
+    let activities: Vec<(String, String)> = sqlx::query_as(
+        "SELECT activity.slug,axis.required_skill FROM learning_activities activity JOIN learning_activity_axes axis ON axis.activity_id=activity.id WHERE activity.status='published' ORDER BY axis.required_skill,activity.slug LIMIT 3",
     )
     .fetch_all(&mut *tx)
     .await?;
-    if activity_slugs.is_empty() {
+    if activities.is_empty() {
         return Err(ProjectError::Conflict(
             "게시된 학습 활동 요구사항이 없습니다",
         ));
     }
+    feasibility_reasons.extend(
+        activities
+            .iter()
+            .map(|(slug, skill)| format!("skill_mapping:{slug}:{skill}")),
+    );
     let milestones:Vec<Value>=(0..milestone_count).map(|index| json!({
         "position":index+1,
         "title":if index==0 { format!("{} 작동 결과 확인",request.core_feature) } else { format!("{} 확장 {}",request.core_feature,index+1) },
         "estimated_minutes":if index==0 { 60 } else { 90 },
-        "visible_result":true,"required_activity_slug":activity_slugs[index%activity_slugs.len()]
+        "visible_result":true,"required_activity_slug":activities[index%activities.len()].0,
+        "required_skill":activities[index%activities.len()].1
     })).collect();
     let id = Uuid::now_v7();
     let input_hash = Sha256::digest(
@@ -362,6 +368,7 @@ pub struct ConfirmMilestone {
     estimated_minutes: i32,
     visible_result: bool,
     required_activity_slug: String,
+    required_skill: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -393,6 +400,13 @@ pub async fn confirm_idea(
                     .required_activity_slug
                     .chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                || !matches!(
+                    m.required_skill.as_str(),
+                    "algorithmic_reasoning"
+                        | "code_literacy"
+                        | "docs_learning"
+                        | "independent_coding"
+                )
         })
     {
         return Err(ProjectError::Invalid(
@@ -404,7 +418,7 @@ pub async fn confirm_idea(
         .bind(user)
         .fetch_one(&mut *tx)
         .await?;
-    let (requested,core,server_milestones):(SqlJson<Vec<String>>,String,SqlJson<Value>)=sqlx::query_as("SELECT requested_features,core_feature,milestones FROM project_ideas WHERE id=$1 AND user_id=$2")
+    let (scoped,core,server_milestones):(SqlJson<Vec<String>>,String,SqlJson<Value>)=sqlx::query_as("SELECT scoped_features,core_feature,milestones FROM project_ideas WHERE id=$1 AND user_id=$2")
         .bind(id).bind(user).fetch_optional(&mut *tx).await?.ok_or(ProjectError::NotFound)?;
     let unique: std::collections::HashSet<&str> =
         request.scoped_features.iter().map(String::as_str).collect();
@@ -416,7 +430,7 @@ pub async fn confirm_idea(
         || request
             .scoped_features
             .iter()
-            .any(|v| !requested.0.contains(v))
+            .any(|v| !scoped.0.contains(v))
     {
         return Err(ProjectError::Invalid(
             "확정 기능은 원래 제안의 중복 없는 부분집합이며 핵심 기능과 서버 활동 요구사항을 포함해야 합니다",
@@ -469,6 +483,7 @@ pub struct MilestoneView {
     visible_result: bool,
     status: String,
     required_activity_slug: String,
+    required_skill: String,
 }
 #[derive(Debug, Serialize)]
 pub struct ProjectResponse {
@@ -524,8 +539,8 @@ pub async fn create(
         "아이디어 마일스톤이 올바르지 않습니다",
     ))?;
     for milestone in milestones {
-        let required_activity_id: Uuid = sqlx::query_scalar(
-            "SELECT id FROM learning_activities WHERE slug=$1 AND status='published'",
+        let (required_activity_id, required_skill): (Uuid, String) = sqlx::query_as(
+            "SELECT activity.id,axis.required_skill FROM learning_activities activity JOIN learning_activity_axes axis ON axis.activity_id=activity.id WHERE activity.slug=$1 AND activity.status='published'",
         )
         .bind(
             milestone["required_activity_slug"]
@@ -537,11 +552,16 @@ pub async fn create(
         .ok_or(ProjectError::Conflict(
             "마일스톤 활동 요구사항을 찾을 수 없습니다",
         ))?;
-        sqlx::query("INSERT INTO project_milestones (id,project_id,user_id,position,title,estimated_minutes,visible_result,required_activity_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
+        if milestone["required_skill"].as_str() != Some(required_skill.as_str()) {
+            return Err(ProjectError::Conflict(
+                "마일스톤 역량 요구사항이 활동 교육과정 축과 다릅니다",
+            ));
+        }
+        sqlx::query("INSERT INTO project_milestones (id,project_id,user_id,position,title,estimated_minutes,visible_result,required_activity_id,required_skill) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)")
             .bind(Uuid::now_v7()).bind(id).bind(user).bind(milestone["position"].as_i64().ok_or(ProjectError::Conflict("마일스톤 순서가 없습니다"))? as i16)
             .bind(milestone["title"].as_str().ok_or(ProjectError::Conflict("마일스톤 제목이 없습니다"))?)
             .bind(milestone["estimated_minutes"].as_i64().ok_or(ProjectError::Conflict("마일스톤 시간이 없습니다"))? as i32)
-            .bind(milestone["visible_result"].as_bool().unwrap_or(false)).bind(required_activity_id).execute(&mut *tx).await?;
+            .bind(milestone["visible_result"].as_bool().unwrap_or(false)).bind(required_activity_id).bind(required_skill).execute(&mut *tx).await?;
     }
     sqlx::query("INSERT INTO project_learning_events (id,user_id,project_id,event_kind,idempotency_key,metadata) VALUES ($1,$2,$3,'project_created',$4,$5)")
         .bind(Uuid::now_v7()).bind(user).bind(id).bind(request.idempotency_key).bind(json!({"idea_id":request.idea_id})).execute(&mut *tx).await?;
@@ -557,7 +577,7 @@ async fn project_detail(
 ) -> Result<ProjectResponse, ProjectError> {
     let row:(Uuid,String,String,String,String)=sqlx::query_as("SELECT p.idea_id,p.status,i.title,i.technology,i.assistance_policy FROM learner_projects p JOIN project_ideas i ON i.id=p.idea_id WHERE p.id=$1 AND p.user_id=$2")
         .bind(id).bind(user).fetch_optional(&mut **tx).await?.ok_or(ProjectError::NotFound)?;
-    let milestones=sqlx::query_as("SELECT m.id,m.position,m.title,m.estimated_minutes,m.visible_result,m.status,a.slug AS required_activity_slug FROM project_milestones m JOIN learning_activities a ON a.id=m.required_activity_id WHERE m.project_id=$1 AND m.user_id=$2 ORDER BY m.position").bind(id).bind(user).fetch_all(&mut **tx).await?;
+    let milestones=sqlx::query_as("SELECT m.id,m.position,m.title,m.estimated_minutes,m.visible_result,m.status,a.slug AS required_activity_slug,m.required_skill FROM project_milestones m JOIN learning_activities a ON a.id=m.required_activity_id WHERE m.project_id=$1 AND m.user_id=$2 ORDER BY m.position").bind(id).bind(user).fetch_all(&mut **tx).await?;
     Ok(ProjectResponse {
         id,
         idea_id: row.0,

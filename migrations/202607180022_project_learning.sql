@@ -1,3 +1,20 @@
+CREATE TABLE learning_plan_templates (
+    id uuid PRIMARY KEY,
+    template_key text NOT NULL UNIQUE CHECK (template_key ~ '^[a-z0-9-]{3,64}$'),
+    locked_requirements jsonb NOT NULL CHECK (jsonb_typeof(locked_requirements)='array' AND jsonb_array_length(locked_requirements) BETWEEN 1 AND 12),
+    active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE learning_plan_assignments (
+    id uuid PRIMARY KEY,
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    template_id uuid NOT NULL REFERENCES learning_plan_templates(id) ON DELETE RESTRICT,
+    locked_requirements jsonb NOT NULL CHECK (jsonb_typeof(locked_requirements)='array' AND jsonb_array_length(locked_requirements) BETWEEN 1 AND 12),
+    assigned_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (user_id, template_id)
+);
+
 CREATE TABLE learning_plan_revisions (
     id uuid PRIMARY KEY,
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -31,6 +48,7 @@ CREATE TABLE learning_plan_revisions (
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (user_id, revision),
     UNIQUE (user_id, idempotency_key),
+    FOREIGN KEY (user_id, template_id) REFERENCES learning_plan_assignments(user_id, template_id) ON DELETE RESTRICT,
     CHECK (
         (origin='learner' AND template_id IS NULL AND jsonb_array_length(locked_requirements)=0)
         OR
@@ -123,6 +141,18 @@ CREATE TABLE project_idea_confirmations (
     FOREIGN KEY (idea_id, user_id) REFERENCES project_ideas(id, user_id) ON DELETE RESTRICT
 );
 
+CREATE TABLE learning_activity_axes (
+    activity_id uuid PRIMARY KEY REFERENCES learning_activities(id) ON DELETE CASCADE,
+    required_skill text NOT NULL CHECK (required_skill IN ('algorithmic_reasoning','code_literacy','docs_learning','independent_coding')),
+    UNIQUE (activity_id, required_skill)
+);
+
+INSERT INTO learning_activity_axes (activity_id, required_skill)
+SELECT activity.id, track.primary_axis
+FROM learning_activities activity
+JOIN curriculum_units unit ON unit.id=activity.unit_id
+JOIN learning_tracks track ON track.id=unit.track_id;
+
 CREATE TABLE project_milestones (
     id uuid PRIMARY KEY,
     project_id uuid NOT NULL,
@@ -132,25 +162,28 @@ CREATE TABLE project_milestones (
     estimated_minutes integer NOT NULL CHECK (estimated_minutes BETWEEN 30 AND 120),
     visible_result boolean NOT NULL,
     required_activity_id uuid NOT NULL REFERENCES learning_activities(id) ON DELETE RESTRICT,
+    required_skill text NOT NULL CHECK (required_skill IN ('algorithmic_reasoning','code_literacy','docs_learning','independent_coding')),
     status text NOT NULL DEFAULT 'planned' CHECK (status IN ('planned','active','completed')),
     UNIQUE (project_id, position),
     UNIQUE (id, user_id),
+    UNIQUE (id, project_id, user_id),
     CHECK (position <> 1 OR visible_result),
-    FOREIGN KEY (project_id, user_id) REFERENCES learner_projects(id, user_id) ON DELETE CASCADE
+    FOREIGN KEY (project_id, user_id) REFERENCES learner_projects(id, user_id) ON DELETE CASCADE,
+    FOREIGN KEY (required_activity_id, required_skill) REFERENCES learning_activity_axes(activity_id, required_skill) ON DELETE RESTRICT
 );
 
 CREATE TABLE project_assistance_states (
     project_id uuid NOT NULL,
     milestone_id uuid NOT NULL,
     user_id uuid NOT NULL,
-    skill text NOT NULL CHECK (skill ~ '^[a-z0-9+#.-]{1,32}$'),
+    skill text NOT NULL CHECK (skill ~ '^[a-z0-9+#._-]{1,32}$'),
     level smallint NOT NULL CHECK (level BETWEEN 1 AND 7),
     mode text NOT NULL CHECK (mode IN ('guided_ai','socratic_ai','documentation_navigator','curated_documentation','cheat_sheet_only','independent','transfer_challenge')),
     consecutive_failures smallint NOT NULL DEFAULT 0 CHECK (consecutive_failures BETWEEN 0 AND 100),
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (project_id, milestone_id, user_id, skill),
     FOREIGN KEY (project_id, user_id) REFERENCES learner_projects(id, user_id) ON DELETE CASCADE,
-    FOREIGN KEY (milestone_id, user_id) REFERENCES project_milestones(id, user_id) ON DELETE CASCADE
+    FOREIGN KEY (milestone_id, project_id, user_id) REFERENCES project_milestones(id, project_id, user_id) ON DELETE CASCADE
 );
 
 CREATE TABLE project_learning_events (
@@ -159,7 +192,7 @@ CREATE TABLE project_learning_events (
     project_id uuid,
     milestone_id uuid,
     event_kind text NOT NULL CHECK (event_kind IN ('project_created','assistance_evidence','assistance_requested')),
-    skill text CHECK (skill IS NULL OR skill ~ '^[a-z0-9+#.-]{1,32}$'),
+    skill text CHECK (skill IS NULL OR skill ~ '^[a-z0-9+#._-]{1,32}$'),
     successful boolean,
     previous_level smallint CHECK (previous_level BETWEEN 1 AND 7),
     resulting_level smallint CHECK (resulting_level BETWEEN 1 AND 7),
@@ -169,7 +202,7 @@ CREATE TABLE project_learning_events (
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (user_id, idempotency_key),
     FOREIGN KEY (project_id, user_id) REFERENCES learner_projects(id, user_id) ON DELETE CASCADE,
-    FOREIGN KEY (milestone_id, user_id) REFERENCES project_milestones(id, user_id) ON DELETE CASCADE
+    FOREIGN KEY (milestone_id, project_id, user_id) REFERENCES project_milestones(id, project_id, user_id) ON DELETE CASCADE
 );
 
 CREATE UNIQUE INDEX project_learning_events_mastery_attempt_once

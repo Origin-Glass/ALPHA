@@ -34,7 +34,7 @@ fn skill_ok(skill: &str) -> bool {
         && skill.len() <= 32
         && skill
             .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "+#.-".contains(c))
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "+#._-".contains(c))
 }
 fn initial_level(policy: &str) -> i16 {
     match policy {
@@ -85,10 +85,15 @@ pub async fn evidence(
         tx.commit().await?;
         return Ok(Json(json!({"previous_level":previous,"level":resulting,"mode":resulting.map(mode_for_level),"rule_version":"project-learning-v1","source_attempt_id":source})));
     }
-    let (policy, required_activity): (String, Uuid) = sqlx::query_as("SELECT i.assistance_policy,m.required_activity_id FROM learner_projects p JOIN project_ideas i ON i.id=p.idea_id JOIN project_milestones m ON m.project_id=p.id AND m.user_id=p.user_id WHERE p.id=$1 AND p.user_id=$2 AND m.id=$3")
+    let (policy, required_activity, required_skill): (String, Uuid, String) = sqlx::query_as("SELECT i.assistance_policy,m.required_activity_id,m.required_skill FROM learner_projects p JOIN project_ideas i ON i.id=p.idea_id JOIN project_milestones m ON m.project_id=p.id AND m.user_id=p.user_id WHERE p.id=$1 AND p.user_id=$2 AND m.id=$3")
         .bind(project).bind(user).bind(request.milestone_id).fetch_optional(&mut *tx).await?.ok_or(ProjectError::NotFound)?;
-    let (attempt_activity, passed, mastery_class): (Uuid, bool, Option<String>) = sqlx::query_as(
-        "SELECT activity_id,passed,mastery_class FROM activity_attempts WHERE id=$1 AND user_id=$2",
+    if request.skill != required_skill {
+        return Err(ProjectError::Invalid(
+            "마일스톤에 지정된 교육과정 역량만 도움 근거로 사용할 수 있습니다",
+        ));
+    }
+    let (attempt_activity, attempt_skill, passed, mastery_class): (Uuid, String, bool, Option<String>) = sqlx::query_as(
+        "SELECT attempt.activity_id,axis.required_skill,attempt.passed,attempt.mastery_class FROM activity_attempts attempt JOIN learning_activity_axes axis ON axis.activity_id=attempt.activity_id WHERE attempt.id=$1 AND attempt.user_id=$2",
     )
     .bind(request.source_attempt_id)
     .bind(user)
@@ -97,7 +102,7 @@ pub async fn evidence(
     .ok_or(ProjectError::Invalid(
         "실제 학습 시도 영수증을 찾을 수 없습니다",
     ))?;
-    if attempt_activity != required_activity {
+    if attempt_activity != required_activity || attempt_skill != required_skill {
         return Err(ProjectError::Invalid(
             "이 마일스톤에 지정된 학습 활동 시도만 근거로 사용할 수 있습니다",
         ));
@@ -176,8 +181,13 @@ pub async fn help(
         tx.commit().await?;
         return Ok(Json(json!({"level":level,"mode":mode_for_level(level),"content":help_content(level),"provider_used":false,"rule_version":"project-learning-v1"})));
     }
-    let policy:String=sqlx::query_scalar("SELECT i.assistance_policy FROM learner_projects p JOIN project_ideas i ON i.id=p.idea_id JOIN project_milestones m ON m.project_id=p.id WHERE p.id=$1 AND p.user_id=$2 AND m.id=$3")
+    let (policy,required_skill):(String,String)=sqlx::query_as("SELECT i.assistance_policy,m.required_skill FROM learner_projects p JOIN project_ideas i ON i.id=p.idea_id JOIN project_milestones m ON m.project_id=p.id AND m.user_id=p.user_id WHERE p.id=$1 AND p.user_id=$2 AND m.id=$3")
         .bind(project).bind(user).bind(request.milestone_id).fetch_optional(&mut *tx).await?.ok_or(ProjectError::NotFound)?;
+    if request.skill != required_skill {
+        return Err(ProjectError::Invalid(
+            "마일스톤에 지정된 교육과정 역량만 도움을 요청할 수 있습니다",
+        ));
+    }
     let level:Option<i16>=sqlx::query_scalar("SELECT level FROM project_assistance_states WHERE project_id=$1 AND milestone_id=$2 AND user_id=$3 AND skill=$4")
         .bind(project).bind(request.milestone_id).bind(user).bind(&request.skill).fetch_optional(&mut *tx).await?;
     let level = level.unwrap_or(initial_level(&policy));
