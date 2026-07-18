@@ -7,6 +7,7 @@ pub struct Settings {
     pub app_env: String,
     pub database_url: String,
     pub session_secret: String,
+    pub workspace_receipt_secret: String,
     pub test_identity_enabled: bool,
     pub payments_enabled: bool,
     pub payment_provider: String,
@@ -31,6 +32,10 @@ pub enum ConfigError {
     MissingDatabaseUrl,
     #[error("production SESSION_SECRET은 32바이트 이상이어야 합니다")]
     ShortSessionSecret,
+    #[error(
+        "production WORKSPACE_RECEIPT_SECRET은 SESSION_SECRET과 다른 32바이트 이상 값이어야 합니다"
+    )]
+    InvalidWorkspaceReceiptSecret,
     #[error("{0} OAuth client id와 secret은 함께 설정해야 합니다")]
     IncompleteOauthProvider(&'static str),
     #[error("OAuth를 설정하려면 PUBLIC_BASE_URL이 필요합니다")]
@@ -90,6 +95,15 @@ impl Settings {
         if app_env == "production" && session_secret.len() < 32 {
             return Err(ConfigError::ShortSessionSecret);
         }
+        let mut workspace_receipt_secret = value("WORKSPACE_RECEIPT_SECRET");
+        if app_env != "production" && workspace_receipt_secret.is_empty() {
+            workspace_receipt_secret = "alpha-local-workspace-receipt-secret-32".into();
+        }
+        if app_env == "production"
+            && (workspace_receipt_secret.len() < 32 || workspace_receipt_secret == session_secret)
+        {
+            return Err(ConfigError::InvalidWorkspaceReceiptSecret);
+        }
         if payments_enabled && (payment_provider.is_empty() || payment_provider == "disabled") {
             return Err(ConfigError::MissingPaymentProvider);
         }
@@ -120,6 +134,7 @@ impl Settings {
             app_env,
             database_url,
             session_secret,
+            workspace_receipt_secret,
             test_identity_enabled,
             payments_enabled,
             payment_provider,

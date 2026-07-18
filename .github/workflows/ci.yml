@@ -84,6 +84,10 @@ jobs:
         run: docker build --tag "$JUDGE_TEST_IMAGE" judge
       - name: 언어·오류·격리 판정
         run: cargo test --test judge_docker -- --ignored --test-threads=1
+      - name: 다중 파일 작업공간 격리 실행
+        env:
+          WORKSPACE_TEST_IMAGE: alpha-judge-runner:test
+        run: cargo test --test workspace_docker -- --ignored --test-threads=1
 
   compose-e2e:
     name: 클린 설치·브라우저·복구
@@ -108,6 +112,8 @@ jobs:
           curl --fail --retry 30 --retry-delay 2 http://127.0.0.1:18080/api/v1/problems
           ./ops/gateway-smoke.sh http://127.0.0.1:18080
           docker compose exec -T api curl --fail --silent http://127.0.0.1:8080/metrics | grep 'alpha_judge_workers{health="healthy"} 1'
+          docker compose ps --status running workspace-worker | grep workspace-worker
+          ./ops/workspace-worker-smoke.sh http://127.0.0.1:18080
       - name: Chromium 설치
         working-directory: web
         run: |
@@ -179,12 +185,16 @@ jobs:
           POSTGRES_PASSWORD: production-check
           DATABASE_URL: postgres://alpha:production-check@db:5432/alpha
           SESSION_SECRET: 0123456789abcdef0123456789abcdef
+          WORKSPACE_RECEIPT_SECRET: abcdef0123456789abcdef0123456789
           PUBLIC_BASE_URL: https://alpha.example.com
           ALPHA_API_IMAGE: registry.example/alpha-api@sha256:0000000000000000000000000000000000000000000000000000000000000000
           ALPHA_WEB_IMAGE: registry.example/alpha-web@sha256:0000000000000000000000000000000000000000000000000000000000000000
           ALPHA_JUDGE_WORKER_IMAGE: registry.example/alpha-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          ALPHA_WORKSPACE_WORKER_IMAGE: registry.example/alpha-workspace-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
           JUDGE_IMAGE: registry.example/alpha-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          WORKSPACE_IMAGE: registry.example/alpha-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
           ALPHA_JUDGE_WORKSPACE: /srv/alpha/judge-work
+          ALPHA_WORKSPACE_ROOT: /srv/alpha/workspace
         run: |
           docker compose -f compose.production.yaml config --quiet
           if grep '^FROM ' Dockerfile | grep -Ev '(@sha256:[0-9a-f]{64}([[:space:]]|$)|^FROM runtime AS worker$)'; then

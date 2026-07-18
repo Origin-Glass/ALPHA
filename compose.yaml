@@ -4,6 +4,7 @@ x-app-environment: &app-environment
   APP_ENV: development
   DATABASE_URL: postgres://alpha:${POSTGRES_PASSWORD:-alpha-local-only}@db:5432/alpha
   SESSION_SECRET: ${SESSION_SECRET:-alpha-local-session-secret-32-bytes}
+  WORKSPACE_RECEIPT_SECRET: ${WORKSPACE_RECEIPT_SECRET:-alpha-local-workspace-receipt-secret-32}
   PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
   TEST_IDENTITY_ENABLED: ${TEST_IDENTITY_ENABLED:-false}
   TRUST_PROXY_HEADERS: "true"
@@ -152,6 +153,33 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m,nosuid,nodev
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  workspace-worker:
+    image: alpha-workspace-worker:local
+    build:
+      context: .
+      target: worker
+    command: ["workspace_worker"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgres://alpha:${POSTGRES_PASSWORD:-alpha-local-only}@db:5432/alpha
+      WORKSPACE_IMAGE: ${WORKSPACE_IMAGE:-alpha-judge-runner:local}
+      WORKSPACE_DECLARED_IMAGE_REFERENCE: ${WORKSPACE_DECLARED_IMAGE_REFERENCE:-alpha-judge-runner@sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de}
+      WORKSPACE_RECEIPT_SECRET: ${WORKSPACE_RECEIPT_SECRET:-alpha-local-workspace-receipt-secret-32}
+      WORKSPACE_WORKER_ID: compose-workspace-worker-1
+      TMPDIR: ${ALPHA_WORKSPACE_ROOT:-/tmp/alpha-workspace}
+      RUST_LOG: alpha=info,workspace_worker=info
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${ALPHA_WORKSPACE_ROOT:-/tmp/alpha-workspace}:${ALPHA_WORKSPACE_ROOT:-/tmp/alpha-workspace}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      judge-image: { condition: service_completed_successfully }
+    read_only: true
+    tmpfs:
+      - "/tmp:size=64m,nosuid,nodev"
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
 

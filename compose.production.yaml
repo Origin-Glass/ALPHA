@@ -4,6 +4,7 @@ x-app-environment: &app-environment
   APP_ENV: production
   DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
   SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+  WORKSPACE_RECEIPT_SECRET: ${WORKSPACE_RECEIPT_SECRET:?WORKSPACE_RECEIPT_SECRET is required}
   PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
   TEST_IDENTITY_ENABLED: "false"
   TRUST_PROXY_HEADERS: "true"
@@ -171,6 +172,33 @@ services:
     mem_limit: 1g
     pids_limit: 128
     stop_grace_period: 15m
+    logging: *bounded-logging
+    restart: unless-stopped
+
+  workspace-worker:
+    image: ${ALPHA_WORKSPACE_WORKER_IMAGE:?ALPHA_WORKSPACE_WORKER_IMAGE digest is required}
+    command: ["workspace_worker"]
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      WORKSPACE_IMAGE: ${WORKSPACE_IMAGE:?WORKSPACE_IMAGE digest is required}
+      WORKSPACE_RECEIPT_SECRET: ${WORKSPACE_RECEIPT_SECRET:?WORKSPACE_RECEIPT_SECRET is required}
+      WORKSPACE_WORKER_ID: ${WORKSPACE_WORKER_ID:-production-workspace-worker-1}
+      TMPDIR: ${ALPHA_WORKSPACE_ROOT:?ALPHA_WORKSPACE_ROOT is required}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${ALPHA_WORKSPACE_ROOT:?ALPHA_WORKSPACE_ROOT is required}:${ALPHA_WORKSPACE_ROOT:?ALPHA_WORKSPACE_ROOT is required}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      judge-image: { condition: service_completed_successfully }
+    read_only: true
+    tmpfs:
+      - "/tmp:size=64m,nosuid,nodev"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    pids_limit: 64
+    stop_grace_period: 30s
     logging: *bounded-logging
     restart: unless-stopped
 

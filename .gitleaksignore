@@ -7,3 +7,6 @@ d0d8c8ff17c73142be98d4c21f06b7028cb05112:tests/session_api.rs:generic-api-key:13
 9306f0ded959ce279520e25de4dec9e01c424297:tests/config.rs:generic-api-key:10
 9306f0ded959ce279520e25de4dec9e01c424297:tests/config.rs:generic-api-key:27
 9306f0ded959ce279520e25de4dec9e01c424297:tests/config.rs:generic-api-key:44
+# 검토 완료: workspace receipt secret 분리 검증용 공개 테스트 픽스처
+c3374e374f5c3238f0887b278dac412075146f74:.github/workflows/ci.yml:generic-api-key:188
+c3374e374f5c3238f0887b278dac412075146f74:tests/config.rs:generic-api-key:47
