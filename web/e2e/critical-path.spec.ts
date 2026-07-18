@@ -71,7 +71,39 @@ test('로그인부터 Docker 정답 판정과 로그아웃까지 이어진다', 
   await page.getByRole('textbox', { name: '소스 코드', exact: true }).fill(
     'a, b = map(int, input().split())\nprint(a + b)\n',
   );
+  const submissionCreated = page.waitForResponse((response) => (
+    response.url().endsWith('/api/v1/submissions')
+      && response.request().method() === 'POST'
+      && response.status() === 201
+  ));
   await page.getByRole('button', { name: '정식 제출' }).click();
+  const created = await (await submissionCreated).json() as { id: string };
+  await expect.poll(async () => {
+    const response = await page.context().request.get(`/api/v1/submissions/${created.id}`);
+    const detail = await response.json() as {
+      status?: string;
+      score?: number | null;
+      compile_output?: string | null;
+      run_output?: string | null;
+    };
+    return JSON.stringify({
+      http_status: response.status(),
+      status: detail.status,
+      score: detail.score,
+      compile_output: detail.compile_output,
+      run_output: detail.run_output,
+    });
+  }, {
+    message: 'Docker 판정 결과가 ACCEPTED 100점이어야 합니다',
+    timeout: 45_000,
+    intervals: [500, 1_000, 2_000],
+  }).toBe(JSON.stringify({
+    http_status: 200,
+    status: 'ACCEPTED',
+    score: 100,
+    compile_output: null,
+    run_output: null,
+  }));
   await expect(page.getByText('정답', { exact: true })).toBeVisible({ timeout: 45_000 });
   await expect(page.getByText('100점', { exact: true })).toBeVisible();
 
