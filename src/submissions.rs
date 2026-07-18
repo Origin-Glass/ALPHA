@@ -13,6 +13,11 @@ use uuid::Uuid;
 
 use crate::{auth::AuthError, http::AppState};
 
+const USER_PENDING_JOB_LIMIT: i64 = 4;
+const GLOBAL_PENDING_JOB_LIMIT: i64 = 200;
+const REJUDGE_COOLDOWN_MINUTES: i64 = 15;
+const QUEUE_ADVISORY_LOCK: i64 = 0x414c_5048_4151;
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSubmissionRequest {
@@ -99,6 +104,8 @@ pub enum SubmissionError {
     TermsRequired,
     NotFound,
     RateLimited,
+    QueueBusy,
+    StreamLimited,
     RoleForbidden,
     ContestForbidden,
     Database(sqlx::Error),
@@ -126,6 +133,16 @@ impl IntoResponse for SubmissionError {
             Self::RateLimited => (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(serde_json::json!({"error": {"code": "submission_rate_limited", "message": "제출이 너무 빠릅니다. 잠시 후 다시 시도해 주세요"}})),
+            )
+                .into_response(),
+            Self::QueueBusy => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": {"code": "judge_queue_busy", "message": "판정 대기열이 가득 찼습니다. 잠시 후 다시 시도해 주세요"}})),
+            )
+                .into_response(),
+            Self::StreamLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({"error": {"code": "submission_stream_limited", "message": "동시에 확인할 수 있는 판정 상태 연결 수를 초과했습니다"}})),
             )
                 .into_response(),
             Self::RoleForbidden => (
@@ -317,6 +334,30 @@ async fn enqueue(
     if recent_count >= 20 {
         return Err(SubmissionError::RateLimited);
     }
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(QUEUE_ADVISORY_LOCK)
+        .execute(&mut *transaction)
+        .await?;
+    let pending_for_user: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*) FROM judge_jobs job
+        JOIN submissions submission ON submission.id = job.submission_id
+        WHERE submission.user_id = $1 AND job.status IN ('ready', 'leased')
+        "#,
+    )
+    .bind(user_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    if pending_for_user >= USER_PENDING_JOB_LIMIT {
+        return Err(SubmissionError::RateLimited);
+    }
+    let pending_total: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM judge_jobs WHERE status IN ('ready', 'leased')")
+            .fetch_one(&mut *transaction)
+            .await?;
+    if pending_total >= GLOBAL_PENDING_JOB_LIMIT {
+        return Err(SubmissionError::QueueBusy);
+    }
     let problem: Option<(Uuid, Uuid)> = sqlx::query_as(
         "SELECT id, current_revision_id FROM problems WHERE slug = $1 AND status = 'published'",
     )
@@ -481,7 +522,43 @@ pub async fn rejudge_problem(
     .fetch_optional(&mut *transaction)
     .await?;
     let (problem_id, revision_id) = problem.ok_or(SubmissionError::NotFound)?;
+    let rejudge_blocked: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM rejudge_requests
+            WHERE problem_id = $1
+              AND created_at > now() - make_interval(mins => $2::integer)
+        ) OR EXISTS(
+            SELECT 1 FROM submissions
+            WHERE problem_id = $1 AND run_kind = 'formal' AND judged_at IS NULL
+        )
+        "#,
+    )
+    .bind(problem_id)
+    .bind(REJUDGE_COOLDOWN_MINUTES as i32)
+    .fetch_one(&mut *transaction)
+    .await?;
+    if rejudge_blocked {
+        return Err(SubmissionError::RateLimited);
+    }
     let request_id = Uuid::now_v7();
+    let submission_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM submissions WHERE problem_id=$1 AND run_kind='formal' AND judged_at IS NOT NULL FOR UPDATE",
+    )
+    .bind(problem_id)
+    .fetch_all(&mut *transaction)
+    .await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(QUEUE_ADVISORY_LOCK)
+        .execute(&mut *transaction)
+        .await?;
+    let pending_total: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM judge_jobs WHERE status IN ('ready', 'leased')")
+            .fetch_one(&mut *transaction)
+            .await?;
+    if pending_total + submission_ids.len() as i64 > GLOBAL_PENDING_JOB_LIMIT {
+        return Err(SubmissionError::QueueBusy);
+    }
     sqlx::query(
         "INSERT INTO rejudge_requests (id,problem_id,requested_by,reason) VALUES ($1,$2,$3,$4)",
     )
@@ -490,12 +567,6 @@ pub async fn rejudge_problem(
     .bind(user_id)
     .bind(&request.reason)
     .execute(&mut *transaction)
-    .await?;
-    let submission_ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM submissions WHERE problem_id=$1 AND run_kind='formal' AND judged_at IS NOT NULL FOR UPDATE",
-    )
-    .bind(problem_id)
-    .fetch_all(&mut *transaction)
     .await?;
     for submission_id in &submission_ids {
         sqlx::query(
@@ -576,10 +647,15 @@ pub async fn events(
         return Err(SubmissionError::NotFound);
     }
 
+    let permit = state
+        .runtime_handle()
+        .acquire_sse(user_id)
+        .ok_or(SubmissionError::StreamLimited)?;
     let pool = state.pool().clone();
     let stream = async_stream::stream! {
+        let _permit = permit;
         let mut last_event_id = 0_i64;
-        for _ in 0..120 {
+        for _ in 0..30 {
             let events: Result<Vec<(i64, String, Option<String>)>, sqlx::Error> = sqlx::query_as(
                 r#"
                 SELECT id, status, safe_message
@@ -607,7 +683,7 @@ pub async fn events(
                 yield Ok(Event::default().id(event_id.to_string()).event("status").data(data));
             }
             if terminal { break; }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
     };
     Ok(Sse::new(stream).keep_alive(

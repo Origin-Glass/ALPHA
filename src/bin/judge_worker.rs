@@ -68,9 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut shutdown = tokio::spawn(alpha::shutdown::signal());
     loop {
-        if let Some(job) =
-            judge::lease_next_job(&pool, &worker_id, Duration::from_secs(600)).await?
-        {
+        if let Some(job) = judge::lease_next_job(&pool, &worker_id, judge::MAX_JOB_LEASE).await? {
             heartbeat(
                 &pool,
                 &worker_id,

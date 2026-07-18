@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -17,18 +17,42 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use uuid::Uuid;
 
 const WINDOW: Duration = Duration::from_secs(60);
 const READ_LIMIT: u32 = 600;
 const WRITE_LIMIT: u32 = 60;
 const MAX_RATE_ENTRIES: usize = 10_000;
 const OVERFLOW_KEY: &str = "peer:overflow";
+const SSE_LIMIT_PER_USER: u8 = 4;
 
 #[derive(Default)]
 pub struct RuntimeMetrics {
     requests: AtomicU64,
     server_errors: AtomicU64,
     rate_entries: Mutex<HashMap<String, RateEntry>>,
+    sse_streams: Mutex<HashMap<Uuid, u8>>,
+}
+
+pub struct SsePermit {
+    runtime: Arc<RuntimeMetrics>,
+    user_id: Uuid,
+}
+
+impl Drop for SsePermit {
+    fn drop(&mut self) {
+        let mut streams = self
+            .runtime
+            .sse_streams
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(count) = streams.get_mut(&self.user_id) {
+            *count -= 1;
+            if *count == 0 {
+                streams.remove(&self.user_id);
+            }
+        }
+    }
 }
 
 struct RateEntry {
@@ -92,6 +116,22 @@ impl RuntimeMetrics {
 
     pub fn server_error_count(&self) -> u64 {
         self.server_errors.load(Ordering::Relaxed)
+    }
+
+    pub fn acquire_sse(self: &Arc<Self>, user_id: Uuid) -> Option<SsePermit> {
+        let mut streams = self
+            .sse_streams
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let count = streams.entry(user_id).or_default();
+        if *count >= SSE_LIMIT_PER_USER {
+            return None;
+        }
+        *count += 1;
+        Some(SsePermit {
+            runtime: Arc::clone(self),
+            user_id,
+        })
     }
 }
 
