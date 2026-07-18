@@ -191,6 +191,22 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(crate::admin::revise_problem),
         )
         .route(
+            "/api/v1/governance/problems/{slug}/rights",
+            axum::routing::post(crate::governance::record_rights),
+        )
+        .route(
+            "/api/v1/governance/problems/{slug}/reviews/content",
+            axum::routing::post(crate::governance::approve_content),
+        )
+        .route(
+            "/api/v1/governance/problems/{slug}/reviews/rights",
+            axum::routing::post(crate::governance::approve_rights),
+        )
+        .route(
+            "/api/v1/governance/problems/{slug}/publish",
+            axum::routing::post(crate::governance::publish),
+        )
+        .route(
             "/api/v1/admin/notices",
             axum::routing::post(crate::community::create_notice),
         )

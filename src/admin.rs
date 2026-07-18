@@ -143,7 +143,7 @@ fn valid_content(request: &ProblemContentRequest) -> bool {
             request.learning_axis.as_str(),
             "algorithmic_reasoning" | "code_literacy" | "docs_learning" | "independent_coding"
         )
-        && matches!(request.status.as_str(), "draft" | "published")
+        && request.status == "draft"
         && (100..=30_000).contains(&request.time_limit_ms)
         && (16..=2048).contains(&request.memory_limit_mb)
         && matches!(
@@ -182,15 +182,14 @@ fn valid_content(request: &ProblemContentRequest) -> bool {
                             || (index > 0 && matches!(character, '_' | '-'))
                     })
         })
-        && (request.status != "published"
-            || (request
-                .test_cases
-                .iter()
-                .any(|test| test.visibility == "sample")
-                && request
-                    .test_cases
-                    .iter()
-                    .any(|test| test.visibility == "hidden")))
+        && request
+            .test_cases
+            .iter()
+            .any(|test| test.visibility == "sample")
+        && request
+            .test_cases
+            .iter()
+            .any(|test| test.visibility == "hidden")
 }
 
 fn content_hash(request: &ProblemContentRequest) -> Vec<u8> {
@@ -324,7 +323,9 @@ pub async fn create_problem(
     Json(request): Json<CreateProblemRequest>,
 ) -> Result<(StatusCode, Json<Value>), AdminError> {
     let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
-    require_role(&state, user_id, &["PROBLEM_SETTER", "ADMIN"]).await?;
+    if !crate::governance::has_capability(state.pool(), user_id, "content.create").await? {
+        return Err(AdminError::RoleRequired);
+    }
     if request.slug.is_empty()
         || request.slug.len() > 80
         || !request.slug.chars().enumerate().all(|(index, character)| {
@@ -386,7 +387,9 @@ pub async fn revise_problem(
     Json(request): Json<ProblemContentRequest>,
 ) -> Result<Json<Value>, AdminError> {
     let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
-    require_role(&state, user_id, &["PROBLEM_SETTER", "ADMIN"]).await?;
+    if !crate::governance::has_capability(state.pool(), user_id, "content.create").await? {
+        return Err(AdminError::RoleRequired);
+    }
     if !valid_content(&request) {
         return Err(AdminError::InvalidInput(
             "문제 설정과 테스트를 확인해 주세요",
