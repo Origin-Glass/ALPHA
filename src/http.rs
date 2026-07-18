@@ -148,6 +148,50 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(crate::content_factory::archive_job),
         )
         .route(
+            "/api/v1/content/reviews",
+            get(crate::content_reviews::list).post(crate::content_reviews::create),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}",
+            get(crate::content_reviews::detail),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/ai-receipts",
+            axum::routing::post(crate::content_reviews::ai_receipt),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/human",
+            axum::routing::post(crate::content_reviews::human),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/rights",
+            axum::routing::post(crate::content_reviews::rights),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/pilot",
+            axum::routing::post(crate::content_reviews::pilot),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/revise",
+            axum::routing::post(crate::content_reviews::revise),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/publish",
+            axum::routing::post(crate::content_reviews::publish),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/unpublish",
+            axum::routing::post(crate::content_reviews::unpublish),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/removal",
+            axum::routing::post(crate::content_reviews::removal),
+        )
+        .route(
+            "/api/v1/content/public/{id}",
+            get(crate::content_reviews::public),
+        )
+        .route(
             "/api/v1/content/budget",
             get(crate::content_factory::get_budget).post(crate::content_factory::update_budget),
         )
