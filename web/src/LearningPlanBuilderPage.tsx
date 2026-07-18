@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import PortalHeader from './PortalHeader';
 
-type Plan = { id:string; revision:number; target_outcome: string; recommendation_key: string; reason_codes: string[]; items: Array<{ kind: string; title: string; estimated_minutes: number }>; provider_used: boolean; rule_version: string; restored_from_id:string|null };
+type Plan = { id:string; revision:number; target_outcome: string; recommendation_key: string; reason_codes: string[]; items: Array<{ kind: string; title: string; estimated_minutes: number }>; provider_used: boolean; rule_version: string; restored_from_id:string|null; deadline:string;preferred_framework:string;privacy:string };
 const csrf = () => document.cookie.split(';').map((v) => v.trim()).find((v) => v.startsWith('alpha_csrf='))?.slice(11) ?? '';
 
 function LearningPlanBuilderPage() {
@@ -9,11 +9,16 @@ function LearningPlanBuilderPage() {
   const [message, setMessage] = useState('');
   const [target, setTarget] = useState('작동하는 한국어 학습 기록 프로젝트 완성');
   const [minutes, setMinutes] = useState(180);
+  const [deadline,setDeadline]=useState('2026-12-31');const[framework,setFramework]=useState('react');
+  const [desiredProject,setDesiredProject]=useState('한국어 학습 기록 앱');const[curriculum,setCurriculum]=useState('code-reading,debugging');
+  const [constraints,setConstraints]=useState('');const[checkpoints,setCheckpoints]=useState('첫 작동 결과,독립 전이');
+  const [assistancePolicy,setAssistancePolicy]=useState('documentation_navigator');const[privacy,setPrivacy]=useState('private');
   const planKey = useRef(crypto.randomUUID());
   const rejectKey = useRef(crypto.randomUUID());
   const [history,setHistory]=useState<Plan[]>([]); const restoreKeys=useRef<Record<number,string>>({});
   const loadHistory=()=>fetch('/api/v1/learning/plans',{credentials:'include'}).then((r)=>r.ok?r.json():null).then((b)=>b&&setHistory(b.revisions)).catch(()=>undefined);
   useEffect(()=>{void loadHistory();},[]);
+  const changed=()=>{setPlan(null);planKey.current=crypto.randomUUID();};const list=(value:string)=>value.split(',').map((v)=>v.trim()).filter(Boolean);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault(); setMessage('');
@@ -21,6 +26,8 @@ function LearningPlanBuilderPage() {
       rule_version: 'project-learning-v1', idempotency_key: planKey.current, target_outcome: target, weekly_minutes: minutes,
       preferred_language: 'typescript', path_mode: 'structured', interests: ['웹', '학습 기록'], goals: ['독립 구현'],
       diagnostic_scores: { algorithmic_reasoning: 50, code_literacy: 50, docs_learning: 50, independent_coding: 50 },
+      deadline,preferred_framework:framework,desired_project:desiredProject,required_curriculum:list(curriculum),instructor_constraints:list(constraints),
+      assessment_checkpoints:list(checkpoints),assistance_policy:assistancePolicy,privacy,origin:'learner',template_id:null,locked_requirements:[],
     }) });
     const body = await response.json();
     if (!response.ok) { setMessage(body.error?.message ?? '계획을 만들지 못했습니다.'); return; }
@@ -37,11 +44,19 @@ function LearningPlanBuilderPage() {
   return <div className="learning-page"><PortalHeader /><main className="path-panel project-learning-panel">
     <p className="eyebrow">설명 가능한 개인화</p><h1>내가 고르는 학습 계획</h1>
     <form className="project-form" onSubmit={submit}>
-      <label>목표 결과<input value={target} maxLength={300} onChange={(e) => { setTarget(e.target.value);setPlan(null); planKey.current = crypto.randomUUID(); }} required /></label>
-      <label>주간 학습 시간(분)<input type="number" min={30} max={2400} value={minutes} onChange={(e) => { setMinutes(Number(e.target.value));setPlan(null); planKey.current = crypto.randomUUID(); }} required /></label>
+      <label>목표 결과<input value={target} maxLength={300} onChange={(e) => { setTarget(e.target.value);changed(); }} required /></label>
+      <label>주간 학습 시간(분)<input type="number" min={30} max={2400} value={minutes} onChange={(e) => { setMinutes(Number(e.target.value));changed(); }} required /></label>
+      <label>완료 기한<input type="date" value={deadline} onChange={(e)=>{setDeadline(e.target.value);changed();}} required /></label>
+      <label>선호 프레임워크<input value={framework} maxLength={64} onChange={(e)=>{setFramework(e.target.value);changed();}} required /></label>
+      <label>만들고 싶은 프로젝트<input value={desiredProject} maxLength={200} onChange={(e)=>{setDesiredProject(e.target.value);changed();}} required /></label>
+      <label>필수 교육과정(쉼표 구분)<input value={curriculum} onChange={(e)=>{setCurriculum(e.target.value);changed();}} required /></label>
+      <label>강사 제약(쉼표 구분)<input value={constraints} onChange={(e)=>{setConstraints(e.target.value);changed();}} /></label>
+      <label>평가 체크포인트(쉼표 구분)<input value={checkpoints} onChange={(e)=>{setCheckpoints(e.target.value);changed();}} required /></label>
+      <label>도움 정책<select value={assistancePolicy} onChange={(e)=>{setAssistancePolicy(e.target.value);changed();}}><option value="documentation_navigator">문서 탐색 안내</option><option value="socratic_ai">소크라테스식 도움</option><option value="independent">독립 수행</option></select></label>
+      <label>공개 범위<select value={privacy} onChange={(e)=>{setPrivacy(e.target.value);changed();}}><option value="private">나만 보기</option><option value="instructors">강사와 공유</option><option value="classroom">학급과 공유</option></select></label>
       <button className="primary-action" type="submit">계획 만들기</button>
     </form>
-    {plan && <section className="project-result" aria-live="polite"><p className="status-dot">규칙 {plan.rule_version} · AI 사용 {plan.provider_used ? '예' : '아니요'}</p><h2>{plan.target_outcome}</h2>
+    {plan && <section className="project-result" aria-live="polite"><p className="status-dot">규칙 {plan.rule_version} · AI 사용 {plan.provider_used ? '예' : '아니요'}</p><h2>{plan.target_outcome}</h2><p>{plan.deadline}까지 · {plan.preferred_framework} · 공개 범위 {plan.privacy}</p>
       <p>추천 이유: {plan.reason_codes.join(' · ')}</p><ol>{plan.items.map((item) => <li key={item.kind}><strong>{item.title}</strong><span>{item.estimated_minutes}분</span></li>)}</ol>
       <button type="button" onClick={reject}>이 추천 거부</button></section>}
     {message && <p role="status" className="auth-message">{message}</p>}
