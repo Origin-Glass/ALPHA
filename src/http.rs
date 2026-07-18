@@ -35,7 +35,7 @@ impl AppState {
             http_client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(10))
-                .user_agent("Origin-Glass-ALPHA/0.1")
+                .user_agent("Origin-Glass-ALPHA/1.0")
                 .build()
                 .expect("고정 HTTP 클라이언트 설정은 유효하다"),
             ai_provider: crate::activities::default_ai_provider(),

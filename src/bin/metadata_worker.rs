@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(10))
-        .user_agent("Origin-Glass-ALPHA/0.1 metadata-worker")
+        .user_agent("Origin-Glass-ALPHA/1.0 metadata-worker")
         .build()?;
     let mut interval = tokio::time::interval(Duration::from_secs(interval_seconds));
 

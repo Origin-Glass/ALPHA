@@ -13,24 +13,43 @@
 
 ## 로컬 실행
 
-Rust 1.97 이상, Node.js 24 이상, PostgreSQL 17이 필요합니다.
+Docker Desktop 또는 Docker Engine과 Compose만 필요합니다.
 
 ```bash
-cp .env.example .env
-export DATABASE_URL=postgres://alpha:alpha@127.0.0.1:5432/alpha
-export SESSION_SECRET=32바이트-이상의-로컬-전용-비밀값으로-교체
-cargo run --bin api
+cp .env.compose.example .env
+docker compose up --build
 ```
 
-API는 시작할 때 대기 중인 데이터베이스 마이그레이션을 적용합니다. 생존 상태는 `/health/live`, DB를 포함한 준비 상태는 `/health/ready`에서 확인합니다.
+웹은 기본 `http://localhost:8080`에서 열립니다. DB, 마이그레이션, API, 웹, 메타데이터 작업자, 판정 이미지와 판정 작업자가 함께 기동됩니다. 개발용 로그인이 필요하면 `.env`의 `TEST_IDENTITY_ENABLED=true`를 사용합니다. 이 값은 production에서 시작 단계부터 거부됩니다.
 
-Google·GitHub OAuth는 각 provider의 client id와 secret을 모두 설정해야 활성화됩니다. 운영 OAuth의 `PUBLIC_BASE_URL`은 HTTPS만 허용합니다. `TEST_IDENTITY_ENABLED=true`는 development/test에서만 사용할 수 있고 production 시작 단계에서 거부됩니다.
+생존 상태는 `/health/live`, DB를 포함한 준비 상태는 `/health/ready`, 내부 Prometheus 지표는 `/metrics`입니다. API 요청에는 `x-request-id`가 생성·전파됩니다. OpenAPI 계약은 `openapi.yaml`이며 다음 명령으로 Axum 라우트와의 누락을 확인합니다.
 
 ```bash
-cd web
-npm ci
-npm run dev
+ruby ops/check-openapi.rb
 ```
+
+## 운영 배포
+
+```bash
+cp .env.production.example .env
+# 비밀값과 registry/repository@sha256:... 이미지 참조를 모두 교체
+docker compose -f compose.production.yaml config
+docker compose -f compose.production.yaml up -d
+```
+
+운영 구성은 `DATABASE_URL`, `POSTGRES_PASSWORD`, `SESSION_SECRET`, `PUBLIC_BASE_URL`, API·웹·판정 작업자·판정 실행 이미지, 판정 작업공간 경로가 없으면 실패합니다. OAuth를 켤 때는 Google 또는 GitHub의 client id/secret 쌍을 모두 설정해야 하고 `PUBLIC_BASE_URL`은 HTTPS여야 합니다. TLS는 Compose 앞의 신뢰된 리버스 프록시에서 종료합니다.
+
+결제와 AI는 production에서도 강제로 비활성화됩니다. API와 DB는 호스트에 공개하지 않으며 웹 프록시만 공개합니다. 판정 작업자는 Docker 소켓을 가지므로 전용 호스트에 배치하고 일반 API·웹 노드와 분리해야 합니다.
+
+## 백업과 복구
+
+```bash
+./ops/backup.sh
+./ops/restore.sh backups/alpha-YYYYMMDDTHHMMSSZ-PID.dump alpha_recovered
+./ops/recovery-smoke.sh
+```
+
+백업은 PostgreSQL custom format과 SHA-256 체크섬을 함께 생성합니다. 복구는 기존 DB와 `alpha` 운영 DB를 덮어쓰지 않고 새 DB에만 수행합니다. 검증 후 `DATABASE_URL`을 새 DB로 바꾸고 API·작업자를 재기동해 전환합니다. production Compose에서는 배포 디렉터리의 `.env`를 채우고 `COMPOSE_FILE=compose.production.yaml`을 지정해 같은 스크립트를 실행합니다.
 
 ## 외부 기능 상태
 
