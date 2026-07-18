@@ -12,6 +12,7 @@ pub mod gamification;
 pub mod governance;
 pub mod http;
 pub mod judge;
+pub mod learning_plans;
 pub mod metadata;
 pub mod observability;
 pub mod onboarding;
