@@ -1,9 +1,10 @@
 #!/usr/bin/env ruby
 
-require "yaml"
+require "psych"
 
-spec = YAML.safe_load(File.read("openapi.yaml"), [], [], true)
-documented = spec.fetch("paths").keys.sort
+source = File.read("openapi.yaml")
+Psych.parse_stream(source)
+documented = source.scan(/^  (\/[^:]+):$/).flatten.sort
 implemented = File.read("src/http.rs").scan(/\.route\(\s*"([^"]+)"/m).flatten.sort
 
 missing = implemented - documented
