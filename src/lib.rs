@@ -2,6 +2,7 @@ pub mod activities;
 pub mod auth;
 pub mod classes;
 pub mod config;
+pub mod contests;
 pub mod db;
 pub mod gamification;
 pub mod http;

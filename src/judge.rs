@@ -341,9 +341,10 @@ pub async fn complete_job_with_output(
         .execute(&mut *transaction)
         .await?;
     if verdict == Verdict::Accepted {
-        let reward_source: Option<(Uuid, Uuid, String, String)> = sqlx::query_as(
+        let reward_source: Option<(Uuid, Uuid, String, String, Option<Uuid>)> = sqlx::query_as(
             r#"
-            SELECT submission.user_id, submission.problem_id, problem.learning_axis, submission.run_kind
+            SELECT submission.user_id, submission.problem_id, problem.learning_axis,
+                   submission.run_kind, submission.contest_id
             FROM submissions submission
             JOIN problems problem ON problem.id = submission.problem_id
             WHERE submission.id = $1
@@ -352,28 +353,52 @@ pub async fn complete_job_with_output(
         .bind(submission_id)
         .fetch_optional(&mut *transaction)
         .await?;
-        if let Some((user_id, problem_id, learning_axis, run_kind)) = reward_source
+        if let Some((user_id, problem_id, learning_axis, run_kind, contest_id)) = reward_source
             && run_kind == "formal"
         {
-            let axis = match learning_axis.as_str() {
-                "code_literacy" => "code_reading",
-                "docs_learning" => "documentation",
-                "independent_coding" => "framework",
-                _ => "algorithm",
+            let axis = if contest_id.is_some() {
+                "contest"
+            } else {
+                match learning_axis.as_str() {
+                    "code_literacy" => "code_reading",
+                    "docs_learning" => "documentation",
+                    "independent_coding" => "framework",
+                    _ => "algorithm",
+                }
             };
+            let (reward_key, source_kind, source_id, xp, reason, mastery_class) =
+                if let Some(contest_id) = contest_id {
+                    (
+                        format!("contest:{contest_id}:problem:{problem_id}"),
+                        "contest",
+                        Some(contest_id),
+                        100,
+                        "대회 문제 해결",
+                        "contest_verified",
+                    )
+                } else {
+                    (
+                        format!("problem:{problem_id}"),
+                        "problem",
+                        Some(problem_id),
+                        80,
+                        "문제 독립 해결",
+                        "independent",
+                    )
+                };
             crate::gamification::apply_reward(
                 &mut transaction,
                 crate::gamification::RewardSpec {
                     event_id: submission_id,
                     user_id,
-                    reward_key: format!("problem:{problem_id}"),
-                    source_kind: "problem",
-                    source_id: Some(problem_id),
-                    xp: 80,
-                    reason_ko: "문제 독립 해결",
+                    reward_key,
+                    source_kind,
+                    source_id,
+                    xp,
+                    reason_ko: reason,
                     axis,
                     mastery_points: 40,
-                    mastery_class: "independent",
+                    mastery_class,
                 },
             )
             .await?;

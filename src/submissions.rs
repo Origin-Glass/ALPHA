@@ -20,6 +20,7 @@ pub struct CreateSubmissionRequest {
     language: String,
     source: String,
     idempotency_key: Uuid,
+    contest_slug: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,6 +100,7 @@ pub enum SubmissionError {
     NotFound,
     RateLimited,
     RoleForbidden,
+    ContestForbidden,
     Database(sqlx::Error),
 }
 
@@ -129,6 +131,11 @@ impl IntoResponse for SubmissionError {
             Self::RoleForbidden => (
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({"error": {"code": "judge_admin_required", "message": "문제 출제자 또는 관리자 권한이 필요합니다"}})),
+            )
+                .into_response(),
+            Self::ContestForbidden => (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": {"code": "contest_submission_forbidden", "message": "진행 중인 대회에 참가 등록한 뒤 해당 문제를 제출해 주세요"}})),
             )
                 .into_response(),
             Self::Database(error) => {
@@ -235,6 +242,7 @@ pub async fn create_run(
         language: request.language,
         source: request.source,
         idempotency_key: request.idempotency_key,
+        contest_slug: None,
     };
     enqueue(
         &state,
@@ -316,13 +324,41 @@ async fn enqueue(
     .fetch_optional(&mut *transaction)
     .await?;
     let (problem_id, problem_revision_id) = problem.ok_or(SubmissionError::NotFound)?;
+    let contest_id = if let Some(contest_slug) = &request.contest_slug {
+        if run_kind != "formal" {
+            return Err(SubmissionError::ContestForbidden);
+        }
+        Some(
+            sqlx::query_scalar::<_, Uuid>(
+                r#"
+            SELECT contest.id
+            FROM contests contest
+            JOIN contest_registrations registration
+              ON registration.contest_id = contest.id AND registration.user_id = $1
+                 AND registration.status = 'active'
+            JOIN contest_problems contest_problem
+              ON contest_problem.contest_id = contest.id AND contest_problem.problem_id = $2
+            WHERE contest.slug = $3 AND contest.status = 'published'
+              AND now() >= contest.starts_at AND now() < contest.ends_at
+            "#,
+            )
+            .bind(user_id)
+            .bind(problem_id)
+            .bind(contest_slug)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .ok_or(SubmissionError::ContestForbidden)?,
+        )
+    } else {
+        None
+    };
     let submission_id = Uuid::now_v7();
     sqlx::query(
         r#"
         INSERT INTO submissions (
             id, user_id, problem_id, problem_revision_id, language, source,
-            idempotency_key, run_kind, custom_input
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            idempotency_key, run_kind, custom_input, contest_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         "#,
     )
     .bind(submission_id)
@@ -334,6 +370,7 @@ async fn enqueue(
     .bind(request.idempotency_key)
     .bind(run_kind)
     .bind(custom_input)
+    .bind(contest_id)
     .execute(&mut *transaction)
     .await?;
     sqlx::query("INSERT INTO judge_jobs (submission_id) VALUES ($1)")

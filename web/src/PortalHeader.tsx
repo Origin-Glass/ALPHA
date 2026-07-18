@@ -9,6 +9,7 @@ function PortalHeader() {
         <a href="/tracks/docs-builder">문서 트랙</a>
         <a href="/dashboard">성장</a>
         <a href="/rankings">랭킹</a>
+        <a href="/contests">대회</a>
         <a href="/problems">문제 탐색</a>
       </nav>
     </header>

@@ -13,6 +13,8 @@ import DocsTrackPage from './DocsTrackPage';
 import ProgressionPage from './ProgressionPage';
 import RankingsPage from './RankingsPage';
 import PublicProfilePage from './PublicProfilePage';
+import ContestsPage from './ContestsPage';
+import ContestDetailPage from './ContestDetailPage';
 
 const learningAxes = [
   { number: '01', title: '알고리즘 추론', description: '정답보다 사고 과정을 단단하게 만듭니다.' },
@@ -153,6 +155,8 @@ function App() {
   if (window.location.pathname === '/dashboard') return <ProgressionPage />;
   if (window.location.pathname === '/rankings') return <RankingsPage />;
   if (window.location.pathname.startsWith('/u/')) return <PublicProfilePage handle={decodeURIComponent(window.location.pathname.slice('/u/'.length))} />;
+  if (window.location.pathname === '/contests') return <ContestsPage />;
+  if (window.location.pathname.startsWith('/contests/')) return <ContestDetailPage slug={decodeURIComponent(window.location.pathname.slice('/contests/'.length))} />;
   if (window.location.pathname === '/problems') return <ProblemsPage />;
   if (window.location.pathname.startsWith('/problems/')) return <ProblemDetailPage slug={decodeURIComponent(window.location.pathname.slice('/problems/'.length))} />;
   if (window.location.pathname.startsWith('/solve/')) return <SolvePage slug={decodeURIComponent(window.location.pathname.slice('/solve/'.length))} />;
