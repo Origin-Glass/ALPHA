@@ -154,20 +154,6 @@ fn rate_key(state: &AppState, request: &Request<Body>) -> String {
         )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rotating_untrusted_keys_cannot_grow_the_rate_map_past_its_cap() {
-        let metrics = RuntimeMetrics::default();
-        for index in 0..MAX_RATE_ENTRIES + 500 {
-            metrics.allow(format!("attacker-{index}"), false);
-        }
-        assert!(metrics.rate_entries.lock().unwrap().len() <= MAX_RATE_ENTRIES);
-    }
-}
-
 pub async fn track_and_limit(
     State(state): State<AppState>,
     request: Request<Body>,
@@ -212,4 +198,18 @@ pub async fn track_and_limit(
             .fetch_add(1, Ordering::Relaxed);
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotating_untrusted_keys_cannot_grow_the_rate_map_past_its_cap() {
+        let metrics = RuntimeMetrics::default();
+        for index in 0..MAX_RATE_ENTRIES + 500 {
+            metrics.allow(format!("attacker-{index}"), false);
+        }
+        assert!(metrics.rate_entries.lock().unwrap().len() <= MAX_RATE_ENTRIES);
+    }
 }
