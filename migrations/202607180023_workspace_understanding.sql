@@ -10,7 +10,9 @@ CREATE TABLE workspace_templates (
     check_suite_hash bytea NOT NULL CHECK (octet_length(check_suite_hash)=32),
     supports_tests boolean NOT NULL DEFAULT false,
     network_policy text NOT NULL DEFAULT 'none' CHECK (network_policy='none'),
-    background_services jsonb NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(background_services)='array' AND jsonb_array_length(background_services)=0),
+    background_services jsonb NOT NULL DEFAULT '[]' CHECK (background_services IN ('[]','[{"kind":"loopback_http_test","version":"v1"}]')),
+    dependency_cache_status text NOT NULL DEFAULT 'not_required' CHECK(dependency_cache_status='not_required'),
+    cache_digest bytea CHECK(cache_digest IS NULL),
     runtime_status text NOT NULL CHECK (runtime_status IN ('verified','implemented_unverified','blocked')),
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (id, revision), UNIQUE (slug, revision), UNIQUE (id, revision, template_digest)
@@ -20,8 +22,9 @@ INSERT INTO workspace_templates (id,revision,slug,track_kind,template_digest,ima
 ('23000000-0000-7000-8000-000000000001',1,'rust-cli-v1','cli_library',decode(repeat('11',32),'hex'),'alpha-judge-runner@sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de','["sh","-lc","rustc main.rs -o /tmp/app && /tmp/app"]','rust-cli-build-run-v1',decode(repeat('a1',32),'hex'),false,'implemented_unverified'),
 ('23000000-0000-7000-8000-000000000004',1,'python-cli-v1','cli_library',decode(repeat('44',32),'hex'),'alpha-judge-runner@sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de','["python3","main.py"]','python-cli-run-v1',decode(repeat('d4',32),'hex'),false,'verified'),
 ('23000000-0000-7000-8000-000000000005',1,'python-test-v1','cli_library',decode(repeat('55',32),'hex'),'alpha-judge-runner@sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de','["sh","-lc","PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v"]','python-unittest-v1',decode(repeat('e5',32),'hex'),true,'verified'),
-('23000000-0000-7000-8000-000000000002',1,'python-api-v1','backend_api',decode(repeat('22',32),'hex'),'alpha-workspace@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','["python3","main.py"]','python-api-contract-v1',decode(repeat('b2',32),'hex'),false,'implemented_unverified'),
-('23000000-0000-7000-8000-000000000003',1,'static-web-v1','frontend_interactive',decode(repeat('33',32),'hex'),'alpha-workspace@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc','["sh","-lc","test -f index.html && printf ready"]','static-web-preview-v1',decode(repeat('c3',32),'hex'),false,'implemented_unverified');
+('23000000-0000-7000-8000-000000000002',1,'python-api-v1','backend_api',decode(repeat('22',32),'hex'),'alpha-judge-runner@sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de','["sh","-lc","PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v"]','python-api-loopback-v1',decode(repeat('b2',32),'hex'),true,'verified'),
+('23000000-0000-7000-8000-000000000003',1,'static-web-v1','frontend_interactive',decode(repeat('33',32),'hex'),'alpha-judge-runner@sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de','["python3","-c","s=open(''index.html'',encoding=''utf-8'').read().lower();assert ''<html'' in s and ''<body'' in s and ''</body>'' in s"]','static-web-structure-v1',decode(repeat('c3',32),'hex'),false,'verified');
+UPDATE workspace_templates SET background_services='[{"kind":"loopback_http_test","version":"v1"}]' WHERE slug='python-api-v1';
 
 CREATE TABLE project_workspaces (
     id uuid PRIMARY KEY,
@@ -86,10 +89,14 @@ CREATE TABLE workspace_runs (
     challenge_id uuid,
     check_suite_id text NOT NULL, check_suite_hash bytea NOT NULL CHECK(octet_length(check_suite_hash)=32),
     supports_tests_snapshot boolean NOT NULL,
+    background_services_snapshot jsonb NOT NULL CHECK(jsonb_typeof(background_services_snapshot)='array'),
+    dependency_cache_status text NOT NULL CHECK(dependency_cache_status='not_required'),
+    cache_digest bytea CHECK(cache_digest IS NULL),
     command jsonb NOT NULL CHECK (jsonb_typeof(command)='array' AND jsonb_array_length(command) BETWEEN 1 AND 16),
     status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','leased','running','succeeded','failed','cancelled','expired')),
     attempt smallint NOT NULL DEFAULT 0 CHECK (attempt BETWEEN 0 AND 3),
     lease_token uuid, leased_by text, lease_expires_at timestamptz, cancel_requested_at timestamptz,
+    cancel_idempotency_key uuid, cancel_request_hash bytea CHECK(cancel_request_hash IS NULL OR octet_length(cancel_request_hash)=32),
     exit_code integer, stdout text, stderr text,
     stdout_hash bytea CHECK(stdout_hash IS NULL OR octet_length(stdout_hash)=32),
     deterministic_checks_passed boolean NOT NULL DEFAULT false,
@@ -130,6 +137,7 @@ CREATE TABLE understanding_challenges (
 );
 
 ALTER TABLE workspace_runs ADD FOREIGN KEY(challenge_id,user_id) REFERENCES understanding_challenges(id,user_id) ON DELETE RESTRICT;
+CREATE UNIQUE INDEX understanding_one_pending_source_idx ON understanding_challenges(user_id,workspace_id,source_run_id) WHERE state='pending';
 
 CREATE TABLE understanding_receipts (
     id uuid PRIMARY KEY, challenge_id uuid NOT NULL, user_id uuid NOT NULL,
@@ -182,6 +190,7 @@ CREATE TABLE portfolio_items (
 
 CREATE FUNCTION deny_workspace_evidence_mutation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'immutable workspace evidence'; END $$;
 CREATE TRIGGER workspace_runs_no_update AFTER UPDATE ON workspace_runs FOR EACH ROW WHEN (OLD.status IN ('succeeded','failed','cancelled','expired')) EXECUTE FUNCTION deny_workspace_evidence_mutation();
+CREATE TRIGGER workspace_runs_terminal_no_delete BEFORE DELETE ON workspace_runs FOR EACH ROW WHEN (OLD.status IN ('succeeded','failed','cancelled','expired')) EXECUTE FUNCTION deny_workspace_evidence_mutation();
 CREATE TRIGGER workspace_templates_no_mutation BEFORE UPDATE OR DELETE ON workspace_templates FOR EACH ROW EXECUTE FUNCTION deny_workspace_evidence_mutation();
 CREATE TRIGGER workspace_revisions_no_mutation BEFORE UPDATE OR DELETE ON workspace_revisions FOR EACH ROW EXECUTE FUNCTION deny_workspace_evidence_mutation();
 CREATE TRIGGER understanding_receipts_no_update BEFORE UPDATE OR DELETE ON understanding_receipts FOR EACH ROW EXECUTE FUNCTION deny_workspace_evidence_mutation();
@@ -189,9 +198,9 @@ CREATE TRIGGER portfolio_rights_no_update BEFORE UPDATE OR DELETE ON portfolio_r
 
 CREATE FUNCTION enforce_workspace_run_transition() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF (NEW.workspace_id,NEW.user_id,NEW.workspace_version,NEW.template_id,NEW.template_revision,NEW.template_digest,NEW.image_reference,NEW.artifact,NEW.artifact_hash,NEW.semantic_hash,NEW.validation_kind,NEW.challenge_id,NEW.check_suite_id,NEW.check_suite_hash,NEW.supports_tests_snapshot,NEW.command,NEW.idempotency_key,NEW.request_hash)
+  IF (NEW.workspace_id,NEW.user_id,NEW.workspace_version,NEW.template_id,NEW.template_revision,NEW.template_digest,NEW.image_reference,NEW.artifact,NEW.artifact_hash,NEW.semantic_hash,NEW.validation_kind,NEW.challenge_id,NEW.check_suite_id,NEW.check_suite_hash,NEW.supports_tests_snapshot,NEW.background_services_snapshot,NEW.dependency_cache_status,NEW.cache_digest,NEW.command,NEW.idempotency_key,NEW.request_hash)
      IS DISTINCT FROM
-     (OLD.workspace_id,OLD.user_id,OLD.workspace_version,OLD.template_id,OLD.template_revision,OLD.template_digest,OLD.image_reference,OLD.artifact,OLD.artifact_hash,OLD.semantic_hash,OLD.validation_kind,OLD.challenge_id,OLD.check_suite_id,OLD.check_suite_hash,OLD.supports_tests_snapshot,OLD.command,OLD.idempotency_key,OLD.request_hash)
+     (OLD.workspace_id,OLD.user_id,OLD.workspace_version,OLD.template_id,OLD.template_revision,OLD.template_digest,OLD.image_reference,OLD.artifact,OLD.artifact_hash,OLD.semantic_hash,OLD.validation_kind,OLD.challenge_id,OLD.check_suite_id,OLD.check_suite_hash,OLD.supports_tests_snapshot,OLD.background_services_snapshot,OLD.dependency_cache_status,OLD.cache_digest,OLD.command,OLD.idempotency_key,OLD.request_hash)
   THEN RAISE EXCEPTION 'workspace execution snapshot is immutable';
   END IF;
   IF NEW.status IN ('succeeded','failed') AND NOT (

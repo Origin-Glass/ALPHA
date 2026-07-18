@@ -1244,6 +1244,8 @@ paths:
     post: { summary: 격리 실행 생성, security: *write, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CreateWorkspaceRunRequest" } } } }, responses: { "200": { description: 멱등 재생, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceRun" } } } }, "201": { description: 대기, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceRun" } } } }, "400": { $ref: "#/components/responses/Error" } } }
   /api/v1/workspaces/{id}/revisions/{version}:
     get: { summary: 불변 작업공간 리비전과 경로 diff, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }, { name: version, in: path, required: true, schema: { type: integer, minimum: 1 } }], responses: { "200": { description: 리비전, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceRevision" } } } }, "404": { $ref: "#/components/responses/Error" } } }
+  /api/v1/classes/{class_id}/learners/{learner_id}/workspaces/{workspace_id}/revisions/{version}:
+    get: { summary: 담당 강사의 학습자 작업공간 리비전 조회, parameters: [{ name: class_id, in: path, required: true, schema: { type: string, format: uuid } }, { name: learner_id, in: path, required: true, schema: { type: string, format: uuid } }, { name: workspace_id, in: path, required: true, schema: { type: string, format: uuid } }, { name: version, in: path, required: true, schema: { type: integer, minimum: 1 } }], responses: { "200": { description: 감사 기록된 리비전 }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" } } }
   /api/v1/workspaces/{id}/checkpoints:
     post: { summary: 체크포인트 생성, security: *write, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CheckpointRequest" } } } }, responses: { "200": { description: 멱등 재생, content: { application/json: { schema: { $ref: "#/components/schemas/Checkpoint" } } } }, "201": { description: 체크포인트, content: { application/json: { schema: { $ref: "#/components/schemas/Checkpoint" } } } }, "409": { $ref: "#/components/responses/Error" } } }
   /api/v1/workspaces/{id}/reset:
@@ -1251,7 +1253,7 @@ paths:
   /api/v1/workspace-runs/{id}:
     get: { summary: 소유한 실행 상세, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], responses: { "200": { description: 상세, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceRun" } } } }, "404": { $ref: "#/components/responses/Error" } } }
   /api/v1/workspace-runs/{id}/cancel:
-    post: { summary: 실행 취소, security: *write, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], responses: { "200": { description: 취소 요청, content: { application/json: { schema: { type: object, additionalProperties: false, required: [id, cancel_requested], properties: { id: { type: string, format: uuid }, cancel_requested: { type: boolean } } } } } } } }
+    post: { summary: 실행 취소, security: *write, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CancelWorkspaceRunRequest" } } } }, responses: { "200": { description: 취소 요청 또는 exact replay, content: { application/json: { schema: { type: object, additionalProperties: false, required: [id, cancel_requested], properties: { id: { type: string, format: uuid }, cancel_requested: { type: boolean } } } } } }, "409": { $ref: "#/components/responses/Error" } } }
   /api/v1/understanding/challenges:
     post: { summary: 이해 과제 생성, security: *write, requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CreateUnderstandingRequest" } } } }, responses: { "200": { description: 멱등 재생, content: { application/json: { schema: { $ref: "#/components/schemas/UnderstandingChallenge" } } } }, "201": { description: 과제, content: { application/json: { schema: { $ref: "#/components/schemas/UnderstandingChallenge" } } } }, "409": { $ref: "#/components/responses/Error" } } }
   /api/v1/understanding/challenges/{id}/predictions:
@@ -1594,8 +1596,8 @@ components:
     Workspace:
       type: object
       additionalProperties: false
-      required: [id, title, version, template_slug, track_kind, runtime_status, files]
-      properties: { id: { type: string, format: uuid }, title: { type: string }, version: { type: integer, minimum: 1 }, template_slug: { type: string }, track_kind: { type: string, enum: [cli_library, backend_api, frontend_interactive] }, runtime_status: { type: string, enum: [verified, implemented_unverified, blocked] }, files: { type: array, maxItems: 64, items: { $ref: "#/components/schemas/WorkspaceFile" } } }
+      required: [id, title, version, template_slug, track_kind, runtime_status, files, background_services, dependency_cache_status, cache_digest]
+      properties: { id: { type: string, format: uuid }, title: { type: string }, version: { type: integer, minimum: 1 }, template_slug: { type: string }, track_kind: { type: string, enum: [cli_library, backend_api, frontend_interactive] }, runtime_status: { type: string, enum: [verified, implemented_unverified, blocked] }, files: { type: array, maxItems: 64, items: { $ref: "#/components/schemas/WorkspaceFile" } }, background_services: { type: array, items: { type: object } }, dependency_cache_status: { type: string, const: not_required }, cache_digest: { type: [array, "null"], items: { type: integer } } }
     WorkspaceList:
       type: object
       additionalProperties: false
@@ -1640,7 +1642,12 @@ components:
       type: object
       additionalProperties: false
       required: [id, status]
-      properties: { id: { type: string, format: uuid }, status: { type: string, enum: [queued, leased, running, succeeded, failed, cancelled, expired] }, exit_code: { type: [integer, "null"] }, stdout: { type: [string, "null"] }, stderr: { type: [string, "null"] }, output_truncated: { type: boolean }, cancel_requested: { type: boolean } }
+      properties: { id: { type: string, format: uuid }, status: { type: string, enum: [queued, leased, running, succeeded, failed, cancelled, expired] }, exit_code: { type: [integer, "null"] }, stdout: { type: [string, "null"] }, stderr: { type: [string, "null"] }, output_truncated: { type: boolean }, cancel_requested: { type: boolean }, preview_html: { type: [string, "null"] } }
+    CancelWorkspaceRunRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotency_key]
+      properties: { idempotency_key: { type: string, format: uuid } }
     CreateUnderstandingRequest:
       type: object
       additionalProperties: false
@@ -1649,8 +1656,8 @@ components:
     UnderstandingChallenge:
       type: object
       additionalProperties: false
-      required: [id, state, prompt]
-      properties: { id: { type: string, format: uuid }, state: { type: string, enum: [pending, reviewed, understood, independently_modifiable, transfer_verified] }, prompt: { type: object, additionalProperties: false, required: [explanation, prediction, modification, transfer], properties: { explanation: { type: string }, prediction: { type: string }, modification: { type: string }, transfer: { type: string } } } }
+      required: [id, state, prompt, predictions_committed]
+      properties: { id: { type: string, format: uuid }, state: { type: string, enum: [pending, reviewed, understood, independently_modifiable, transfer_verified] }, predictions_committed: { type: boolean }, prompt: { type: object, additionalProperties: false, required: [explanation, prediction, modification, transfer], properties: { explanation: { type: string }, prediction: { type: string }, modification: { type: string }, transfer: { type: string } } } }
     SubmitUnderstandingRequest:
       type: object
       additionalProperties: false

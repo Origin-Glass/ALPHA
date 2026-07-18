@@ -3,7 +3,7 @@ import PortalHeader from './PortalHeader';
 
 type FileEntry = { path: string; content: string };
 type Workspace = { id: string; title: string; version: number; template_slug?: string; runtime_status?: string; files: FileEntry[] };
-type Run = { id: string; status: string; stdout?: string; stderr?: string; cancel_requested?: boolean };
+type Run = { id: string; status: string; stdout?: string; stderr?: string; cancel_requested?: boolean; preview_html?: string };
 const csrf = () => document.cookie.split(';').map((value) => value.trim()).find((value) => value.startsWith('alpha_csrf='))?.slice(11) ?? '';
 const statusLabels: Record<string, string> = { queued: '실행 대기', leased: '실행 준비 중', running: '실행 중', succeeded: '통과', failed: '실패', cancelled: '취소됨', expired: '만료됨' };
 
@@ -48,7 +48,16 @@ function MultiFileWorkspacePage() {
   }, [run?.id, run?.status]);
 
   const createWorkspace = async () => {
-    const starter = template === 'python-test-v1' ? [{ path: 'test_project.py', content: 'import unittest\n\nclass ProjectTest(unittest.TestCase):\n    def test_example(self):\n        self.assertTrue(True)\n', symlink: false }] : [{ path: 'main.py', content: 'print("안녕하세요")', symlink: false }];
+    const starters: Record<string, Array<FileEntry & { symlink: boolean }>> = {
+      'python-cli-v1': [{ path: 'main.py', content: 'print("안녕하세요")', symlink: false }],
+      'python-test-v1': [{ path: 'test_project.py', content: 'import unittest\n\nclass ProjectTest(unittest.TestCase):\n    def test_example(self):\n        self.assertTrue(True)\n', symlink: false }],
+      'python-api-v1': [
+        { path: 'app.py', content: 'import json\nfrom http.server import BaseHTTPRequestHandler\n\nclass Handler(BaseHTTPRequestHandler):\n    def do_GET(self):\n        if self.path != "/health":\n            self.send_error(404)\n            return\n        body = json.dumps({"status": "ok"}).encode()\n        self.send_response(200)\n        self.send_header("Content-Type", "application/json")\n        self.send_header("Content-Length", str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\n    def log_message(self, *_):\n        pass\n', symlink: false },
+        { path: 'test_app.py', content: 'import json\nimport threading\nimport unittest\nimport urllib.request\nfrom http.server import ThreadingHTTPServer\nfrom app import Handler\n\nclass ApiTest(unittest.TestCase):\n    def test_loopback_request_response(self):\n        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)\n        thread = threading.Thread(target=server.serve_forever, daemon=True)\n        thread.start()\n        try:\n            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/health") as response:\n                self.assertEqual(response.status, 200)\n                self.assertEqual(json.load(response), {"status": "ok"})\n        finally:\n            server.shutdown()\n            server.server_close()\n            thread.join()\n', symlink: false },
+      ],
+      'static-web-v1': [{ path: 'index.html', content: '<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>정적 웹</title></head><body><button id="hello">눌러 보세요</button><script>hello.onclick=()=>hello.textContent="안녕하세요"</script></body></html>', symlink: false }],
+    };
+    const starter = starters[template] ?? starters['python-cli-v1'];
     const payload = { title: title.trim(), template_slug: template, project_id: null, files: starter };
     const response = await fetch('/api/v1/workspaces', { method: 'POST', credentials: 'include', headers, body: JSON.stringify({ ...payload, idempotency_key: keyFor('create', payload) }) });
     const body = await response.json();
@@ -86,12 +95,12 @@ function MultiFileWorkspacePage() {
 
   return <div className="learning-page"><PortalHeader /><main className="path-panel workspace-panel">
     <p className="eyebrow">격리된 다중 파일 실행</p><h1>프로젝트 작업공간</h1>
-    {!workspace && <section className="project-form" aria-label="작업공간 만들기"><label>작업공간 제목<input value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>실행 템플릿<select value={template} onChange={(event) => setTemplate(event.target.value)}><option value="python-cli-v1">Python CLI</option><option value="python-test-v1">Python unittest</option><option value="rust-cli-v1" disabled>Rust CLI — 런타임 미검증</option></select></label><button type="button" disabled={!title.trim()} onClick={createWorkspace}>CLI 작업공간 만들기</button>{workspaces.map((item) => <a key={item.id} href={`/workspace?id=${item.id}`}>{item.title}</a>)}</section>}
+    {!workspace && <section className="project-form" aria-label="작업공간 만들기"><label>작업공간 제목<input value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>실행 템플릿<select value={template} onChange={(event) => setTemplate(event.target.value)}><option value="python-cli-v1">Python CLI</option><option value="python-test-v1">Python unittest</option><option value="python-api-v1">Python loopback API</option><option value="static-web-v1">정적 웹</option><option value="rust-cli-v1" disabled>Rust CLI — 런타임 미검증</option></select></label><button type="button" disabled={!title.trim()} onClick={createWorkspace}>작업공간 만들기</button>{workspaces.map((item) => <a key={item.id} href={`/workspace?id=${item.id}`}>{item.title}</a>)}</section>}
     {workspace && <><h2>{workspace.title}</h2>{workspace.runtime_status && workspace.runtime_status !== 'verified' && <p role="alert">이 템플릿은 런타임 미검증 상태라 실행할 수 없습니다.</p>}<div className="workspace-tabs" role="tablist" aria-label="프로젝트 파일">{workspace.files.map((file) => <button role="tab" aria-selected={file.path === activePath} type="button" key={file.path} onClick={() => setActivePath(file.path)}>{file.path}</button>)}</div>
       {activeFile && <label className="workspace-editor">{activeFile.path} 내용<textarea rows={16} value={activeFile.content} onChange={(event) => updateFile(event.target.value)} /></label>}
       <div className="workspace-actions"><label>파일 경로<input value={newPath} onChange={(event) => setNewPath(event.target.value)} /></label><button type="button" onClick={addFile}>파일 추가</button><button type="button" onClick={renameFile}>선택 파일 이름 변경</button><button type="button" onClick={deleteFile}>선택 파일 삭제</button><button type="button" onClick={save}>파일 저장</button><button type="button" disabled={workspace.runtime_status !== undefined && workspace.runtime_status !== 'verified'} onClick={execute}>빌드 및 테스트 실행</button>{run && ['queued', 'leased', 'running'].includes(run.status) && !run.cancel_requested && <button type="button" onClick={cancel}>실행 취소</button>}</div>
       <div className="workspace-actions"><button type="button" onClick={checkpoint}>체크포인트 만들기</button><button type="button" onClick={showDiff}>현재 변경 내역</button><label>복원할 버전<input type="number" min="1" value={resetVersion} onChange={(event) => setResetVersion(event.target.value)} /></label><button type="button" onClick={reset}>리비전 복원</button></div>{diff.length > 0 && <p>변경 파일: {diff.join(', ')}</p>}
-      {run && <section className="run-result" aria-live="polite"><strong>{run.cancel_requested && !['cancelled', 'expired'].includes(run.status) ? '취소 요청됨' : statusLabels[run.status] ?? run.status}</strong>{run.stdout && <pre aria-label="표준 출력">{run.stdout}</pre>}{run.stderr && <pre aria-label="오류 출력">{run.stderr}</pre>}</section>}</>}
+      {run && <section className="run-result" aria-live="polite"><strong>{run.cancel_requested && !['cancelled', 'expired'].includes(run.status) ? '취소 요청됨' : statusLabels[run.status] ?? run.status}</strong>{run.stdout && <pre aria-label="표준 출력">{run.stdout}</pre>}{run.stderr && <pre aria-label="오류 출력">{run.stderr}</pre>}{run.preview_html && <iframe title="서명된 정적 미리보기" sandbox="allow-scripts" srcDoc={`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">${run.preview_html}`} />}</section>}</>}
     {message && <p role="status" className="auth-message">{message}</p>}
   </main></div>;
 }

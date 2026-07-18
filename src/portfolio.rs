@@ -150,6 +150,7 @@ pub async fn create(
         .is_some_and(|(hash, mac)| {
             crate::workspaces::verify_receipt(
                 state.settings().workspace_receipt_secret.as_bytes(),
+                req.source_run_id,
                 hash,
                 mac,
             )
@@ -269,6 +270,7 @@ pub async fn approve_rights(
         .is_some_and(|(hash, mac)| {
             crate::workspaces::verify_receipt(
                 state.settings().workspace_receipt_secret.as_bytes(),
+                req.source_run_id,
                 hash,
                 mac,
             )

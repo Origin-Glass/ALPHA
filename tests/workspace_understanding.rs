@@ -14,6 +14,11 @@ use std::collections::HashMap;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+const DECLARED_IMAGE: &str =
+    "alpha-judge-runner@sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de";
+const EXECUTION_IMAGE: &str =
+    "sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de";
+
 #[test]
 fn workspace_files_fail_closed_before_execution() {
     let valid = vec![
@@ -189,11 +194,15 @@ fn files(version: &str) -> Value {
     json!([{"path":"main.rs","content":format!("mod helper; fn main(){{println!(\"{{}}\",helper::value())}} // {version}"),"symlink":false},{"path":"helper.rs","content":format!("pub fn value()->i32{{{}}}",version),"symlink":false}])
 }
 async fn finish_run(pool: &PgPool, id: Uuid, stdout: &str) {
-    let image = "sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de";
-    let lease = alpha::workspaces::lease_next(pool, "test-workspace-worker", image)
-        .await
-        .unwrap()
-        .unwrap();
+    let lease = alpha::workspaces::lease_next(
+        pool,
+        "test-workspace-worker",
+        DECLARED_IMAGE,
+        EXECUTION_IMAGE,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(lease.id, id);
     assert!(
         alpha::workspaces::mark_running(pool, id, lease.lease_token)
@@ -270,7 +279,13 @@ async fn owned_workspace_run_understanding_and_portfolio_receipts_are_exact(pool
     let challenge=post(&app,&owner,"/api/v1/understanding/challenges",json!({"workspace_id":wid,"kind":"explanation_modification_transfer","idempotency_key":Uuid::now_v7()})).await;
     assert_eq!(challenge.status(), StatusCode::CREATED);
     let challenge = body(challenge).await;
+    let resumed=body(post(&app,&owner,"/api/v1/understanding/challenges",json!({"workspace_id":wid,"kind":"explanation_modification_transfer","idempotency_key":Uuid::now_v7()})).await).await;
+    assert_eq!(resumed["id"],challenge["id"]);
+    assert_eq!(resumed["predictions_committed"],false);
     assert_eq!(post(&app,&owner,&format!("/api/v1/understanding/challenges/{}/predictions",challenge["id"].as_str().unwrap()),json!({"modification_prediction":"43","transfer_prediction":"44","idempotency_key":Uuid::now_v7()})).await.status(),StatusCode::CREATED);
+    let remounted=body(post(&app,&owner,"/api/v1/understanding/challenges",json!({"workspace_id":wid,"kind":"explanation_modification_transfer","idempotency_key":Uuid::now_v7()})).await).await;
+    assert_eq!(remounted["id"],challenge["id"]);
+    assert_eq!(remounted["predictions_committed"],true);
     let same=body(post(&app,&owner,"/api/v1/workspaces",json!({"title":"같은 템플릿","template_slug":"python-test-v1","project_id":null,"files":files("99"),"idempotency_key":Uuid::now_v7()})).await).await;
     assert_eq!(post(&app,&owner,&format!("/api/v1/workspaces/{}/runs",same["id"].as_str().unwrap()),json!({"idempotency_key":Uuid::now_v7(),"expected_version":1,"validation_kind":"transfer","challenge_id":challenge["id"]})).await.status(),StatusCode::BAD_REQUEST);
     let current: i32 = sqlx::query_scalar("SELECT version FROM project_workspaces WHERE id=$1")
@@ -415,7 +430,7 @@ async fn owned_workspace_run_understanding_and_portfolio_receipts_are_exact(pool
             &app,
             &owner,
             &format!("/api/v1/portfolio/{pid}/publish"),
-            json!({})
+            json!({"idempotency_key":Uuid::now_v7()})
         )
         .await
         .status(),
@@ -461,8 +476,18 @@ async fn workspace_lease_cancel_retry_and_stale_completion_are_fenced(pool: PgPo
     let bid = body(b).await["id"].clone();
     assert_eq!(aid, bid);
     let id = aid.as_str().unwrap().parse::<Uuid>().unwrap();
-    let image = "sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de";
-    let first = alpha::workspaces::lease_next(&pool, "worker-a", image)
+    assert!(
+        alpha::workspaces::lease_next(
+            &pool,
+            "wrong-image-worker",
+            "other-runner@sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de",
+            EXECUTION_IMAGE
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    let first = alpha::workspaces::lease_next(&pool, "worker-a", DECLARED_IMAGE, EXECUTION_IMAGE)
         .await
         .unwrap()
         .unwrap();
@@ -476,7 +501,7 @@ async fn workspace_lease_cancel_retry_and_stale_completion_are_fenced(pool: PgPo
         .execute(&pool)
         .await
         .unwrap();
-    let second = alpha::workspaces::lease_next(&pool, "worker-b", image)
+    let second = alpha::workspaces::lease_next(&pool, "worker-b", DECLARED_IMAGE, EXECUTION_IMAGE)
         .await
         .unwrap()
         .unwrap();
@@ -504,16 +529,29 @@ async fn workspace_lease_cancel_retry_and_stale_completion_are_fenced(pool: PgPo
         .await
         .unwrap()
     );
+    let cancel_key = Uuid::now_v7();
+    let cancel_uri = format!("/api/v1/workspace-runs/{id}/cancel");
+    let cancel_body = json!({"idempotency_key":cancel_key});
+    assert_eq!(
+        post(&app, &owner, &cancel_uri, cancel_body.clone())
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        post(&app, &owner, &cancel_uri, cancel_body).await.status(),
+        StatusCode::OK
+    );
     assert_eq!(
         post(
             &app,
             &owner,
-            &format!("/api/v1/workspace-runs/{id}/cancel"),
-            json!({})
+            &cancel_uri,
+            json!({"idempotency_key":Uuid::now_v7()})
         )
         .await
         .status(),
-        StatusCode::OK
+        StatusCode::CONFLICT
     );
     assert!(
         alpha::workspaces::run_cancelled(&pool, id, second.lease_token)
@@ -540,6 +578,59 @@ async fn workspace_lease_cancel_retry_and_stale_completion_are_fenced(pool: PgPo
         .await
         .unwrap();
     assert_eq!(status, "cancelled");
+
+    let leased_cancel = body(
+        post(
+            &app,
+            &owner,
+            &uri,
+            json!({"idempotency_key":Uuid::now_v7(),"expected_version":1}),
+        )
+        .await,
+    )
+    .await;
+    let leased_cancel_id = leased_cancel["id"]
+        .as_str()
+        .unwrap()
+        .parse::<Uuid>()
+        .unwrap();
+    let leased = alpha::workspaces::lease_next(
+        &pool,
+        "worker-before-start",
+        DECLARED_IMAGE,
+        EXECUTION_IMAGE,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(leased.id, leased_cancel_id);
+    assert_eq!(
+        post(
+            &app,
+            &owner,
+            &format!("/api/v1/workspace-runs/{leased_cancel_id}/cancel"),
+            json!({"idempotency_key":Uuid::now_v7()})
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert!(
+        !alpha::workspaces::mark_running(&pool, leased_cancel_id, leased.lease_token)
+            .await
+            .unwrap()
+    );
+    alpha::workspaces::finish_cancel(&pool, leased_cancel_id, leased.lease_token)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM workspace_runs WHERE id=$1")
+            .bind(leased_cancel_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "cancelled"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -569,7 +660,7 @@ async fn forged_success_and_self_rights_approval_do_not_create_evidence(pool: Pg
             &app,
             &owner,
             &format!("/api/v1/workspace-runs/{run_id}/cancel"),
-            json!({})
+            json!({"idempotency_key":Uuid::now_v7()})
         )
         .await
         .status(),
@@ -592,14 +683,11 @@ async fn forged_success_and_self_rights_approval_do_not_create_evidence(pool: Pg
         .unwrap()
         .parse::<Uuid>()
         .unwrap();
-    let lease = alpha::workspaces::lease_next(
-        &pool,
-        "forgery-worker",
-        "sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de",
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let lease =
+        alpha::workspaces::lease_next(&pool, "forgery-worker", DECLARED_IMAGE, EXECUTION_IMAGE)
+            .await
+            .unwrap()
+            .unwrap();
     assert_eq!(lease.id, forged_running);
     assert!(
         alpha::workspaces::mark_running(&pool, forged_running, lease.lease_token)
@@ -630,6 +718,51 @@ async fn forged_success_and_self_rights_approval_do_not_create_evidence(pool: Pg
     .await;
     let verified_id = verified["id"].as_str().unwrap().parse::<Uuid>().unwrap();
     finish_run(&pool, verified_id, "42").await;
+    assert!(
+        sqlx::query("DELETE FROM workspace_runs WHERE id=$1")
+            .bind(verified_id)
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    let replay_id = body(
+        post(
+            &app,
+            &owner,
+            &format!(
+                "/api/v1/workspaces/{}/runs",
+                workspace["id"].as_str().unwrap()
+            ),
+            json!({"idempotency_key":Uuid::now_v7(),"expected_version":1}),
+        )
+        .await,
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .parse::<Uuid>()
+        .unwrap();
+    let replay_lease =
+        alpha::workspaces::lease_next(&pool, "replay-worker", DECLARED_IMAGE, EXECUTION_IMAGE)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(replay_lease.id, replay_id);
+    assert!(
+        alpha::workspaces::mark_running(&pool, replay_id, replay_lease.lease_token)
+            .await
+            .unwrap()
+    );
+    let (copied_hash, copied_mac): (Vec<u8>, Vec<u8>) = sqlx::query_as(
+        "SELECT runner_receipt_hash,runner_receipt_mac FROM workspace_runs WHERE id=$1",
+    )
+    .bind(verified_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE workspace_runs SET status='succeeded',lease_token=NULL,leased_by=NULL,lease_expires_at=NULL,execution_image_digest=$2,exit_code=0,stdout='42',stdout_hash=$3,deterministic_checks_passed=true,runner_receipt_hash=$4,runner_receipt_mac=$5,completed_at=now() WHERE id=$1")
+        .bind(replay_id).bind(EXECUTION_IMAGE).bind(vec![1_u8;32]).bind(copied_hash).bind(copied_mac).execute(&pool).await.unwrap();
+    assert_eq!(post(&app,&owner,"/api/v1/understanding/challenges",json!({"workspace_id":workspace["id"],"kind":"explanation_modification_transfer","idempotency_key":Uuid::now_v7()})).await.status(),StatusCode::CONFLICT);
     sqlx::query("INSERT INTO user_roles(user_id,role) VALUES($1,'RIGHTS_REVIEWER')")
         .bind(owner.user_id)
         .execute(&pool)
@@ -746,11 +879,11 @@ async fn revisions_checkpoints_reset_and_expiry_are_owned_and_fenced(pool: PgPoo
     )
     .await;
     let run_id = run["id"].as_str().unwrap().parse::<Uuid>().unwrap();
-    let image = "sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de";
-    let lease = alpha::workspaces::lease_next(&pool, "expiry-worker", image)
-        .await
-        .unwrap()
-        .unwrap();
+    let lease =
+        alpha::workspaces::lease_next(&pool, "expiry-worker", DECLARED_IMAGE, EXECUTION_IMAGE)
+            .await
+            .unwrap()
+            .unwrap();
     assert!(
         alpha::workspaces::mark_running(&pool, run_id, lease.lease_token)
             .await
@@ -811,4 +944,69 @@ async fn revisions_checkpoints_reset_and_expiry_are_owned_and_fenced(pool: PgPoo
         .await
         .unwrap();
     assert_eq!(status, "cancelled");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn signed_static_preview_and_instructor_revision_are_scoped(pool: PgPool) {
+    let app = app(pool.clone());
+    let instructor = session(&app, "snap-instructor").await;
+    let learner = session(&app, "snap-learner").await;
+    let workspace=body(post(&app,&learner,"/api/v1/workspaces",json!({"title":"정적 미리보기","template_slug":"static-web-v1","project_id":null,"files":[{"path":"index.html","content":"<!doctype html><html><body><button>안녕</button></body></html>","symlink":false}],"idempotency_key":Uuid::now_v7()})).await).await;
+    assert_eq!(workspace["dependency_cache_status"], "not_required");
+    let workspace_id = workspace["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    let run = body(
+        post(
+            &app,
+            &learner,
+            &format!("/api/v1/workspaces/{workspace_id}/runs"),
+            json!({"expected_version":1,"idempotency_key":Uuid::now_v7()}),
+        )
+        .await,
+    )
+    .await;
+    let run_id = run["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    finish_run(&pool, run_id, "structure ok").await;
+    let detail = body(get(&app, &learner, &format!("/api/v1/workspace-runs/{run_id}")).await).await;
+    assert!(
+        detail["preview_html"]
+            .as_str()
+            .unwrap()
+            .contains("<button>안녕</button>")
+    );
+
+    let organization = Uuid::now_v7();
+    let class = Uuid::now_v7();
+    let other_class = Uuid::now_v7();
+    sqlx::query("INSERT INTO organizations(id,slug,name,created_by) VALUES($1,$2,'검증 기관',$3)")
+        .bind(organization)
+        .bind(format!("snapshot-{organization}"))
+        .bind(instructor.user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO classes(id,organization_id,name,created_by) VALUES($1,$2,'검증 반',$3),($4,$2,'다른 반',$3)").bind(class).bind(organization).bind(instructor.user_id).bind(other_class).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO class_memberships(class_id,user_id,role) VALUES($1,$2,'INSTRUCTOR'),($1,$3,'LEARNER')").bind(class).bind(instructor.user_id).bind(learner.user_id).execute(&pool).await.unwrap();
+    let uri = format!(
+        "/api/v1/classes/{class}/learners/{}/workspaces/{workspace_id}/revisions/1",
+        learner.user_id
+    );
+    let snapshot = get(&app, &instructor, &uri).await;
+    assert_eq!(snapshot.status(), StatusCode::OK);
+    assert_eq!(
+        body(snapshot).await["workspace_id"],
+        workspace_id.to_string()
+    );
+    assert_eq!(
+        get(&app, &learner, &uri).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    let cross = format!(
+        "/api/v1/classes/{class}/learners/{}/workspaces/{workspace_id}/revisions/1",
+        instructor.user_id
+    );
+    assert_eq!(
+        get(&app, &instructor, &cross).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM audit_events WHERE actor_user_id=$1 AND action='workspace.revision.viewed_by_instructor'").bind(instructor.user_id).fetch_one(&pool).await.unwrap(),1);
 }

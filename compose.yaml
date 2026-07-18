@@ -166,6 +166,7 @@ services:
       APP_ENV: development
       DATABASE_URL: postgres://alpha:${POSTGRES_PASSWORD:-alpha-local-only}@db:5432/alpha
       WORKSPACE_IMAGE: ${WORKSPACE_IMAGE:-alpha-judge-runner:local}
+      WORKSPACE_DECLARED_IMAGE_REFERENCE: ${WORKSPACE_DECLARED_IMAGE_REFERENCE:-alpha-judge-runner@sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de}
       WORKSPACE_RECEIPT_SECRET: ${WORKSPACE_RECEIPT_SECRET:-alpha-local-workspace-receipt-secret-32}
       WORKSPACE_WORKER_ID: compose-workspace-worker-1
       TMPDIR: ${ALPHA_WORKSPACE_ROOT:-/tmp/alpha-workspace}

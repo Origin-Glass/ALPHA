@@ -58,6 +58,23 @@ test('여러 파일을 저장하고 격리 실행을 취소하며 같은 저장 
   expect(await screen.findByText('취소 요청됨')).toBeInTheDocument();
 });
 
+test('서명 검증된 정적 결과만 네트워크가 차단된 sandbox 미리보기로 표시한다', async () => {
+  document.cookie = 'alpha_csrf=preview-csrf; path=/';
+  window.history.pushState({}, '', '/workspace?id=static-1');
+  vi.stubGlobal('fetch', vi.fn().mockImplementation((path: string, options?: RequestInit) => {
+    if (path === '/api/v1/workspaces/static-1' && !options?.method) return ok({ id: 'static-1', title: '정적 웹', version: 1, runtime_status: 'verified', files: [{ path: 'index.html', content: '<html><body>안녕</body></html>' }] });
+    if (path === '/api/v1/workspaces/static-1/runs') return ok({ id: 'run-static', status: 'succeeded', preview_html: '<html><body><script>document.body.dataset.ready="yes"</script></body></html>' });
+    throw new Error(`unexpected ${path}`);
+  }));
+  vi.stubGlobal('crypto', { randomUUID: () => 'preview-key' });
+  render(<MultiFileWorkspacePage />);
+  await screen.findByRole('tab', { name: 'index.html' });
+  fireEvent.click(screen.getByRole('button', { name: '빌드 및 테스트 실행' }));
+  const frame=await screen.findByTitle('서명된 정적 미리보기');
+  expect(frame).toHaveAttribute('sandbox','allow-scripts');
+  expect(frame.getAttribute('srcdoc')).toContain("default-src 'none'; connect-src 'none'");
+});
+
 test('설명·변형·전이 답변을 제출하고 서버 증거만 표시하며 MASTERED로 과장하지 않는다', async () => {
   document.cookie = 'alpha_csrf=understanding-csrf; path=/';
   window.history.pushState({}, '', '/understanding?workspace=w1');

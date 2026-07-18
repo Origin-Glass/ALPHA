@@ -271,6 +271,10 @@ pub fn router(state: AppState) -> Router {
             get(crate::workspaces::revision),
         )
         .route(
+            "/api/v1/classes/{class_id}/learners/{learner_id}/workspaces/{workspace_id}/revisions/{version}",
+            get(crate::workspaces::instructor_revision),
+        )
+        .route(
             "/api/v1/workspaces/{id}/checkpoints",
             axum::routing::post(crate::workspaces::checkpoint),
         )

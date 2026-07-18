@@ -96,10 +96,16 @@ pub struct CommitPredictionsRequest {
     idempotency_key: Uuid,
 }
 
-fn signed_receipt_valid(state: &AppState, hash: Option<&Vec<u8>>, mac: Option<&Vec<u8>>) -> bool {
+fn signed_receipt_valid(
+    state: &AppState,
+    run_id: Uuid,
+    hash: Option<&Vec<u8>>,
+    mac: Option<&Vec<u8>>,
+) -> bool {
     hash.zip(mac).is_some_and(|(hash, mac)| {
         crate::workspaces::verify_receipt(
             state.settings().workspace_receipt_secret.as_bytes(),
+            run_id,
             hash,
             mac,
         )
@@ -129,7 +135,7 @@ pub async fn create(
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(UnderstandingError::NotFound)?;
-    if let Some((id,state,prompt,old))=sqlx::query_as::<_,(Uuid,String,SqlJson<Value>,Vec<u8>)>("SELECT id,state,prompt,request_hash FROM understanding_challenges WHERE user_id=$1 AND idempotency_key=$2").bind(user).bind(req.idempotency_key).fetch_optional(&mut *tx).await?{if old!=request_hash{return Err(UnderstandingError::Conflict("같은 멱등키에 다른 이해 과제를 사용할 수 없습니다"));}tx.commit().await?;return Ok((StatusCode::OK,Json(json!({"id":id,"state":state,"prompt":prompt.0}))));}
+    if let Some((id,state,prompt,old,committed))=sqlx::query_as::<_,(Uuid,String,SqlJson<Value>,Vec<u8>,bool)>("SELECT id,state,prompt,request_hash,predictions_committed_at IS NOT NULL FROM understanding_challenges WHERE user_id=$1 AND idempotency_key=$2").bind(user).bind(req.idempotency_key).fetch_optional(&mut *tx).await?{if old!=request_hash{return Err(UnderstandingError::Conflict("같은 멱등키에 다른 이해 과제를 사용할 수 없습니다"));}tx.commit().await?;return Ok((StatusCode::OK,Json(json!({"id":id,"state":state,"prompt":prompt.0,"predictions_committed":committed}))));}
     let source:Option<(Uuid,Vec<u8>,Vec<u8>,Vec<u8>,String,String,Vec<u8>,Vec<u8>,String,SqlJson<Value>,Option<Vec<u8>>,Option<Vec<u8>>)>=sqlx::query_as("SELECT r.id,r.artifact_hash,r.semantic_hash,r.stdout_hash,r.stdout,r.check_suite_id,r.check_suite_hash,r.template_digest,t.track_kind,r.artifact,r.runner_receipt_hash,r.runner_receipt_mac FROM workspace_runs r JOIN workspace_templates t ON(t.id,t.revision,t.template_digest)=(r.template_id,r.template_revision,r.template_digest) WHERE r.workspace_id=$1 AND r.user_id=$2 AND r.status='succeeded' AND r.deterministic_checks_passed ORDER BY r.completed_at DESC LIMIT 1").bind(req.workspace_id).bind(user).fetch_optional(&mut *tx).await?;
     let (
         run,
@@ -147,10 +153,14 @@ pub async fn create(
     ) = source.ok_or(UnderstandingError::Conflict(
         "작업자가 검증한 성공 실행이 먼저 필요합니다",
     ))?;
-    if !signed_receipt_valid(&state, receipt_hash.as_ref(), receipt_mac.as_ref()) {
+    if !signed_receipt_valid(&state, run, receipt_hash.as_ref(), receipt_mac.as_ref()) {
         return Err(UnderstandingError::Conflict(
             "서명된 작업자 실행 영수증이 필요합니다",
         ));
+    }
+    if let Some((existing,state_name,prompt,committed))=sqlx::query_as::<_,(Uuid,String,SqlJson<Value>,bool)>("SELECT id,state,prompt,predictions_committed_at IS NOT NULL FROM understanding_challenges WHERE user_id=$1 AND workspace_id=$2 AND source_run_id=$3 AND state='pending'").bind(user).bind(req.workspace_id).bind(run).fetch_optional(&mut *tx).await? {
+        tx.commit().await?;
+        return Ok((StatusCode::OK,Json(json!({"id":existing,"state":state_name,"prompt":prompt.0,"predictions_committed":committed}))));
     }
     let paths = artifact
         .0
@@ -173,7 +183,7 @@ pub async fn create(
     tx.commit().await?;
     Ok((
         StatusCode::CREATED,
-        Json(json!({"id":id,"state":"pending","prompt":prompt})),
+        Json(json!({"id":id,"state":"pending","prompt":prompt,"predictions_committed":false})),
     ))
 }
 
@@ -296,8 +306,18 @@ pub async fn submit(
         && transfer.8
         && modification.9.is_some()
         && transfer.9.is_some()
-        && signed_receipt_valid(&state, modification.9.as_ref(), modification.12.as_ref())
-        && signed_receipt_valid(&state, transfer.9.as_ref(), transfer.12.as_ref())
+        && signed_receipt_valid(
+            &state,
+            modification.0,
+            modification.9.as_ref(),
+            modification.12.as_ref(),
+        )
+        && signed_receipt_valid(
+            &state,
+            transfer.0,
+            transfer.9.as_ref(),
+            transfer.12.as_ref(),
+        )
         && modification.10 == source_suite
         && transfer.10 != source_suite
         && modification.11 == source_template

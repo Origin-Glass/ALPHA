@@ -78,6 +78,25 @@ print(helper.answer() if blocked==2 else 'isolation-bypass')"#,
     let out = sandbox
         .run_workspace(
             run,
+            &[
+                file("app.py", "import json\nfrom http.server import BaseHTTPRequestHandler\nclass Handler(BaseHTTPRequestHandler):\n def do_GET(self):\n  body=json.dumps({'status':'ok'}).encode(); self.send_response(200); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)\n def log_message(self,*_): pass\n"),
+                file("test_app.py", "import json,threading,unittest,urllib.request\nfrom http.server import ThreadingHTTPServer\nfrom app import Handler\nclass ApiTest(unittest.TestCase):\n def test_loopback(self):\n  server=ThreadingHTTPServer(('127.0.0.1',0),Handler); thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()\n  try:\n   with urllib.request.urlopen(f'http://127.0.0.1:{server.server_port}/health') as response:\n    self.assertEqual(response.status,200); self.assertEqual(json.load(response),{'status':'ok'})\n  finally:\n   server.shutdown(); server.server_close(); thread.join()\n"),
+            ],
+            &["sh".into(), "-lc".into(), "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v".into()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.status, "succeeded", "{}", out.stderr);
+    assert!(out.stderr.contains("test_loopback") && out.stderr.contains("OK"));
+    absent(run).await;
+    let run = Uuid::now_v7();
+    let out = sandbox.run_workspace(run,&[file("index.html","<!doctype html><html><body><button>안녕</button></body></html>")],&["python3".into(),"-c".into(),"s=open('index.html',encoding='utf-8').read().lower();assert '<html' in s and '<body' in s and '</body>' in s".into()]).await.unwrap();
+    assert_eq!(out.status, "succeeded", "{}", out.stderr);
+    absent(run).await;
+    let run = Uuid::now_v7();
+    let out = sandbox
+        .run_workspace(
+            run,
             &[file("main.py", "while True: print('x'*8192)")],
             &["python3".into(), "main.py".into()],
         )

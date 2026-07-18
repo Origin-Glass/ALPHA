@@ -21,6 +21,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if app_env == "production" && !immutable_image_reference(&image) {
         return Err("WORKSPACE_IMAGE는 sha256 digest로 고정해야 합니다".into());
     }
+    let declared_image_reference = if app_env == "production" {
+        image.clone()
+    } else {
+        env::var("WORKSPACE_DECLARED_IMAGE_REFERENCE")?
+    };
+    if !immutable_image_reference(&declared_image_reference) {
+        return Err("WORKSPACE_DECLARED_IMAGE_REFERENCE는 sha256 digest로 고정해야 합니다".into());
+    }
     let receipt_secret = env::var("WORKSPACE_RECEIPT_SECRET")?;
     if receipt_secret.len() < 32 {
         return Err("WORKSPACE_RECEIPT_SECRET은 32바이트 이상이어야 합니다".into());
@@ -37,8 +45,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(%worker,%image,"작업공간 작업자 시작");
     loop {
         let _ = workspaces::expire(&pool).await?;
-        if let Some(job) = workspaces::lease_next(&pool, &worker, &execution_image_digest).await? {
+        if let Some(job) = workspaces::lease_next(
+            &pool,
+            &worker,
+            &declared_image_reference,
+            &execution_image_digest,
+        )
+        .await?
+        {
             if !workspaces::mark_running(&pool, job.id, job.lease_token).await? {
+                workspaces::finish_cancel(&pool, job.id, job.lease_token).await?;
                 continue;
             }
             let run = sandbox.run_workspace(job.id, &job.files, &job.command);

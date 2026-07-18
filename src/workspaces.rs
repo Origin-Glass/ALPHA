@@ -132,7 +132,7 @@ fn hash_json(value: &Value) -> Result<Vec<u8>, WorkspaceError> {
     )
     .to_vec())
 }
-pub fn sign_receipt(secret: &[u8], receipt_hash: &[u8]) -> Vec<u8> {
+pub fn sign_receipt(secret: &[u8], run_id: Uuid, receipt_hash: &[u8]) -> Vec<u8> {
     let mut key = [0_u8; 64];
     if secret.len() > key.len() {
         key[..32].copy_from_slice(&Sha256::digest(secret));
@@ -147,6 +147,7 @@ pub fn sign_receipt(secret: &[u8], receipt_hash: &[u8]) -> Vec<u8> {
     }
     let inner_hash = Sha256::new()
         .chain_update(inner)
+        .chain_update(run_id.as_bytes())
         .chain_update(receipt_hash)
         .finalize();
     Sha256::new()
@@ -155,9 +156,9 @@ pub fn sign_receipt(secret: &[u8], receipt_hash: &[u8]) -> Vec<u8> {
         .finalize()
         .to_vec()
 }
-pub fn verify_receipt(secret: &[u8], receipt_hash: &[u8], signature: &[u8]) -> bool {
+pub fn verify_receipt(secret: &[u8], run_id: Uuid, receipt_hash: &[u8], signature: &[u8]) -> bool {
     use subtle::ConstantTimeEq;
-    sign_receipt(secret, receipt_hash)
+    sign_receipt(secret, run_id, receipt_hash)
         .as_slice()
         .ct_eq(signature)
         .into()
@@ -221,6 +222,11 @@ pub struct CreateRunRequest {
     validation_kind: String,
     challenge_id: Option<Uuid>,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelRunRequest {
+    idempotency_key: Uuid,
+}
 
 async fn replace_files(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -244,9 +250,9 @@ async fn workspace_json(
     user: Uuid,
     id: Uuid,
 ) -> Result<Value, WorkspaceError> {
-    let row:Option<(Uuid,String,i32,String,String,String,Value)>=sqlx::query_as("SELECT w.id,w.title,w.version,t.slug,t.track_kind,t.runtime_status,COALESCE(jsonb_agg(jsonb_build_object('path',f.path,'content',f.content) ORDER BY f.path) FILTER(WHERE f.path IS NOT NULL),'[]') FROM project_workspaces w JOIN workspace_templates t ON(t.id,t.revision,t.template_digest)=(w.template_id,w.template_revision,w.template_digest) LEFT JOIN workspace_files f ON(f.workspace_id,f.user_id)=(w.id,w.user_id) WHERE w.id=$1 AND w.user_id=$2 GROUP BY w.id,t.slug,t.track_kind,t.runtime_status")
+    let row:Option<(Uuid,String,i32,String,String,String,Value,Value,String,Option<Vec<u8>>)>=sqlx::query_as("SELECT w.id,w.title,w.version,t.slug,t.track_kind,t.runtime_status,COALESCE(jsonb_agg(jsonb_build_object('path',f.path,'content',f.content) ORDER BY f.path) FILTER(WHERE f.path IS NOT NULL),'[]'),t.background_services,t.dependency_cache_status,t.cache_digest FROM project_workspaces w JOIN workspace_templates t ON(t.id,t.revision,t.template_digest)=(w.template_id,w.template_revision,w.template_digest) LEFT JOIN workspace_files f ON(f.workspace_id,f.user_id)=(w.id,w.user_id) WHERE w.id=$1 AND w.user_id=$2 GROUP BY w.id,t.slug,t.track_kind,t.runtime_status,t.background_services,t.dependency_cache_status,t.cache_digest")
         .bind(id).bind(user).fetch_optional(pool).await?;
-    row.map(|r|json!({"id":r.0,"title":r.1,"version":r.2,"template_slug":r.3,"track_kind":r.4,"runtime_status":r.5,"files":r.6})).ok_or(WorkspaceError::NotFound)
+    row.map(|r|json!({"id":r.0,"title":r.1,"version":r.2,"template_slug":r.3,"track_kind":r.4,"runtime_status":r.5,"files":r.6,"background_services":r.7,"dependency_cache_status":r.8,"cache_digest":r.9})).ok_or(WorkspaceError::NotFound)
 }
 
 pub async fn create(
@@ -394,7 +400,7 @@ pub async fn create_run(
         ));
     }
     let mut tx = state.pool().begin().await?;
-    let template:Option<(i32,Uuid,i32,Vec<u8>,String,SqlJson<Value>,String,Vec<u8>,bool,String)>=sqlx::query_as("SELECT w.version,w.template_id,w.template_revision,w.template_digest,t.image_reference,t.run_command,t.check_suite_id,t.check_suite_hash,t.supports_tests,t.runtime_status FROM project_workspaces w JOIN workspace_templates t ON(t.id,t.revision,t.template_digest)=(w.template_id,w.template_revision,w.template_digest) WHERE w.id=$1 AND w.user_id=$2 AND w.status='active' AND w.expires_at>now() FOR UPDATE OF w").bind(id).bind(user).fetch_optional(&mut *tx).await?;
+    let template:Option<(i32,Uuid,i32,Vec<u8>,String,SqlJson<Value>,String,Vec<u8>,bool,String,SqlJson<Value>,String,Option<Vec<u8>>)>=sqlx::query_as("SELECT w.version,w.template_id,w.template_revision,w.template_digest,t.image_reference,t.run_command,t.check_suite_id,t.check_suite_hash,t.supports_tests,t.runtime_status,t.background_services,t.dependency_cache_status,t.cache_digest FROM project_workspaces w JOIN workspace_templates t ON(t.id,t.revision,t.template_digest)=(w.template_id,w.template_revision,w.template_digest) WHERE w.id=$1 AND w.user_id=$2 AND w.status='active' AND w.expires_at>now() FOR UPDATE OF w").bind(id).bind(user).fetch_optional(&mut *tx).await?;
     let (
         version,
         tid,
@@ -406,6 +412,9 @@ pub async fn create_run(
         suite_hash,
         supports_tests,
         runtime_status,
+        background_services,
+        dependency_cache_status,
+        cache_digest,
     ) = template.ok_or(WorkspaceError::NotFound)?;
     if runtime_status != "verified" {
         return Err(WorkspaceError::Conflict(
@@ -470,7 +479,7 @@ pub async fn create_run(
     let ah = hash_json(&artifact)?;
     let semantic_hash = semantic_file_hash(&files);
     let run = Uuid::now_v7();
-    sqlx::query("INSERT INTO workspace_runs(id,workspace_id,user_id,workspace_version,template_id,template_revision,template_digest,image_reference,artifact,artifact_hash,semantic_hash,validation_kind,challenge_id,check_suite_id,check_suite_hash,supports_tests_snapshot,command,idempotency_key,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)").bind(run).bind(id).bind(user).bind(version).bind(tid).bind(trev).bind(tdigest).bind(image).bind(SqlJson(artifact)).bind(ah).bind(semantic_hash).bind(req.validation_kind).bind(req.challenge_id).bind(suite).bind(suite_hash).bind(supports_tests).bind(command).bind(req.idempotency_key).bind(request_hash).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO workspace_runs(id,workspace_id,user_id,workspace_version,template_id,template_revision,template_digest,image_reference,artifact,artifact_hash,semantic_hash,validation_kind,challenge_id,check_suite_id,check_suite_hash,supports_tests_snapshot,background_services_snapshot,dependency_cache_status,cache_digest,command,idempotency_key,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)").bind(run).bind(id).bind(user).bind(version).bind(tid).bind(trev).bind(tdigest).bind(image).bind(SqlJson(artifact)).bind(ah).bind(semantic_hash).bind(req.validation_kind).bind(req.challenge_id).bind(suite).bind(suite_hash).bind(supports_tests).bind(background_services).bind(dependency_cache_status).bind(cache_digest).bind(command).bind(req.idempotency_key).bind(request_hash).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok((
         StatusCode::CREATED,
@@ -483,22 +492,87 @@ pub async fn run_detail(
     AxumPath(id): AxumPath<Uuid>,
 ) -> Result<Json<Value>, WorkspaceError> {
     let user = crate::auth::authenticated_user_id(&state, &headers).await?;
-    let r:Option<(Uuid,String,Option<i32>,Option<String>,Option<String>,bool,bool)>=sqlx::query_as("SELECT id,status,exit_code,stdout,stderr,output_truncated,cancel_requested_at IS NOT NULL FROM workspace_runs WHERE id=$1 AND user_id=$2").bind(id).bind(user).fetch_optional(state.pool()).await?;
+    let r:Option<(Uuid,String,Option<i32>,Option<String>,Option<String>,bool,bool,SqlJson<Value>,String,Option<Vec<u8>>,Option<Vec<u8>>)>=sqlx::query_as("SELECT r.id,r.status,r.exit_code,r.stdout,r.stderr,r.output_truncated,r.cancel_requested_at IS NOT NULL,r.artifact,t.slug,r.runner_receipt_hash,r.runner_receipt_mac FROM workspace_runs r JOIN workspace_templates t ON(t.id,t.revision,t.template_digest)=(r.template_id,r.template_revision,r.template_digest) WHERE r.id=$1 AND r.user_id=$2").bind(id).bind(user).fetch_optional(state.pool()).await?;
     let r = r.ok_or(WorkspaceError::NotFound)?;
+    let preview_html = if r.1 == "succeeded" && r.8 == "static-web-v1" {
+        match (&r.9, &r.10) {
+            (Some(hash), Some(mac))
+                if verify_receipt(
+                    state.settings().workspace_receipt_secret.as_bytes(),
+                    r.0,
+                    hash,
+                    mac,
+                ) =>
+            {
+                r.7.0
+                    .as_array()
+                    .and_then(|files| {
+                        files.iter().find(|file| {
+                            file.get("path").and_then(Value::as_str) == Some("index.html")
+                        })
+                    })
+                    .and_then(|file| file.get("content").and_then(Value::as_str))
+                    .map(str::to_owned)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
     Ok(Json(
-        json!({"id":r.0,"status":r.1,"exit_code":r.2,"stdout":r.3,"stderr":r.4,"output_truncated":r.5,"cancel_requested":r.6}),
+        json!({"id":r.0,"status":r.1,"exit_code":r.2,"stdout":r.3,"stderr":r.4,"output_truncated":r.5,"cancel_requested":r.6,"preview_html":preview_html}),
+    ))
+}
+
+pub async fn instructor_revision(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath((class_id, learner_id, workspace_id, version)): AxumPath<(Uuid, Uuid, Uuid, i32)>,
+) -> Result<Json<Value>, WorkspaceError> {
+    let instructor = crate::auth::authenticated_user_id(&state, &headers).await?;
+    let mut tx = state.pool().begin().await?;
+    let authorized: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM class_memberships WHERE class_id=$1 AND user_id=$2 AND role='INSTRUCTOR')")
+        .bind(class_id).bind(instructor).fetch_one(&mut *tx).await?;
+    if !authorized {
+        return Err(WorkspaceError::Auth(AuthError::Forbidden));
+    }
+    let row:Option<(SqlJson<Value>,Vec<u8>)>=sqlx::query_as("SELECT r.artifact,r.artifact_hash FROM class_memberships learner JOIN project_workspaces w ON w.user_id=learner.user_id JOIN workspace_revisions r ON(r.workspace_id,r.user_id)=(w.id,w.user_id) WHERE learner.class_id=$1 AND learner.user_id=$2 AND learner.role='LEARNER' AND w.id=$3 AND r.version=$4")
+        .bind(class_id).bind(learner_id).bind(workspace_id).bind(version).fetch_optional(&mut *tx).await?;
+    let (artifact, artifact_hash) = row.ok_or(WorkspaceError::NotFound)?;
+    sqlx::query("INSERT INTO audit_events(actor_user_id,action,target_type,target_id,metadata) VALUES($1,'workspace.revision.viewed_by_instructor','workspace_revision',$2,jsonb_build_object('class_id',$3::uuid,'learner_id',$4::uuid,'version',$5::integer))")
+        .bind(instructor).bind(workspace_id.to_string()).bind(class_id).bind(learner_id).bind(version).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Json(
+        json!({"workspace_id":workspace_id,"learner_id":learner_id,"version":version,"artifact":artifact.0,"artifact_hash":artifact_hash}),
     ))
 }
 pub async fn cancel_run(
     State(state): State<AppState>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<Uuid>,
+    Json(req): Json<CancelRunRequest>,
 ) -> Result<Json<Value>, WorkspaceError> {
     let user = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
-    let r=sqlx::query("UPDATE workspace_runs SET status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END,cancel_requested_at=now(),completed_at=CASE WHEN status='queued' THEN now() ELSE completed_at END WHERE id=$1 AND user_id=$2 AND status IN('queued','leased','running')").bind(id).bind(user).execute(state.pool()).await?;
-    if r.rows_affected() == 0 {
-        return Err(WorkspaceError::NotFound);
+    let request_hash = hash_json(&json!({"action":"cancel","run_id":id}))?;
+    let mut tx = state.pool().begin().await?;
+    let row:Option<(String,Option<Uuid>,Option<Vec<u8>>)>=sqlx::query_as("SELECT status,cancel_idempotency_key,cancel_request_hash FROM workspace_runs WHERE id=$1 AND user_id=$2 FOR UPDATE").bind(id).bind(user).fetch_optional(&mut *tx).await?;
+    let (status, old_key, old_hash) = row.ok_or(WorkspaceError::NotFound)?;
+    if let Some(old_key) = old_key {
+        if old_key != req.idempotency_key || old_hash.as_ref() != Some(&request_hash) {
+            return Err(WorkspaceError::Conflict(
+                "같은 멱등키에 다른 취소 요청을 사용할 수 없습니다",
+            ));
+        }
+        tx.commit().await?;
+        return Ok(Json(json!({"id":id,"cancel_requested":true})));
     }
+    if !matches!(status.as_str(), "queued" | "leased" | "running") {
+        return Err(WorkspaceError::Conflict(
+            "이미 종료된 실행은 취소할 수 없습니다",
+        ));
+    }
+    sqlx::query("UPDATE workspace_runs SET status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END,cancel_requested_at=now(),completed_at=CASE WHEN status='queued' THEN now() ELSE completed_at END,cancel_idempotency_key=$3,cancel_request_hash=$4 WHERE id=$1 AND user_id=$2").bind(id).bind(user).bind(req.idempotency_key).bind(request_hash).execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(Json(json!({"id":id,"cancel_requested":true})))
 }
 
@@ -512,11 +586,12 @@ pub struct LeasedWorkspaceRun {
 pub async fn lease_next(
     pool: &sqlx::PgPool,
     worker: &str,
+    declared_image_reference: &str,
     execution_image_digest: &str,
 ) -> Result<Option<LeasedWorkspaceRun>, sqlx::Error> {
     let mut tx = pool.begin().await?;
     sqlx::query("UPDATE workspace_runs SET status='expired',lease_token=NULL,leased_by=NULL,lease_expires_at=NULL,completed_at=now(),stderr='최대 재시도 횟수를 초과했습니다' WHERE status IN('leased','running') AND lease_expires_at<now() AND attempt>=3").execute(&mut *tx).await?;
-    let row:Option<(Uuid,String,SqlJson<Value>,SqlJson<Value>)>=sqlx::query_as("WITH candidate AS(SELECT r.id FROM workspace_runs r JOIN project_workspaces w ON(w.id,w.user_id)=(r.workspace_id,r.user_id) WHERE w.status='active' AND w.expires_at>now() AND (r.status='queued' OR(r.status IN('leased','running') AND r.lease_expires_at<now() AND r.attempt<3)) ORDER BY r.created_at FOR UPDATE OF r SKIP LOCKED LIMIT 1) UPDATE workspace_runs r SET status='leased',attempt=attempt+1,lease_token=gen_random_uuid(),leased_by=$1,lease_expires_at=now()+interval '30 seconds',execution_image_digest=$2 FROM candidate WHERE r.id=candidate.id RETURNING r.id,r.image_reference,r.artifact,r.command").bind(worker).bind(execution_image_digest).fetch_optional(&mut *tx).await?;
+    let row:Option<(Uuid,String,SqlJson<Value>,SqlJson<Value>)>=sqlx::query_as("WITH candidate AS(SELECT r.id FROM workspace_runs r JOIN project_workspaces w ON(w.id,w.user_id)=(r.workspace_id,r.user_id) WHERE r.image_reference=$2 AND w.status='active' AND w.expires_at>now() AND (r.status='queued' OR(r.status IN('leased','running') AND r.lease_expires_at<now() AND r.attempt<3)) ORDER BY r.created_at FOR UPDATE OF r SKIP LOCKED LIMIT 1) UPDATE workspace_runs r SET status='leased',attempt=attempt+1,lease_token=gen_random_uuid(),leased_by=$1,lease_expires_at=now()+interval '30 seconds',execution_image_digest=$3 FROM candidate WHERE r.id=candidate.id RETURNING r.id,r.image_reference,r.artifact,r.command").bind(worker).bind(declared_image_reference).bind(execution_image_digest).fetch_optional(&mut *tx).await?;
     let Some(row) = row else {
         tx.commit().await?;
         return Ok(None);
@@ -549,15 +624,15 @@ pub async fn complete_run(
     receipt_secret: &[u8],
 ) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    let row:Option<(Vec<u8>,Vec<u8>,String,Option<Uuid>,Vec<u8>,String,SqlJson<Value>,String,Vec<u8>,String,bool)>=sqlx::query_as("SELECT r.artifact_hash,r.semantic_hash,r.validation_kind,r.challenge_id,r.template_digest,r.image_reference,r.command,r.check_suite_id,r.check_suite_hash,r.execution_image_digest,r.supports_tests_snapshot FROM workspace_runs r JOIN project_workspaces w ON(w.id,w.user_id)=(r.workspace_id,r.user_id) WHERE r.id=$1 AND r.lease_token=$2 AND r.status='running' AND r.lease_expires_at>now() AND r.cancel_requested_at IS NULL AND w.status='active' AND w.expires_at>now() FOR UPDATE OF r").bind(id).bind(token).fetch_optional(&mut *tx).await?;
+    let row:Option<(Vec<u8>,Vec<u8>,String,Option<Uuid>,Vec<u8>,String,SqlJson<Value>,String,Vec<u8>,String,bool,SqlJson<Value>,String,Option<Vec<u8>>)>=sqlx::query_as("SELECT r.artifact_hash,r.semantic_hash,r.validation_kind,r.challenge_id,r.template_digest,r.image_reference,r.command,r.check_suite_id,r.check_suite_hash,r.execution_image_digest,r.supports_tests_snapshot,r.background_services_snapshot,r.dependency_cache_status,r.cache_digest FROM workspace_runs r JOIN project_workspaces w ON(w.id,w.user_id)=(r.workspace_id,r.user_id) WHERE r.id=$1 AND r.lease_token=$2 AND r.status='running' AND r.lease_expires_at>now() AND r.cancel_requested_at IS NULL AND w.status='active' AND w.expires_at>now() FOR UPDATE OF r").bind(id).bind(token).fetch_optional(&mut *tx).await?;
     let Some(row) = row else {
         tx.rollback().await?;
         return Ok(false);
     };
     let stdout_hash = Sha256::digest(out.stdout.as_bytes()).to_vec();
     let passed = out.status == "succeeded" && out.exit_code == Some(0) && !out.output_truncated;
-    let receipt=Sha256::digest(serde_json::to_vec(&json!({"run":id,"lease_token":token,"artifact_hash":row.0,"semantic_hash":row.1,"validation_kind":row.2,"challenge_id":row.3,"template_digest":row.4,"declared_image_reference":row.5,"command":row.6.0,"check_suite_id":row.7,"check_suite_hash":row.8,"execution_image_digest":row.9,"supports_tests":row.10,"status":out.status,"exit_code":out.exit_code,"stdout_hash":stdout_hash,"output_truncated":out.output_truncated,"checks_passed":passed})).unwrap_or_default()).to_vec();
-    let receipt_mac = sign_receipt(receipt_secret, &receipt);
+    let receipt=Sha256::digest(serde_json::to_vec(&json!({"run":id,"lease_token":token,"artifact_hash":row.0,"semantic_hash":row.1,"validation_kind":row.2,"challenge_id":row.3,"template_digest":row.4,"declared_image_reference":row.5,"command":row.6.0,"check_suite_id":row.7,"check_suite_hash":row.8,"execution_image_digest":row.9,"supports_tests":row.10,"background_services":row.11.0,"dependency_cache_status":row.12,"cache_digest":row.13,"status":out.status,"exit_code":out.exit_code,"stdout_hash":stdout_hash,"output_truncated":out.output_truncated,"checks_passed":passed})).unwrap_or_default()).to_vec();
+    let receipt_mac = sign_receipt(receipt_secret, id, &receipt);
     sqlx::query("UPDATE workspace_runs SET status=$3,lease_token=NULL,leased_by=NULL,lease_expires_at=NULL,exit_code=$4,stdout=$5,stderr=$6,output_truncated=$7,stdout_hash=$8,deterministic_checks_passed=$9,runner_receipt_hash=$10,runner_receipt_mac=$11,completed_at=now() WHERE id=$1 AND lease_token=$2").bind(id).bind(token).bind(out.status).bind(out.exit_code).bind(&out.stdout).bind(&out.stderr).bind(out.output_truncated).bind(stdout_hash).bind(passed).bind(receipt).bind(receipt_mac).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(true)
