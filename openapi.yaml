@@ -297,6 +297,9 @@ paths:
       operationId: listContentProviders
       responses:
         "200": { $ref: "#/components/responses/ContentProviderList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
     post:
       operationId: createContentProvider
       security: *write
@@ -368,6 +371,9 @@ paths:
       operationId: listContentGenerationJobs
       responses:
         "200": { $ref: "#/components/responses/ContentJobList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
     post:
       operationId: createContentGenerationJob
       security: *write
@@ -393,12 +399,20 @@ paths:
         - { name: right, in: query, required: true, schema: { type: string, format: uuid } }
       responses:
         "200": { $ref: "#/components/responses/ContentJobComparison" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/content/jobs/{id}:
     parameters: [*id]
     get:
       operationId: contentGenerationJobDetail
       responses:
         "200": { $ref: "#/components/responses/ContentJobDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/content/jobs/{id}/cancel:
     parameters: [*id]
     post:
@@ -464,6 +478,9 @@ paths:
       operationId: getContentBudget
       responses:
         "200": { $ref: "#/components/responses/ContentBudget" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
     post:
       operationId: updateContentBudget
       security: *write

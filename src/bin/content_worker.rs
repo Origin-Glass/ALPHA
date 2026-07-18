@@ -300,6 +300,26 @@ async fn run_until_batch_deadline<F: std::future::Future>(
         .map_err(|_| ())
 }
 
+async fn begin_and_run_until_batch_deadline<B, M, C>(
+    deadline: tokio::time::Instant,
+    begin: B,
+    make_call: M,
+) -> Result<Option<C::Output>, ()>
+where
+    B: std::future::Future<Output = bool>,
+    M: FnOnce() -> C,
+    C: std::future::Future,
+{
+    run_until_batch_deadline(deadline, async {
+        if begin.await {
+            Some(make_call().await)
+        } else {
+            None
+        }
+    })
+    .await
+}
+
 async fn run_lease(pool: &sqlx::PgPool, lease: alpha::content_factory::GenerationLease) {
     let endpoint = match resolve_provider_endpoint(&lease.provider_kind, &lease.base_url).await {
         Ok(endpoint) => endpoint,
@@ -391,28 +411,30 @@ async fn run_lease(pool: &sqlx::PgPool, lease: alpha::content_factory::Generatio
             .await;
             return;
         }
-        if !matches!(
-            begin_provider_call(
-                pool,
-                lease.job_id,
-                lease.provider_id,
-                lease.attempt_id,
-                lease.lease_token
+        let begin = async {
+            matches!(
+                begin_provider_call(
+                    pool,
+                    lease.job_id,
+                    lease.provider_id,
+                    lease.attempt_id,
+                    lease.lease_token
+                )
+                .await,
+                Ok(true)
             )
-            .await,
-            Ok(true)
-        ) {
-            return;
-        }
-        let heartbeat_call = call_with_lease_heartbeat(
-            pool,
-            &client,
-            &endpoint.url,
-            &lease,
-            credential.as_deref(),
-            output_index,
-        );
-        let Some(result) = (match run_until_batch_deadline(batch_deadline, heartbeat_call).await {
+        };
+        let operation = begin_and_run_until_batch_deadline(batch_deadline, begin, || {
+            call_with_lease_heartbeat(
+                pool,
+                &client,
+                &endpoint.url,
+                &lease,
+                credential.as_deref(),
+                output_index,
+            )
+        });
+        let Some(Some(result)) = (match operation.await {
             Ok(result) => result,
             Err(_) => {
                 let _ = fail_generation_job(
@@ -524,7 +546,7 @@ mod tests {
     use super::*;
     use std::sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
     use uuid::Uuid;
 
@@ -720,25 +742,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strict_batch_deadline_drops_an_in_flight_provider_future() {
-        struct DropFlag(Arc<AtomicBool>);
-        impl Drop for DropFlag {
+    async fn strict_batch_deadline_rolls_back_begin_and_never_starts_provider_call() {
+        struct Rollback(Arc<AtomicUsize>);
+        impl Drop for Rollback {
             fn drop(&mut self) {
-                self.0.store(true, Ordering::SeqCst);
+                self.0.store(0, Ordering::SeqCst);
             }
         }
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let guard = DropFlag(Arc::clone(&cancelled));
-        let provider_call = async move {
-            let _guard = guard;
-            std::future::pending::<()>().await;
+        let liability = Arc::new(AtomicUsize::new(0));
+        let begin_liability = Arc::clone(&liability);
+        let begin = async move {
+            begin_liability.store(1, Ordering::SeqCst);
+            let _transaction = Rollback(Arc::clone(&begin_liability));
+            std::future::pending::<bool>().await
         };
+        let provider_started = Arc::new(AtomicBool::new(false));
+        let call_started = Arc::clone(&provider_started);
         let deadline = tokio::time::Instant::now() + Duration::from_millis(5);
         assert!(
-            run_until_batch_deadline(deadline, provider_call)
-                .await
-                .is_err()
+            begin_and_run_until_batch_deadline(deadline, begin, move || async move {
+                call_started.store(true, Ordering::SeqCst);
+            })
+            .await
+            .is_err()
         );
-        assert!(cancelled.load(Ordering::SeqCst));
+        assert_eq!(liability.load(Ordering::SeqCst), 0);
+        assert!(!provider_started.load(Ordering::SeqCst));
     }
 }
