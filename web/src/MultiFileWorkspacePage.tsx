@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import PortalHeader from './PortalHeader';
 
 type FileEntry = { path: string; content: string };
-type Workspace = { id: string; title: string; files: FileEntry[] };
+type Workspace = { id: string; title: string; version: number; files: FileEntry[] };
 type Run = { id: string; status: string; stdout?: string; stderr?: string };
 const csrf = () => document.cookie.split(';').map((value) => value.trim()).find((value) => value.startsWith('alpha_csrf='))?.slice(11) ?? '';
 const statusLabels: Record<string, string> = { queued: '실행 대기', running: '실행 중', succeeded: '통과', failed: '실패', cancelled: '취소됨' };
@@ -23,7 +23,7 @@ function MultiFileWorkspacePage() {
   const headers = { 'content-type': 'application/json', 'x-csrf-token': csrf() };
 
   useEffect(() => {
-    const path = requestedId ? `/api/workspaces/${requestedId}` : '/api/workspaces';
+    const path = requestedId ? `/api/v1/workspaces/${requestedId}` : '/api/v1/workspaces';
     fetch(path, { credentials: 'include' }).then(async (response) => {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error?.message ?? '작업공간을 불러오지 못했습니다.');
@@ -37,15 +37,15 @@ function MultiFileWorkspacePage() {
   useEffect(() => {
     if (!run || !['queued', 'running'].includes(run.status)) return;
     const timer = window.setInterval(() => {
-      fetch(`/api/workspace-runs/${run.id}`, { credentials: 'include' })
+      fetch(`/api/v1/workspace-runs/${run.id}`, { credentials: 'include' })
         .then((response) => response.json()).then(setRun).catch(() => undefined);
     }, 2000);
     return () => window.clearInterval(timer);
   }, [run?.id, run?.status]);
 
   const createWorkspace = async () => {
-    const payload = { title: title.trim(), template_id: 'cli-rust-v1' };
-    const response = await fetch('/api/workspaces', { method: 'POST', credentials: 'include', headers, body: JSON.stringify({ ...payload, idempotency_key: keyFor('create', payload) }) });
+    const payload = { title: title.trim(), template_slug: 'python-cli-v1', project_id: null, files: [{ path: 'main.py', content: 'print("안녕하세요")', symlink: false }] };
+    const response = await fetch('/api/v1/workspaces', { method: 'POST', credentials: 'include', headers, body: JSON.stringify({ ...payload, idempotency_key: keyFor('create', payload) }) });
     const body = await response.json();
     if (!response.ok) return setMessage(body.error?.message ?? '작업공간을 만들지 못했습니다.');
     setWorkspace(body); setActivePath(body.files?.[0]?.path ?? '');
@@ -53,23 +53,23 @@ function MultiFileWorkspacePage() {
   const updateFile = (content: string) => setWorkspace((current) => current && ({ ...current, files: current.files.map((file) => file.path === activePath ? { ...file, content } : file) }));
   const save = async () => {
     if (!workspace) return;
-    const payload = { files: workspace.files };
-    const response = await fetch(`/api/workspaces/${workspace.id}/files`, { method: 'PUT', credentials: 'include', headers, body: JSON.stringify({ ...payload, idempotency_key: keyFor('save', payload) }) });
+    const payload = { files: workspace.files, expected_version: workspace.version };
+    const response = await fetch(`/api/v1/workspaces/${workspace.id}`, { method: 'PUT', credentials: 'include', headers, body: JSON.stringify({ ...payload, idempotency_key: keyFor('save', payload) }) });
     const body = await response.json();
-    setMessage(response.ok ? '파일을 저장했습니다.' : body.error?.message ?? '저장하지 못했습니다.');
+    if (response.ok) { setWorkspace(body); setMessage('파일을 저장했습니다.'); } else setMessage(body.error?.message ?? '저장하지 못했습니다.');
   };
   const execute = async () => {
     if (!workspace) return;
-    const payload = { command: 'build_and_test' };
-    const response = await fetch(`/api/workspaces/${workspace.id}/runs`, { method: 'POST', credentials: 'include', headers, body: JSON.stringify({ ...payload, idempotency_key: keyFor('run', payload) }) });
+    const payload = { workspace_version: workspace.version };
+    const response = await fetch(`/api/v1/workspaces/${workspace.id}/runs`, { method: 'POST', credentials: 'include', headers, body: JSON.stringify({ expected_version: workspace.version, idempotency_key: keyFor('run', payload) }) });
     const body = await response.json();
     if (response.ok) setRun(body); else setMessage(body.error?.message ?? '실행하지 못했습니다.');
   };
   const cancel = async () => {
     if (!run) return;
-    const response = await fetch(`/api/workspace-runs/${run.id}/cancel`, { method: 'POST', credentials: 'include', headers, body: JSON.stringify({ idempotency_key: keyFor('cancel', run.id) }) });
+    const response = await fetch(`/api/v1/workspace-runs/${run.id}/cancel`, { method: 'POST', credentials: 'include', headers, body: JSON.stringify({ idempotency_key: keyFor('cancel', run.id) }) });
     const body = await response.json();
-    if (response.ok) setRun(body); else setMessage(body.error?.message ?? '취소하지 못했습니다.');
+    if (response.ok) setRun({ ...run, status: 'cancelled' }); else setMessage(body.error?.message ?? '취소하지 못했습니다.');
   };
   const activeFile = workspace?.files.find((file) => file.path === activePath);
 
