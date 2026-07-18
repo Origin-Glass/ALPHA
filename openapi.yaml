@@ -74,6 +74,11 @@ x-parameters:
     in: path
     required: true
     schema: { type: string, format: uuid }
+  id: &id
+    name: id
+    in: path
+    required: true
+    schema: { type: string, format: uuid }
 
 x-responses:
   ok: &ok
@@ -181,6 +186,95 @@ paths:
       operationId: logout
       security: *write
       responses: *write_result
+
+  /api/v1/policies:
+    get:
+      operationId: listPolicies
+      responses:
+        "200":
+          description: 정책 원문과 현재 사용자의 동의 스냅샷
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PolicyListResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/policies/consents:
+    post:
+      operationId: consentToPolicy
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PolicyConsentRequest" }
+      responses:
+        "200":
+          description: 정책 동의 기록 완료
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PolicyConsentResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/data-requests:
+    post:
+      operationId: createDataRequest
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DataRequestInput" }
+      responses:
+        "201":
+          description: 개인정보 내보내기 또는 삭제 요청 생성
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DataRequestCreatedResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/data-requests/{id}:
+    parameters: [*id]
+    get:
+      operationId: getDataRequest
+      responses:
+        "200":
+          description: 현재 사용자가 소유한 개인정보 요청
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DataRequest" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/data-requests/{id}/cancel:
+    parameters: [*id]
+    post:
+      operationId: cancelDataRequest
+      security: *write
+      responses:
+        "200":
+          description: 대기 중인 개인정보 요청 취소
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DataRequestCancelledResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/onboarding:
     get:
@@ -391,6 +485,91 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/GenericObject" }
       responses: *write_result
+  /api/v1/governance/problems/{slug}/rights:
+    parameters: [*slug]
+    post:
+      operationId: recordProblemRights
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RightsRequest" }
+      responses:
+        "200":
+          description: 현재 리비전의 권리 근거 기록과 기존 승인 초기화
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RightsRecordedResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/governance/problems/{slug}/reviews/content:
+    parameters: [*slug]
+    post:
+      operationId: approveProblemContent
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReviewRequest" }
+      responses:
+        "200":
+          description: 사람 검토 승인 완료
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContentApprovedResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/governance/problems/{slug}/reviews/rights:
+    parameters: [*slug]
+    post:
+      operationId: approveProblemRights
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReviewRequest" }
+      responses:
+        "200":
+          description: 권리 검토 승인 완료
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RightsApprovedResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/governance/problems/{slug}/publish:
+    parameters: [*slug]
+    post:
+      operationId: publishGovernedProblem
+      security: *write
+      responses:
+        "200":
+          description: 분리 승인과 권리 요건을 충족한 현재 리비전 게시
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublishedResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/admin/problems/{slug}/rejudge:
     parameters: [*slug]
     post:
@@ -632,6 +811,13 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    UnprocessableEntity:
+      description: JSON 본문이 요청 스키마와 일치하지 않음
+    InternalError:
+      description: 서버 내부 처리 실패
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     RateLimited:
       description: 요청 제한 초과
       headers:
@@ -669,6 +855,125 @@ components:
       required: [version]
       properties:
         version: { type: string, const: "2026-07-18" }
+    PolicyChoices:
+      type: object
+      additionalProperties: false
+      required: [terms, privacy]
+      properties:
+        terms: { type: boolean, const: true }
+        privacy: { type: boolean, const: true }
+    PolicyConsentRequest:
+      type: object
+      additionalProperties: false
+      required: [version, choices]
+      properties:
+        version: { type: string, minLength: 1 }
+        choices: { $ref: "#/components/schemas/PolicyChoices" }
+    PolicyConsentResponse:
+      type: object
+      additionalProperties: false
+      required: [version, consented]
+      properties:
+        version: { type: string }
+        consented: { type: boolean, const: true }
+    PolicyConsentSnapshot:
+      type: object
+      additionalProperties: false
+      required: [consented_at, title, body, choices]
+      properties:
+        consented_at: { type: string }
+        title: { type: string }
+        body: { type: string }
+        choices: { $ref: "#/components/schemas/PolicyChoices" }
+    PolicyVersion:
+      type: object
+      additionalProperties: false
+      required: [version, title, body, required, consented, consent]
+      properties:
+        version: { type: string }
+        title: { type: string }
+        body: { type: string }
+        required: { type: boolean }
+        consented: { type: boolean }
+        consent:
+          oneOf:
+            - { $ref: "#/components/schemas/PolicyConsentSnapshot" }
+            - { type: "null" }
+    PolicyListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/PolicyVersion" }
+    RightsRequest:
+      type: object
+      additionalProperties: false
+      required: [basis, evidence, commercial_use_allowed, redistribution_allowed]
+      properties:
+        basis: { type: string, enum: [original, licensed, public_domain] }
+        evidence: { type: string, minLength: 3, maxLength: 2000 }
+        commercial_use_allowed: { type: boolean }
+        redistribution_allowed: { type: boolean }
+    ReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [note]
+      properties:
+        note: { type: string, minLength: 3, maxLength: 1000 }
+    RightsRecordedResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, const: rights_recorded }
+    ContentApprovedResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, const: content_approved }
+    RightsApprovedResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, const: rights_approved }
+    PublishedResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, const: published }
+    DataRequestInput:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind: { type: string, enum: [export, delete] }
+    DataRequestCreatedResponse:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, const: pending }
+    DataRequest:
+      type: object
+      additionalProperties: false
+      required: [id, kind, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [export, delete] }
+        status: { type: string, enum: [pending, processing, completed, cancelled] }
+        created_at: { type: string, format: date-time }
+    DataRequestCancelledResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, const: cancelled }
     OnboardingRequest:
       type: object
       additionalProperties: false
