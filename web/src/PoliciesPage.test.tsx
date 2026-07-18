@@ -1,9 +1,12 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import PoliciesPage from "./PoliciesPage";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 test("필수 정책은 사용자가 명시적으로 확인한 버전만 동의 요청한다", async () => {
   const fetchMock = vi.fn()
@@ -38,4 +41,33 @@ test("필수 정책은 사용자가 명시적으로 확인한 버전만 동의 �
     version: "2026-07-18",
     choices: { terms: true, privacy: true },
   });
+});
+
+test("다음 필수 정책은 동의 선택을 다시 요구한다", async () => {
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => ({ items: [
+        { version: "2026-08-01", title: "정책 개정", body: "개정 정책 원문", required: true, consented: false, consent: null },
+        { version: "2026-07-18", title: "기존 정책", body: "기존 정책 원문", required: true, consented: false, consent: null },
+      ] }),
+    })
+    .mockResolvedValueOnce({ status: 200, ok: true, json: async () => ({ consented: true }) });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<PoliciesPage />);
+
+  const button = await screen.findByRole("button", { name: "필수 정책에 동의" });
+  const terms = screen.getByRole("checkbox", { name: "이용약관에 동의합니다" });
+  const privacy = screen.getByRole("checkbox", { name: "개인정보 처리방침에 동의합니다" });
+  fireEvent.click(terms);
+  fireEvent.click(privacy);
+  fireEvent.click(button);
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  await screen.findByText("동의 완료");
+  expect(button).toBeDisabled();
+  expect(terms).not.toBeChecked();
+  expect(privacy).not.toBeChecked();
 });

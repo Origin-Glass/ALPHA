@@ -32,6 +32,7 @@ function PoliciesPage() {
     });
     if (!response.ok) { setMessage("정책 동의를 저장하지 못했습니다."); return; }
     setItems((current) => current.map((item) => item.version === pending.version ? { ...item, consented: true } : item));
+    setChoices({ terms: false, privacy: false });
     setMessage("정책 동의를 저장했습니다.");
   };
 
