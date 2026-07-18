@@ -19,6 +19,7 @@ COPY --from=builder /build/target/release/api /usr/local/bin/api
 COPY --from=builder /build/target/release/judge_worker /usr/local/bin/judge_worker
 COPY --from=builder /build/target/release/metadata_worker /usr/local/bin/metadata_worker
 COPY --from=builder /build/target/release/content_worker /usr/local/bin/content_worker
+COPY --from=builder /build/target/release/workspace_worker /usr/local/bin/workspace_worker
 COPY --from=builder /build/target/release/migrate /usr/local/bin/migrate
 
 ENV BIND_ADDRESS=0.0.0.0:8080

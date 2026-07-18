@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::judge::{Checker, JudgeTestCase, LeasedJob, Verdict};
+use crate::workspaces::{WorkspaceFileInput, validate_files};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::Command,
@@ -49,6 +50,15 @@ pub struct JudgeOutcome {
     pub score: i16,
     pub compile_output: Option<String>,
     pub run_output: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct WorkspaceOutcome {
+    pub status: &'static str,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub output_truncated: bool,
 }
 
 pub struct DockerSandbox {
@@ -199,6 +209,11 @@ impl DockerSandbox {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
+            .await;
+    }
+
+    pub async fn cleanup_workspace(&self, run_id: uuid::Uuid) {
+        self.cleanup(&format!("alpha-workspace-{}", run_id.simple()))
             .await;
     }
 
@@ -527,6 +542,85 @@ impl DockerSandbox {
             score,
             compile_output: None,
             run_output: None,
+        })
+    }
+
+    pub async fn run_workspace(
+        &self,
+        run_id: uuid::Uuid,
+        files: &[WorkspaceFileInput],
+        command: &[String],
+    ) -> Result<WorkspaceOutcome, SandboxError> {
+        validate_files(files).map_err(|_| SandboxError::InvalidConfiguration)?;
+        if command.is_empty()
+            || command.len() > 16
+            || command
+                .iter()
+                .any(|part| part.is_empty() || part.len() > 512)
+        {
+            return Err(SandboxError::InvalidConfiguration);
+        }
+        let workspace = tempfile::Builder::new()
+            .prefix("alpha-workspace-")
+            .tempdir()?;
+        std::fs::set_permissions(workspace.path(), std::fs::Permissions::from_mode(0o755))?;
+        for file in files {
+            let target = workspace.path().join(&file.path);
+            if let Some(parent) = target.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::write(&target, file.content.as_bytes()).await?;
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444))?;
+        }
+        let result = self
+            .execute_container(
+                &format!("alpha-workspace-{}", run_id.simple()),
+                workspace.path(),
+                command,
+                &[],
+                ExecutionLimits {
+                    memory_mb: 256,
+                    timeout: Duration::from_secs(10),
+                    stdout_bytes: STDOUT_LIMIT,
+                    stderr_bytes: STDERR_LIMIT,
+                },
+            )
+            .await?;
+        Ok(match result {
+            ContainerResult::Exited {
+                success,
+                exit_code,
+                stdout,
+                stderr,
+                ..
+            } => WorkspaceOutcome {
+                status: if success { "succeeded" } else { "failed" },
+                exit_code,
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                output_truncated: false,
+            },
+            ContainerResult::Timeout => WorkspaceOutcome {
+                status: "failed",
+                exit_code: None,
+                stdout: String::new(),
+                stderr: "실행 제한 시간을 초과했습니다".into(),
+                output_truncated: false,
+            },
+            ContainerResult::OutputLimit => WorkspaceOutcome {
+                status: "failed",
+                exit_code: None,
+                stdout: String::new(),
+                stderr: "실행 출력 제한을 초과했습니다".into(),
+                output_truncated: true,
+            },
+            ContainerResult::SystemError => WorkspaceOutcome {
+                status: "failed",
+                exit_code: None,
+                stdout: String::new(),
+                stderr: "작업공간 실행 오류".into(),
+                output_truncated: false,
+            },
         })
     }
 }

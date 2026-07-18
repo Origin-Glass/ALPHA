@@ -183,8 +183,11 @@ jobs:
           ALPHA_API_IMAGE: registry.example/alpha-api@sha256:0000000000000000000000000000000000000000000000000000000000000000
           ALPHA_WEB_IMAGE: registry.example/alpha-web@sha256:0000000000000000000000000000000000000000000000000000000000000000
           ALPHA_JUDGE_WORKER_IMAGE: registry.example/alpha-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          ALPHA_WORKSPACE_WORKER_IMAGE: registry.example/alpha-workspace-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
           JUDGE_IMAGE: registry.example/alpha-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          WORKSPACE_IMAGE: registry.example/alpha-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
           ALPHA_JUDGE_WORKSPACE: /srv/alpha/judge-work
+          ALPHA_WORKSPACE_ROOT: /srv/alpha/workspace
         run: |
           docker compose -f compose.production.yaml config --quiet
           if grep '^FROM ' Dockerfile | grep -Ev '(@sha256:[0-9a-f]{64}([[:space:]]|$)|^FROM runtime AS worker$)'; then

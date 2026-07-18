@@ -255,6 +255,63 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/projects/{id}", get(crate::projects::detail))
         .route(
+            "/api/v1/workspaces",
+            get(crate::workspaces::list).post(crate::workspaces::create),
+        )
+        .route(
+            "/api/v1/workspaces/{id}",
+            get(crate::workspaces::detail).put(crate::workspaces::save),
+        )
+        .route(
+            "/api/v1/workspaces/{id}/runs",
+            axum::routing::post(crate::workspaces::create_run),
+        )
+        .route(
+            "/api/v1/workspaces/{id}/revisions/{version}",
+            get(crate::workspaces::revision),
+        )
+        .route(
+            "/api/v1/workspaces/{id}/checkpoints",
+            axum::routing::post(crate::workspaces::checkpoint),
+        )
+        .route(
+            "/api/v1/workspaces/{id}/reset",
+            axum::routing::post(crate::workspaces::reset),
+        )
+        .route(
+            "/api/v1/workspace-runs/{id}",
+            get(crate::workspaces::run_detail),
+        )
+        .route(
+            "/api/v1/workspace-runs/{id}/cancel",
+            axum::routing::post(crate::workspaces::cancel_run),
+        )
+        .route(
+            "/api/v1/understanding/challenges",
+            axum::routing::post(crate::understanding::create),
+        )
+        .route(
+            "/api/v1/understanding/challenges/{id}/submit",
+            axum::routing::post(crate::understanding::submit),
+        )
+        .route(
+            "/api/v1/portfolio",
+            get(crate::portfolio::list).post(crate::portfolio::create),
+        )
+        .route(
+            "/api/v1/portfolio/rights",
+            axum::routing::post(crate::portfolio::approve_rights),
+        )
+        .route(
+            "/api/v1/portfolio/public/{id}",
+            get(crate::portfolio::public_detail),
+        )
+        .route("/api/v1/portfolio/{id}", get(crate::portfolio::detail))
+        .route(
+            "/api/v1/portfolio/{id}/publish",
+            axum::routing::post(crate::portfolio::publish),
+        )
+        .route(
             "/api/v1/projects/{id}/assistance/evidence",
             axum::routing::post(crate::adaptive::evidence),
         )
