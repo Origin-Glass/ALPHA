@@ -21,7 +21,7 @@ for _ in $(seq 1 30); do
   result="$(curl --fail --silent --show-error -b "$cookie_jar" "$base_url/api/v1/workspace-runs/$run_id")"
   status="$(printf '%s' "$result" | jq -er '.status')"
   if [[ "$status" == "succeeded" ]]; then
-    [[ "$(printf '%s' "$result" | jq -r '.stdout')" == "42"$'\n' ]]
+    printf '%s' "$result" | jq -e '.stdout == "42\n"' >/dev/null
     exit 0
   fi
   [[ "$status" != "failed" && "$status" != "cancelled" && "$status" != "expired" ]]
