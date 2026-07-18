@@ -54,11 +54,15 @@ test('로그인부터 Docker 정답 판정과 로그아웃까지 이어진다', 
   await page.getByRole('button', { name: '검증 계정 시작' }).click();
   await expect(page).toHaveURL(/\/terms$/);
 
-  await page.getByRole('checkbox', { name: /이용약관과 개인정보 처리방침/ }).check();
+  const acceptButton = page.getByRole('button', { name: '동의하고 진단 시작' });
+  await page.getByRole('checkbox', { name: /이용약관에 동의합니다/ }).check();
+  await expect(acceptButton).toBeDisabled();
+  await page.getByRole('checkbox', { name: /개인정보 처리방침에 동의합니다/ }).check();
+  await expect(acceptButton).toBeEnabled();
   const onboardingLoaded = page.waitForResponse((response) => (
     response.url().endsWith('/api/v1/onboarding') && response.ok()
   ));
-  await page.getByRole('button', { name: '동의하고 진단 시작' }).click();
+  await acceptButton.click();
   await expect(page).toHaveURL(/\/onboarding$/);
   await onboardingLoaded;
 
