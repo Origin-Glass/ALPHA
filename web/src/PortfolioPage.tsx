@@ -9,6 +9,7 @@ function PortfolioPage() {
   const [items, setItems] = useState<Portfolio[]>([]);
   const [form, setForm] = useState({ title: '', problem: '', target_user: '', workspace_id: '', source_run_id: '', rights_receipt_id: '', assistance_disclosure: '', visibility: 'private' });
   const [message, setMessage] = useState('');
+  const [licenseIdentifier, setLicenseIdentifier] = useState('');
   const keys = useRef<Record<string, string>>({});
   const keyFor = (action: string, value: unknown) => { const signature = `${action}:${JSON.stringify(value)}`; return keys.current[signature] ??= crypto.randomUUID(); };
   const headers = { 'content-type': 'application/json', 'x-csrf-token': csrf() };
@@ -16,7 +17,7 @@ function PortfolioPage() {
   useEffect(() => { fetch('/api/v1/portfolio', { credentials: 'include' }).then((response) => response.json()).then((body) => setItems((current) => [...current, ...(body.items ?? []).filter((item: Portfolio) => !current.some((candidate) => candidate.id === item.id))])).catch(() => setMessage('포트폴리오를 불러오지 못했습니다.')); }, []);
   const update = (field: keyof typeof form, value: string) => setForm((current) => ({ ...current, [field]: value }));
   const create = async () => {
-    const payload = { ...form, evidence_labels: ['BUILT', 'TESTED', 'EXPLAINED'] };
+    const payload = form;
     const response = await fetch('/api/v1/portfolio', { method: 'POST', credentials: 'include', headers, body: JSON.stringify({ ...payload, idempotency_key: keyFor('create', payload) }) });
     const body = await response.json();
     if (response.ok) setItems((current) => [body, ...current]); else setMessage(body.error?.message ?? '포트폴리오를 만들지 못했습니다.');
@@ -26,6 +27,7 @@ function PortfolioPage() {
     const body = await response.json();
     if (response.ok) setItems((current) => current.map((candidate) => candidate.id === item.id ? body : candidate)); else setMessage(body.error?.message ?? '게시하지 못했습니다.');
   };
+  const approveRights = async () => { const payload = { source_run_id: form.source_run_id, provenance: 'original', license_identifier: licenseIdentifier }; const response = await fetch('/api/v1/portfolio/rights', { method: 'POST', credentials: 'include', headers, body: JSON.stringify({ ...payload, idempotency_key: keyFor('rights', payload) }) }); const body = await response.json(); if (response.ok) { update('rights_receipt_id', body.id); setMessage('독립 권리 검토 영수증을 연결했습니다.'); } else setMessage(body.error?.message ?? '권리 검토 권한이 있는 다른 검토자의 승인이 필요합니다.'); };
 
   return <div className="learning-page"><PortalHeader /><main className="path-panel portfolio-panel">
     <p className="eyebrow">증거 기반 포트폴리오</p><h1>과정과 도움을 정확히 공개하세요</h1>
@@ -35,6 +37,7 @@ function PortfolioPage() {
       <label>대상 사용자<input value={form.target_user} onChange={(event) => update('target_user', event.target.value)} /></label>
       <label>연결할 작업공간 ID<input value={form.workspace_id} onChange={(event) => update('workspace_id', event.target.value)} /></label>
       <label>성공한 실행 ID<input value={form.source_run_id} onChange={(event) => update('source_run_id', event.target.value)} /></label>
+      <p>권리 승인은 작성자와 다른 권리 검토자가 수행해야 합니다. 검토자는 아래에서 실행을 승인할 수 있습니다.</p><label>라이선스 근거<input value={licenseIdentifier} onChange={(event) => setLicenseIdentifier(event.target.value)} /></label><button type="button" disabled={!form.source_run_id || licenseIdentifier.trim().length < 2} onClick={approveRights}>권리 검토자로 승인</button>
       <label>권리 승인 영수증 ID<input value={form.rights_receipt_id} onChange={(event) => update('rights_receipt_id', event.target.value)} /></label>
       <label>공개 범위<select value={form.visibility} onChange={(event) => update('visibility', event.target.value)}><option value="private">비공개</option><option value="public">공개</option></select></label>
       <label>도움 사용 공개<textarea value={form.assistance_disclosure} onChange={(event) => update('assistance_disclosure', event.target.value)} /></label>
