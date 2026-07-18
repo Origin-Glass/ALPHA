@@ -89,6 +89,23 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/auth/terms",
             axum::routing::post(crate::auth::accept_terms),
         )
+        .route("/api/v1/policies", get(crate::auth::policies))
+        .route(
+            "/api/v1/policies/consents",
+            axum::routing::post(crate::auth::accept_policy),
+        )
+        .route(
+            "/api/v1/data-requests",
+            axum::routing::post(crate::governance::create_data_request),
+        )
+        .route(
+            "/api/v1/data-requests/{id}",
+            get(crate::governance::data_request),
+        )
+        .route(
+            "/api/v1/data-requests/{id}/cancel",
+            axum::routing::post(crate::governance::cancel_data_request),
+        )
         .route(
             "/api/v1/auth/{provider}/start",
             get(crate::auth::oauth_start),
@@ -189,6 +206,22 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/admin/problems/{slug}/revisions",
             axum::routing::post(crate::admin::revise_problem),
+        )
+        .route(
+            "/api/v1/governance/problems/{slug}/rights",
+            axum::routing::post(crate::governance::record_rights),
+        )
+        .route(
+            "/api/v1/governance/problems/{slug}/reviews/content",
+            axum::routing::post(crate::governance::approve_content),
+        )
+        .route(
+            "/api/v1/governance/problems/{slug}/reviews/rights",
+            axum::routing::post(crate::governance::approve_rights),
+        )
+        .route(
+            "/api/v1/governance/problems/{slug}/publish",
+            axum::routing::post(crate::governance::publish),
         )
         .route(
             "/api/v1/admin/notices",

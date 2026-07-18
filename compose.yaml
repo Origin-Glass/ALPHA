@@ -117,6 +117,7 @@ services:
       DATABASE_URL: postgres://alpha:${POSTGRES_PASSWORD:-alpha-local-only}@db:5432/alpha
       JUDGE_IMAGE: alpha-judge-runner:local
       JUDGE_WORKER_ID: compose-worker-1
+      RUST_LOG: alpha=info,judge_worker=info
       TMPDIR: ${ALPHA_JUDGE_WORKSPACE:-/tmp/alpha-judge-work}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

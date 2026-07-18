@@ -65,7 +65,6 @@ function AdminPage() {
   const [title, setTitle] = useState("");
   const [statement, setStatement] = useState("");
   const [difficulty, setDifficulty] = useState(3);
-  const [status, setStatus] = useState<"draft" | "published">("draft");
   const [sampleInput, setSampleInput] = useState("");
   const [sampleOutput, setSampleOutput] = useState("");
   const [hiddenInput, setHiddenInput] = useState("");
@@ -130,7 +129,7 @@ function AdminPage() {
       statement,
       difficulty,
       learning_axis: "algorithmic_reasoning",
-      status,
+      status: "draft",
       time_limit_ms: 1000,
       memory_limit_mb: 128,
       checker_kind: "whitespace",
@@ -258,7 +257,7 @@ function AdminPage() {
               <div className="admin-form-row">
                 <label><span>작업</span><select value={problemMode} onChange={(event) => setProblemMode(event.target.value as "create" | "revise")}><option value="create">새 문제</option><option value="revise">기존 문제 개정</option></select></label>
                 <label><span>문제 식별자</span><input pattern="[a-z0-9-]+" value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase())} required /></label>
-                <label><span>상태</span><select value={status} onChange={(event) => setStatus(event.target.value as "draft" | "published")}><option value="draft">초안</option><option value="published">공개</option></select></label>
+                <label><span>상태</span><input value="초안 · 게시 검토 필요" readOnly /></label>
                 <label><span>난이도 · 0–30</span><input type="number" min="0" max="30" value={difficulty} onChange={(event) => setDifficulty(Number(event.target.value))} required /></label>
               </div>
               <label><span>한국어 제목</span><input maxLength={120} value={title} onChange={(event) => setTitle(event.target.value)} required /></label>

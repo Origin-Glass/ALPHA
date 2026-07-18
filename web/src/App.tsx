@@ -20,6 +20,8 @@ import ClassDetailPage from './ClassDetailPage';
 import CommunityPage from './CommunityPage';
 import CommunityDetailPage from './CommunityDetailPage';
 import AdminPage from './AdminPage';
+import GovernancePage from './GovernancePage';
+import PoliciesPage from './PoliciesPage';
 
 const learningAxes = [
   { number: '01', title: '알고리즘 추론', description: '정답보다 사고 과정을 단단하게 만듭니다.' },
@@ -172,6 +174,8 @@ function App() {
   if (window.location.pathname === '/community') return <CommunityPage />;
   if (window.location.pathname.startsWith('/community/')) return <CommunityDetailPage postId={decodeURIComponent(window.location.pathname.slice('/community/'.length))} />;
   if (window.location.pathname === '/admin') return <AdminPage />;
+  if (window.location.pathname === '/governance') return <GovernancePage />;
+  if (window.location.pathname === '/policies') return <PoliciesPage />;
   if (window.location.pathname === '/problems') return <ProblemsPage />;
   if (window.location.pathname.startsWith('/problems/')) return <ProblemDetailPage slug={decodeURIComponent(window.location.pathname.slice('/problems/'.length))} />;
   if (window.location.pathname.startsWith('/solve/')) return <SolvePage slug={decodeURIComponent(window.location.pathname.slice('/solve/'.length))} />;

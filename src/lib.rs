@@ -7,6 +7,7 @@ pub mod config;
 pub mod contests;
 pub mod db;
 pub mod gamification;
+pub mod governance;
 pub mod http;
 pub mod judge;
 pub mod metadata;

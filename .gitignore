@@ -4,6 +4,7 @@
 /web/*.tsbuildinfo
 /web/test-results/
 /web/playwright-report/
+.worktrees/
 .env
 /backups/
 .DS_Store
