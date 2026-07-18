@@ -116,6 +116,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::put(crate::content_factory::update_provider),
         )
         .route(
+            "/api/v1/content/providers/{id}/validate",
+            axum::routing::post(crate::content_factory::validate_provider),
+        )
+        .route(
             "/api/v1/content/jobs",
             get(crate::content_factory::list_jobs).post(crate::content_factory::create_job),
         )

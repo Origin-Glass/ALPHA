@@ -334,6 +334,24 @@ paths:
                     - { type: "null" }
       responses:
         "200": { $ref: "#/components/responses/ContentMutation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/content/providers/{id}/validate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: validateContentProviderConfiguration
+      security: *write
+      responses:
+        "200": { $ref: "#/components/responses/ContentMutation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /api/v1/content/jobs:
     get:
       operationId: listContentGenerationJobs
@@ -349,6 +367,10 @@ paths:
             schema: { $ref: "#/components/schemas/ContentGenerationJobRequest" }
       responses:
         "201": { $ref: "#/components/responses/ContentMutation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /api/v1/content/jobs/compare:
     get:
       operationId: compareContentGenerationJobs
@@ -369,28 +391,48 @@ paths:
       operationId: cancelContentGenerationJob
       security: *write
       requestBody: { $ref: "#/components/requestBodies/ContentJobAction" }
-      responses: { "200": { $ref: "#/components/responses/ContentMutation" } }
+      responses:
+        "200": { $ref: "#/components/responses/ContentMutation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /api/v1/content/jobs/{id}/retry:
     parameters: [*id]
     post:
       operationId: retryContentGenerationJob
       security: *write
       requestBody: { $ref: "#/components/requestBodies/ContentJobAction" }
-      responses: { "200": { $ref: "#/components/responses/ContentMutation" } }
+      responses:
+        "200": { $ref: "#/components/responses/ContentMutation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /api/v1/content/jobs/{id}/clone:
     parameters: [*id]
     post:
       operationId: cloneContentGenerationJob
       security: *write
       requestBody: { $ref: "#/components/requestBodies/ContentJobAction" }
-      responses: { "200": { $ref: "#/components/responses/ContentMutation" } }
+      responses:
+        "200": { $ref: "#/components/responses/ContentMutation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /api/v1/content/jobs/{id}/archive:
     parameters: [*id]
     post:
       operationId: archiveContentGenerationJob
       security: *write
       requestBody: { $ref: "#/components/requestBodies/ContentJobAction" }
-      responses: { "200": { $ref: "#/components/responses/ContentMutation" } }
+      responses:
+        "200": { $ref: "#/components/responses/ContentMutation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /api/v1/content/budget:
     get:
       operationId: getContentBudget
@@ -1001,6 +1043,8 @@ components:
         archived: { type: boolean }
         idempotent_replay: { type: boolean }
         limit_microunits: { type: integer }
+        configuration_valid: { type: boolean }
+        execution_health: { type: string, enum: [unverified] }
     ContentProviderListResponse:
       type: object
       additionalProperties: false
@@ -1029,7 +1073,7 @@ components:
     ContentJobSummary:
       type: object
       additionalProperties: false
-      required: [id, provider, content_type, status, attempts, created_at]
+      required: [id, provider, content_type, status, attempts, created_at, has_artifact]
       properties:
         id: { type: string, format: uuid }
         provider: { type: string }
@@ -1038,6 +1082,7 @@ components:
         attempts: { type: integer }
         last_error_code: { oneOf: [{ type: string }, { type: "null" }] }
         created_at: { type: string, format: date-time }
+        has_artifact: { type: boolean }
     ContentJobListResponse:
       type: object
       additionalProperties: false
@@ -1049,10 +1094,64 @@ components:
       additionalProperties: false
       required: [job, attempts, artifacts, audit]
       properties:
-        job: { type: object, additionalProperties: true }
-        attempts: { type: array, items: { type: object, additionalProperties: true } }
-        artifacts: { type: array, items: { type: object, additionalProperties: true } }
-        audit: { type: array, items: { type: object, additionalProperties: true } }
+        job: { $ref: "#/components/schemas/ContentJobDetail" }
+        attempts: { type: array, items: { $ref: "#/components/schemas/ContentJobAttempt" } }
+        artifacts: { type: array, items: { $ref: "#/components/schemas/ContentJobArtifact" } }
+        audit: { type: array, items: { $ref: "#/components/schemas/ContentJobAudit" } }
+    ContentJobDetail:
+      type: object
+      additionalProperties: false
+      required: [id, provider, content_type, request_spec, status, attempts, max_attempts, reserved_microunits, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        provider: { type: string }
+        content_type: { type: string }
+        request_spec: { type: object, additionalProperties: true }
+        status: { type: string }
+        attempts: { type: integer }
+        max_attempts: { type: integer }
+        reserved_microunits: { type: integer }
+        last_error_code: { oneOf: [{ type: string }, { type: "null" }] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        archived_at: { oneOf: [{ type: string, format: date-time }, { type: "null" }] }
+        cloned_from_job_id: { oneOf: [{ type: string, format: uuid }, { type: "null" }] }
+    ContentJobAttempt:
+      type: object
+      additionalProperties: false
+      required: [id, attempt_number, provider_snapshot, request_hash, status, calls_started, outputs_completed, usage, started_at]
+      properties:
+        id: { type: string, format: uuid }
+        attempt_number: { type: integer }
+        provider_snapshot: { type: object, additionalProperties: true }
+        request_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        response_hash: { oneOf: [{ type: string, pattern: "^[0-9a-f]{64}$" }, { type: "null" }] }
+        status: { type: string }
+        error_code: { oneOf: [{ type: string }, { type: "null" }] }
+        calls_started: { type: integer, minimum: 0, maximum: 20 }
+        outputs_completed: { type: integer, minimum: 0, maximum: 20 }
+        usage: { type: object, additionalProperties: true }
+        started_at: { type: string, format: date-time }
+        completed_at: { oneOf: [{ type: string, format: date-time }, { type: "null" }] }
+    ContentJobArtifact:
+      type: object
+      additionalProperties: false
+      required: [id, attempt_id, kind, payload, hash, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        attempt_id: { type: string, format: uuid }
+        kind: { type: string, enum: [candidate, provider_response, error_receipt] }
+        payload: {}
+        hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        created_at: { type: string, format: date-time }
+    ContentJobAudit:
+      type: object
+      additionalProperties: false
+      required: [action, metadata, occurred_at]
+      properties:
+        action: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        occurred_at: { type: string, format: date-time }
     ContentJobComparisonResponse:
       type: object
       additionalProperties: false
@@ -1232,8 +1331,9 @@ components:
     ContentGenerationJobRequest:
       type: object
       additionalProperties: false
-      required: [provider_id, content_type, topic, target_language, generation_count]
+      required: [idempotency_key, provider_id, content_type, topic, target_language, generation_count]
       properties:
+        idempotency_key: { type: string, format: uuid }
         provider_id: { type: string, format: uuid }
         content_type: { type: string, enum: [algorithm_problem, code_reading, debugging, documentation_lesson, implementation_task] }
         topic: { type: string, minLength: 2, maxLength: 200 }

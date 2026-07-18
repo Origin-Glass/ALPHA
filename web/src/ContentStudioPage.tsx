@@ -1,8 +1,8 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import PortalHeader from "./PortalHeader";
 
 type Provider = { id: string; name: string; kind: string; protocol: string; model: string; cost_per_generation_microunits: number; enabled: boolean; credential_available: boolean };
-type Job = { id: string; provider: string; content_type: string; status: string; attempts: number; last_error_code?: string };
+type Job = { id: string; provider: string; content_type: string; status: string; attempts: number; has_artifact: boolean; last_error_code?: string };
 type JobDetail = { job: Job & { request_spec: object }; attempts: Array<Record<string, unknown>>; artifacts: Array<{ id: string; kind: string; payload: unknown; hash: string }>; audit: Array<Record<string, unknown>> };
 
 const csrf = () => document.cookie.split(";").map((item) => item.trim())
@@ -24,6 +24,8 @@ function ContentStudioPage() {
   const [detail, setDetail] = useState<JobDetail | null>(null);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [comparison, setComparison] = useState<unknown>(null);
+  const actionKeys = useRef(new Map<string, string>());
+  const createKey = useRef<string | null>(null);
 
   const load = async () => {
     try {
@@ -44,7 +46,7 @@ function ContentStudioPage() {
   useEffect(() => { void load(); const timer = window.setInterval(() => { void load(); }, 3000); return () => window.clearInterval(timer); }, []);
 
   const loadDetail = async (id: string) => { try { const response = await fetch(`/api/v1/content/jobs/${id}`, { credentials: "include" }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "작업 상세를 불러오지 못했습니다."); setDetail(payload); } catch (error) { setMessage(error instanceof Error ? error.message : "작업 상세를 불러오지 못했습니다."); } };
-  const action = async (id: string, name: "cancel" | "retry" | "clone" | "archive") => { try { const response = await fetch(`/api/v1/content/jobs/${id}/${name}`, { method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-csrf-token": csrf() }, body: JSON.stringify({ idempotency_key: crypto.randomUUID() }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "작업 상태를 바꾸지 못했습니다."); setMessage(name === "cancel" ? "작업을 취소했습니다." : name === "retry" ? "수동 재시도 작업을 만들었습니다." : name === "clone" ? "복제 작업을 만들었습니다." : "작업을 보관했습니다."); await load(); if (name !== "archive") await loadDetail(payload.id ?? id); } catch (error) { setMessage(error instanceof Error ? error.message : "작업 상태를 바꾸지 못했습니다."); } };
+  const action = async (id: string, name: "cancel" | "retry" | "clone" | "archive") => { const operation = `${name}:${id}`; const idempotencyKey = actionKeys.current.get(operation) ?? crypto.randomUUID(); actionKeys.current.set(operation, idempotencyKey); try { const response = await fetch(`/api/v1/content/jobs/${id}/${name}`, { method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-csrf-token": csrf() }, body: JSON.stringify({ idempotency_key: idempotencyKey }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "작업 상태를 바꾸지 못했습니다."); actionKeys.current.delete(operation); setMessage(name === "cancel" ? "작업을 취소했습니다." : name === "retry" ? "수동 재시도 작업을 만들었습니다." : name === "clone" ? "복제 작업을 만들었습니다." : "작업을 보관했습니다."); await load(); if (name !== "archive") await loadDetail(payload.id ?? id); } catch (error) { setMessage(error instanceof Error ? error.message : "작업 상태를 바꾸지 못했습니다."); } };
   const toggleCompare = (id: string) => setCompareIds((current) => current.includes(id) ? current.filter((item) => item !== id) : current.length < 2 ? [...current, id] : [current[1], id]);
   const compare = async () => { if (compareIds.length !== 2) return; try { const response = await fetch(`/api/v1/content/jobs/compare?left=${compareIds[0]}&right=${compareIds[1]}`, { credentials: "include" }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "작업을 비교하지 못했습니다."); setComparison(payload); } catch (error) { setMessage(error instanceof Error ? error.message : "작업을 비교하지 못했습니다."); } };
 
@@ -52,14 +54,17 @@ function ContentStudioPage() {
     event.preventDefault();
     setMessage("");
     try {
+      const idempotencyKey = createKey.current ?? crypto.randomUUID();
+      createKey.current = idempotencyKey;
       const response = await fetch("/api/v1/content/jobs", {
         method: "POST", credentials: "include",
         headers: { "content-type": "application/json", "x-csrf-token": csrf() },
-        body: JSON.stringify({ provider_id: providerId, content_type: contentType, topic, target_language: "ko", generation_count: count }),
+        body: JSON.stringify({ idempotency_key: idempotencyKey, provider_id: providerId, content_type: contentType, topic, target_language: "ko", generation_count: count }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error?.message ?? "생성 작업을 요청하지 못했습니다.");
       setMessage(statusLabel[payload.status] ?? "생성 작업을 접수했습니다.");
+      createKey.current = null;
       await load();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "생성 작업을 요청하지 못했습니다.");
@@ -83,7 +88,7 @@ function ContentStudioPage() {
       </form></section>
       <section><h2>최근 작업</h2><div className="factory-jobs">
         {jobs.length === 0 && <p className="dashboard-empty">아직 생성 작업이 없습니다.</p>}
-        {jobs.map((job) => <article key={job.id}><div><strong>{job.provider}</strong><span>{statusLabel[job.status] ?? job.status}</span></div><small>{job.content_type} · 시도 {job.attempts}회{job.last_error_code ? ` · ${job.last_error_code}` : ""}</small><div><button type="button" onClick={() => loadDetail(job.id)}>상세 보기</button><button type="button" onClick={() => toggleCompare(job.id)}>{compareIds.includes(job.id) ? "비교 해제" : "비교 선택"}</button>{["queued", "leased", "blocked_disabled", "blocked_missing_credential"].includes(job.status) && <button type="button" onClick={() => action(job.id, "cancel")}>취소</button>}{job.status === "failed" && <button type="button" onClick={() => action(job.id, "retry")}>수동 재시도</button>}<button type="button" onClick={() => action(job.id, "clone")}>복제</button>{["completed", "failed", "cancelled"].includes(job.status) && <button type="button" onClick={() => action(job.id, "archive")}>보관</button>}</div></article>)}
+        {jobs.map((job) => <article key={job.id}><div><strong>{job.provider}</strong><span>{statusLabel[job.status] ?? job.status}</span></div><small>{job.content_type} · 시도 {job.attempts}회{job.last_error_code ? ` · ${job.last_error_code}` : ""}</small><div><button type="button" onClick={() => loadDetail(job.id)}>상세 보기</button>{job.status === "completed" && job.has_artifact && <button type="button" onClick={() => toggleCompare(job.id)}>{compareIds.includes(job.id) ? "비교 해제" : "비교 선택"}</button>}{["queued", "leased", "blocked_disabled", "blocked_missing_credential"].includes(job.status) && <button type="button" onClick={() => action(job.id, "cancel")}>취소</button>}{job.status === "failed" && <button type="button" onClick={() => action(job.id, "retry")}>수동 재시도</button>}{job.status !== "leased" && <button type="button" onClick={() => action(job.id, "clone")}>복제</button>}{["completed", "failed", "cancelled"].includes(job.status) && <button type="button" onClick={() => action(job.id, "archive")}>보관</button>}</div></article>)}
       </div></section>
     </div>
     {compareIds.length === 2 && <button type="button" className="primary-action" onClick={compare}>선택한 작업 비교</button>}

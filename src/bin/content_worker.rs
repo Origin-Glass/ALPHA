@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use alpha::content_factory::{
-    CONTENT_PROMPT_TEMPLATE, CompleteGenerationError, complete_generation_job, fail_generation_job,
-    lease_next_generation_job, resolve_provider_endpoint,
+    CONTENT_PROMPT_TEMPLATE, CompleteGenerationError, begin_provider_call, complete_generation_job,
+    fail_generation_job, lease_next_generation_job, record_provider_output, renew_generation_lease,
+    resolve_provider_endpoint,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -78,12 +79,35 @@ fn generation_count(request_spec: &Value) -> Result<u64, &'static str> {
         .ok_or("invalid_generation_count_snapshot")
 }
 
-fn normalized_content(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|_| json!({"text": text}))
+fn normalized_content(content_type: &str, text: &str) -> Result<Value, &'static str> {
+    let content: Value = serde_json::from_str(text).map_err(|_| "provider_content_invalid_json")?;
+    let object = content
+        .as_object()
+        .ok_or("provider_content_schema_invalid")?;
+    let required: &[&str] = match content_type {
+        "algorithm_problem" => &["title", "statement", "solution"],
+        "code_reading" => &["title", "code", "question", "answer"],
+        "debugging" => &["title", "buggy_code", "explanation", "fixed_code"],
+        "documentation_lesson" => &["title", "lesson"],
+        "implementation_task" => &["title", "requirements", "reference_solution"],
+        _ => return Err("provider_content_schema_invalid"),
+    };
+    if required.iter().any(|field| {
+        object.get(*field).is_none_or(|value| match value {
+            Value::String(value) => value.trim().is_empty(),
+            Value::Array(value) => value.is_empty(),
+            Value::Null => true,
+            _ => false,
+        })
+    }) {
+        return Err("provider_content_schema_invalid");
+    }
+    Ok(content)
 }
 
 fn normalize_provider_output(
     protocol: &str,
+    content_type: &str,
     payload: &Value,
     latency_ms: u64,
 ) -> Result<Value, &'static str> {
@@ -121,14 +145,17 @@ fn normalize_provider_output(
         _ => return Err("provider_protocol_rejected"),
     };
     Ok(json!({
-        "content": normalized_content(&text),
+        "content": normalized_content(content_type, &text)?,
         "metadata": {"usage": usage, "latency_ms": latency_ms}
     }))
 }
 
 async fn record_provider_health(pool: &sqlx::PgPool, provider_id: uuid::Uuid, status: &str) {
     if let Err(error) = sqlx::query(
-        "UPDATE content_provider_configs SET health_status = $2, last_health_at = now(), updated_at = now() WHERE id = $1",
+        r#"UPDATE content_provider_configs
+           SET health_status = $2, last_health_at = now(),
+               consecutive_failures = CASE WHEN $2 = 'healthy' THEN 0 ELSE consecutive_failures + 1 END,
+               updated_at = now() WHERE id = $1"#,
     )
     .bind(provider_id)
     .bind(status)
@@ -214,13 +241,42 @@ async fn call_provider(
         retryable: false,
     })?;
     let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    normalize_provider_output(&lease.provider_protocol, &payload, latency_ms).map_err(|code| {
-        ProviderFailure {
-            code,
-            receipt: json!({"error": "제공자 콘텐츠가 비어 있음"}),
-            retryable: false,
-        }
+    normalize_provider_output(
+        &lease.provider_protocol,
+        &lease.content_type,
+        &payload,
+        latency_ms,
+    )
+    .map_err(|code| ProviderFailure {
+        code,
+        receipt: json!({"error": "제공자 콘텐츠가 비어 있음"}),
+        retryable: false,
     })
+}
+
+async fn call_with_lease_heartbeat(
+    pool: &sqlx::PgPool,
+    client: &reqwest::Client,
+    endpoint: &url::Url,
+    lease: &alpha::content_factory::GenerationLease,
+    credential: Option<&str>,
+    output_index: u64,
+) -> Option<Result<Value, ProviderFailure>> {
+    let call = call_provider(client, endpoint, lease, credential, output_index);
+    tokio::pin!(call);
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+    heartbeat.tick().await;
+    loop {
+        tokio::select! {
+            result = &mut call => return Some(result),
+            _ = heartbeat.tick() => {
+                match renew_generation_lease(pool, lease.job_id, lease.attempt_id, lease.lease_token, Duration::from_secs(120)).await {
+                    Ok(true) => {}
+                    Ok(false) | Err(_) => return None,
+                }
+            }
+        }
+    }
 }
 
 async fn run_lease(pool: &sqlx::PgPool, lease: alpha::content_factory::GenerationLease) {
@@ -299,8 +355,36 @@ async fn run_lease(pool: &sqlx::PgPool, lease: alpha::content_factory::Generatio
         }
     };
     let mut candidates = Vec::with_capacity(generation_count as usize);
+    let batch_deadline = tokio::time::Instant::now() + Duration::from_secs(30 * 60);
     for output_index in 0..generation_count {
-        match call_provider(
+        if tokio::time::Instant::now() >= batch_deadline {
+            let _ = fail_generation_job(
+                pool,
+                lease.job_id,
+                lease.attempt_id,
+                lease.lease_token,
+                "batch_deadline_exceeded",
+                json!({"error": "배치 실행 제한 시간 초과"}),
+                true,
+            )
+            .await;
+            return;
+        }
+        if !matches!(
+            begin_provider_call(
+                pool,
+                lease.job_id,
+                lease.provider_id,
+                lease.attempt_id,
+                lease.lease_token
+            )
+            .await,
+            Ok(true)
+        ) {
+            return;
+        }
+        let Some(result) = call_with_lease_heartbeat(
+            pool,
             &client,
             &endpoint.url,
             &lease,
@@ -308,10 +392,27 @@ async fn run_lease(pool: &sqlx::PgPool, lease: alpha::content_factory::Generatio
             output_index,
         )
         .await
-        {
+        else {
+            return;
+        };
+        match result {
             Ok(mut output) => {
                 output["metadata"]["output_index"] = json!(output_index);
                 output["metadata"]["seed"] = json!(deterministic_seed(lease.job_id, output_index));
+                let usage = json!({output_index.to_string(): output["metadata"]["usage"].clone()});
+                if !matches!(
+                    record_provider_output(
+                        pool,
+                        lease.job_id,
+                        lease.attempt_id,
+                        lease.lease_token,
+                        &usage
+                    )
+                    .await,
+                    Ok(true)
+                ) {
+                    return;
+                }
                 candidates.push(output);
             }
             Err(failure) => {
@@ -407,6 +508,7 @@ mod tests {
             request_spec: json!({"topic": "경계 조건", "generation_count": 3}),
             reserved_cost_microunits: 300,
             attempt_cost_microunits: 100,
+            content_type: "code_reading".into(),
         }
     }
 
@@ -509,8 +611,9 @@ mod tests {
     fn normalizer_keeps_only_openai_content_and_safe_usage() {
         let normalized = normalize_provider_output(
             "openai_compatible",
+            "code_reading",
             &json!({
-                "choices": [{"message": {"content": "{\"title\":\"경계 조건\"}", "reasoning": "hidden"}}],
+                "choices": [{"message": {"content": "{\"title\":\"경계 조건\",\"code\":\"x\",\"question\":\"왜?\",\"answer\":\"불변식\"}", "reasoning": "hidden"}}],
                 "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19, "secret": "drop"},
                 "internal_trace": "drop-me"
             }),
@@ -530,10 +633,11 @@ mod tests {
     fn normalizer_extracts_anthropic_text_without_raw_blocks() {
         let normalized = normalize_provider_output(
             "anthropic",
+            "documentation_lesson",
             &json!({
                 "content": [
                     {"type": "thinking", "thinking": "private chain"},
-                    {"type": "text", "text": "{\"lesson\":\"불변식\"}"}
+                    {"type": "text", "text": "{\"title\":\"불변식\",\"lesson\":\"불변식\"}"}
                 ],
                 "usage": {"input_tokens": 5, "output_tokens": 9},
                 "debug": "drop-me"
@@ -546,5 +650,23 @@ mod tests {
         let encoded = normalized.to_string();
         assert!(!encoded.contains("private chain"));
         assert!(!encoded.contains("debug"));
+    }
+
+    #[test]
+    fn normalizer_rejects_non_json_and_incomplete_content() {
+        for content in [
+            "설명부터 시작합니다 {\"title\":\"숨김\"}",
+            "{\"title\":\"누락\"}",
+        ] {
+            assert!(matches!(
+                normalize_provider_output(
+                    "openai_compatible",
+                    "debugging",
+                    &json!({"choices": [{"message": {"content": content}}]}),
+                    1,
+                ),
+                Err("provider_content_invalid_json" | "provider_content_schema_invalid")
+            ));
+        }
     }
 }

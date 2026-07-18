@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use alpha::{
     config::Settings,
     content_factory::{
-        CompleteGenerationError, complete_generation_job, fail_generation_job,
-        lease_next_generation_job,
+        CompleteGenerationError, begin_provider_call, complete_generation_job, fail_generation_job,
+        lease_next_generation_job, renew_generation_lease,
     },
     http::{AppState, router},
 };
@@ -208,11 +208,24 @@ async fn reservation_uses_server_provider_price_not_client_estimate(pool: PgPool
     let created = post(&app, &session, "/api/v1/content/providers", priced_provider).await;
     assert_eq!(created.status(), StatusCode::CREATED);
     let provider_id = json_body(created).await["id"].as_str().unwrap().to_owned();
+    let validation = post(
+        &app,
+        &session,
+        &format!("/api/v1/content/providers/{provider_id}/validate"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(validation.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(validation).await["execution_health"],
+        "unverified"
+    );
     let created_job = post(
         &app,
         &session,
         "/api/v1/content/jobs",
         json!({
+            "idempotency_key": Uuid::now_v7(),
             "provider_id": provider_id,
             "content_type": "code_reading",
             "topic": "서버 가격 기반 예약",
@@ -267,6 +280,7 @@ async fn content_creator_can_use_enabled_frontier_provider(pool: PgPool) {
         &session,
         "/api/v1/content/jobs",
         json!({
+            "idempotency_key": Uuid::now_v7(),
             "provider_id": provider_id,
             "content_type": "debugging",
             "topic": "작성자 생성 권한",
@@ -358,7 +372,7 @@ async fn expensive_fallback_is_snapshotted_and_fully_reserved(pool: PgPool) {
     );
     let created = post(
         &app, &owner, "/api/v1/content/jobs",
-        json!({"provider_id": primary_id, "content_type": "debugging", "topic": "fallback snapshot", "target_language": "ko", "generation_count": 2}),
+        json!({"idempotency_key": Uuid::now_v7(), "provider_id": primary_id, "content_type": "debugging", "topic": "fallback snapshot", "target_language": "ko", "generation_count": 2}),
     ).await;
     assert_eq!(created.status(), StatusCode::CREATED);
     let job_id: Uuid = json_body(created).await["id"]
@@ -378,11 +392,38 @@ async fn expensive_fallback_is_snapshotted_and_fully_reserved(pool: PgPool) {
         ).await.status(),
         StatusCode::OK
     );
-    sqlx::query("UPDATE content_provider_configs SET health_status = 'unhealthy' WHERE id = $1")
+    sqlx::query("UPDATE content_provider_configs SET health_status = 'unhealthy', consecutive_failures = 1, last_health_at = now() WHERE id = $1")
         .bind(primary_id)
         .execute(&pool)
         .await
         .unwrap();
+    let transient = lease_next_generation_job(
+        &pool,
+        "primary-after-transient",
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(transient.provider_id, primary_id);
+    fail_generation_job(
+        &pool,
+        transient.job_id,
+        transient.attempt_id,
+        transient.lease_token,
+        "transient",
+        json!({"error":"safe"}),
+        true,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE content_generation_jobs SET available_at = now() WHERE id = $1")
+        .bind(job_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE content_provider_configs SET consecutive_failures = 3, last_health_at = now() WHERE id = $1")
+        .bind(primary_id).execute(&pool).await.unwrap();
     let lease =
         lease_next_generation_job(&pool, "fallback-worker", std::time::Duration::from_secs(30))
             .await
@@ -507,6 +548,17 @@ async fn leased_cancel_charges_attempt_and_fences_stale_worker(pool: PgPool) {
     .unwrap()
     .unwrap();
     assert_eq!(lease.job_id, job_id);
+    assert!(
+        begin_provider_call(
+            &pool,
+            lease.job_id,
+            lease.provider_id,
+            lease.attempt_id,
+            lease.lease_token
+        )
+        .await
+        .unwrap()
+    );
     assert_eq!(
         post(
             &app,
@@ -578,6 +630,17 @@ async fn manual_retry_and_compare_are_owner_scoped_and_auditable(pool: PgPool) {
             .await
             .unwrap()
             .unwrap();
+    assert!(
+        begin_provider_call(
+            &pool,
+            failed_lease.job_id,
+            failed_lease.provider_id,
+            failed_lease.attempt_id,
+            failed_lease.lease_token
+        )
+        .await
+        .unwrap()
+    );
     fail_generation_job(
         &pool,
         failed_lease.job_id,
@@ -636,6 +699,17 @@ async fn manual_retry_and_compare_are_owner_scoped_and_auditable(pool: PgPool) {
     .unwrap()
     .unwrap();
     assert_eq!(retry_lease.job_id, retried_id);
+    assert!(
+        begin_provider_call(
+            &pool,
+            retry_lease.job_id,
+            retry_lease.provider_id,
+            retry_lease.attempt_id,
+            retry_lease.lease_token
+        )
+        .await
+        .unwrap()
+    );
     complete_generation_job(
         &pool,
         retry_lease.job_id,
@@ -667,6 +741,17 @@ async fn manual_retry_and_compare_are_owner_scoped_and_auditable(pool: PgPool) {
     .unwrap()
     .unwrap();
     assert_eq!(clone_lease.job_id, clone_id);
+    assert!(
+        begin_provider_call(
+            &pool,
+            clone_lease.job_id,
+            clone_lease.provider_id,
+            clone_lease.attempt_id,
+            clone_lease.lease_token
+        )
+        .await
+        .unwrap()
+    );
     complete_generation_job(
         &pool,
         clone_lease.job_id,
@@ -727,17 +812,23 @@ async fn provider_configuration_rejects_ssrf_endpoints(pool: PgPool) {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "accepted {url}");
     }
 
-    assert_eq!(
-        post(
-            &app,
-            &session,
-            "/api/v1/content/providers",
-            provider("frontier", "external", "https://api.example.com")
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
-    );
+    let frontier = post(
+        &app,
+        &session,
+        "/api/v1/content/providers",
+        provider("frontier", "external", "https://api.example.com"),
+    )
+    .await;
+    assert_eq!(frontier.status(), StatusCode::CREATED);
+    let frontier_id = json_body(frontier).await["id"].as_str().unwrap().to_owned();
+    let validated = post(
+        &app,
+        &session,
+        &format!("/api/v1/content/providers/{frontier_id}/validate"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(validated.status(), StatusCode::CONFLICT);
     let mut anthropic = provider("anthropic", "external", "https://api.anthropic.com");
     anthropic["protocol"] = json!("anthropic");
     anthropic["credential_env_var"] = json!("ANTHROPIC_API_KEY");
@@ -818,6 +909,7 @@ async fn missing_credential_blocks_job_without_artifact_or_secret_persistence(po
         &session,
         "/api/v1/content/jobs",
         json!({
+            "idempotency_key": Uuid::now_v7(),
             "provider_id": provider_id,
             "content_type": "code_reading",
             "topic": "이진 탐색 경계 오류",
@@ -870,6 +962,7 @@ async fn concurrent_jobs_cannot_reserve_beyond_one_budget(pool: PgPool) {
     .await;
     let provider_id = json_body(created).await["id"].as_str().unwrap().to_owned();
     let payload = json!({
+        "idempotency_key": Uuid::now_v7(),
         "provider_id": provider_id,
         "content_type": "debugging",
         "topic": "상태 전이 오류",
@@ -877,9 +970,11 @@ async fn concurrent_jobs_cannot_reserve_beyond_one_budget(pool: PgPool) {
         "generation_count": 1
     });
 
+    let mut other_payload = payload.clone();
+    other_payload["idempotency_key"] = json!(Uuid::now_v7());
     let (first, second) = tokio::join!(
-        post(&app, &session, "/api/v1/content/jobs", payload.clone()),
         post(&app, &session, "/api/v1/content/jobs", payload),
+        post(&app, &session, "/api/v1/content/jobs", other_payload),
     );
     let mut statuses = [first.status(), second.status()];
     statuses.sort();
@@ -913,6 +1008,7 @@ async fn queued_job(app: &axum::Router, session: &Session, name: &str) -> Uuid {
         session,
         "/api/v1/content/jobs",
         json!({
+            "idempotency_key": Uuid::now_v7(),
             "provider_id": provider_id,
             "content_type": "code_reading",
             "topic": "재시도 산출물 보존",
@@ -941,6 +1037,17 @@ async fn retry_keeps_attempt_artifacts_and_settles_budget_once(pool: PgPool) {
     .await
     .unwrap()
     .unwrap();
+    assert!(
+        begin_provider_call(
+            &pool,
+            first.job_id,
+            first.provider_id,
+            first.attempt_id,
+            first.lease_token
+        )
+        .await
+        .unwrap()
+    );
     fail_generation_job(
         &pool,
         first.job_id,
@@ -977,6 +1084,17 @@ async fn retry_keeps_attempt_artifacts_and_settles_budget_once(pool: PgPool) {
     .unwrap();
     assert_eq!(second.job_id, job_id);
     assert_eq!(second.attempt_number, 2);
+    assert!(
+        begin_provider_call(
+            &pool,
+            second.job_id,
+            second.provider_id,
+            second.attempt_id,
+            second.lease_token
+        )
+        .await
+        .unwrap()
+    );
     complete_generation_job(
         &pool,
         second.job_id,
@@ -1141,8 +1259,293 @@ async fn expired_lease_recovery_fences_stale_worker_artifacts(pool: PgPool) {
             .fetch_all(&pool)
             .await
             .unwrap();
+    assert!(payloads.contains(&json!({"candidate": "recovered worker output"})));
+    assert!(
+        payloads
+            .iter()
+            .any(|payload| payload["error"] == "작업 lease 만료")
+    );
+    assert!(!payloads.contains(&json!({"candidate": "stale worker output"})));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_idempotency_is_atomic_payload_bound_and_not_prompt_data(pool: PgPool) {
+    let (app, owner) = app(pool.clone(), true).await;
+    let created = post(
+        &app,
+        &owner,
+        "/api/v1/content/providers",
+        provider("create-idempotent", "external", "https://api.example.com"),
+    )
+    .await;
+    let provider_id = json_body(created).await["id"].clone();
+    let key = Uuid::now_v7();
+    let payload = json!({"idempotency_key": key, "provider_id": provider_id, "content_type": "code_reading", "topic": "동시 생성 멱등성", "target_language": "ko", "generation_count": 1});
+    let (first, second) = tokio::join!(
+        post(&app, &owner, "/api/v1/content/jobs", payload.clone()),
+        post(&app, &owner, "/api/v1/content/jobs", payload.clone()),
+    );
     assert_eq!(
-        payloads,
-        vec![json!({"candidate": "recovered worker output"})]
+        (first.status(), second.status()),
+        (StatusCode::CREATED, StatusCode::CREATED)
+    );
+    let first = json_body(first).await;
+    let second = json_body(second).await;
+    assert_eq!(first["id"], second["id"]);
+    let persisted: (i64, Value) = sqlx::query_as(
+        "SELECT COUNT(*) OVER(), request_spec FROM content_generation_jobs WHERE created_by = $1",
+    )
+    .bind(owner.user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(persisted.0, 1);
+    assert!(persisted.1.get("idempotency_key").is_none());
+    let mut changed = payload;
+    changed["topic"] = json!("같은 키의 다른 요청");
+    assert_eq!(
+        post(&app, &owner, "/api/v1/content/jobs", changed)
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let budget: i64 = sqlx::query_scalar(
+        "SELECT reserved_microunits FROM content_budgets WHERE budget_key = 'global'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(budget, 240);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn maximum_batch_reserves_full_sixty_billion_liability(pool: PgPool) {
+    let (app, owner) = app(pool.clone(), true).await;
+    sqlx::query(
+        "UPDATE content_budgets SET limit_microunits = 100000000000 WHERE budget_key = 'global'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut expensive = provider("max-batch-price", "external", "https://api.example.com");
+    expensive["cost_per_generation_microunits"] = json!(1_000_000_000_i64);
+    let provider_id = json_body(post(&app, &owner, "/api/v1/content/providers", expensive).await)
+        .await["id"]
+        .clone();
+    let response = post(
+        &app,
+        &owner,
+        "/api/v1/content/jobs",
+        json!({
+            "idempotency_key": Uuid::now_v7(), "provider_id": provider_id,
+            "content_type": "implementation_task", "topic": "최대 배치 비용 상한",
+            "target_language": "ko", "generation_count": 20
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let reservation: (i64, i64) = sqlx::query_as(
+        "SELECT estimated_cost_microunits, reserved_cost_microunits FROM content_generation_jobs",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(reservation, (60_000_000_000, 60_000_000_000));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn action_idempotency_is_concurrent_and_namespaced(pool: PgPool) {
+    let (app, owner) = app(pool.clone(), true).await;
+    let source = queued_job(&app, &owner, "action-idempotent").await;
+    let lease =
+        lease_next_generation_job(&pool, "failure-worker", std::time::Duration::from_secs(30))
+            .await
+            .unwrap()
+            .unwrap();
+    fail_generation_job(
+        &pool,
+        lease.job_id,
+        lease.attempt_id,
+        lease.lease_token,
+        "pre_call_rejected",
+        json!({"error":"safe"}),
+        false,
+    )
+    .await
+    .unwrap();
+    let key = Uuid::now_v7();
+    let retry_uri = format!("/api/v1/content/jobs/{source}/retry");
+    let (first, second) = tokio::join!(
+        post(&app, &owner, &retry_uri, json!({"idempotency_key": key})),
+        post(&app, &owner, &retry_uri, json!({"idempotency_key": key})),
+    );
+    assert_eq!(
+        (first.status(), second.status()),
+        (StatusCode::OK, StatusCode::OK)
+    );
+    let first = json_body(first).await;
+    let second = json_body(second).await;
+    assert_eq!(first["id"], second["id"]);
+    let clone = post(
+        &app,
+        &owner,
+        &format!("/api/v1/content/jobs/{source}/clone"),
+        json!({"idempotency_key": key}),
+    )
+    .await;
+    assert_eq!(clone.status(), StatusCode::OK);
+    assert_ne!(json_body(clone).await["id"], first["id"]);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn call_fence_tracks_only_started_liability_and_cancel_stops_new_calls(pool: PgPool) {
+    let (app, owner) = app(pool.clone(), true).await;
+    let pre_call_job = queued_job(&app, &owner, "pre-call-free").await;
+    let pre_call =
+        lease_next_generation_job(&pool, "pre-call-worker", std::time::Duration::from_secs(30))
+            .await
+            .unwrap()
+            .unwrap();
+    fail_generation_job(
+        &pool,
+        pre_call.job_id,
+        pre_call.attempt_id,
+        pre_call.lease_token,
+        "endpoint_rejected",
+        json!({"error":"safe"}),
+        false,
+    )
+    .await
+    .unwrap();
+    let spent: i64 = sqlx::query_scalar(
+        "SELECT spent_microunits FROM content_budgets WHERE budget_key = 'global'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        spent, 0,
+        "pre-call validation must not consume provider budget"
+    );
+    assert_eq!(pre_call.job_id, pre_call_job);
+
+    let job_id = queued_job(&app, &owner, "call-fence").await;
+    let lease =
+        lease_next_generation_job(&pool, "fenced-worker", std::time::Duration::from_secs(30))
+            .await
+            .unwrap()
+            .unwrap();
+    assert!(
+        renew_generation_lease(
+            &pool,
+            lease.job_id,
+            lease.attempt_id,
+            lease.lease_token,
+            std::time::Duration::from_secs(120)
+        )
+        .await
+        .unwrap()
+    );
+    assert!(
+        begin_provider_call(
+            &pool,
+            lease.job_id,
+            lease.provider_id,
+            lease.attempt_id,
+            lease.lease_token
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(
+        post(
+            &app,
+            &owner,
+            &format!("/api/v1/content/jobs/{job_id}/cancel"),
+            json!({"idempotency_key": Uuid::now_v7()})
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert!(
+        !begin_provider_call(
+            &pool,
+            lease.job_id,
+            lease.provider_id,
+            lease.attempt_id,
+            lease.lease_token
+        )
+        .await
+        .unwrap()
+    );
+    assert!(
+        !renew_generation_lease(
+            &pool,
+            lease.job_id,
+            lease.attempt_id,
+            lease.lease_token,
+            std::time::Duration::from_secs(120)
+        )
+        .await
+        .unwrap()
+    );
+    let spent: i64 = sqlx::query_scalar(
+        "SELECT spent_microunits FROM content_budgets WHERE budget_key = 'global'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(spent, 80, "only the one begun provider call is charged");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn disabled_queue_and_terminal_expiry_release_and_receipt_consistently(pool: PgPool) {
+    let (app, owner) = app(pool.clone(), true).await;
+    let kill_job = queued_job(&app, &owner, "kill-switch").await;
+    sqlx::query("UPDATE content_provider_configs SET enabled = false WHERE id = (SELECT provider_id FROM content_generation_jobs WHERE id = $1)").bind(kill_job).execute(&pool).await.unwrap();
+    assert!(
+        lease_next_generation_job(&pool, "kill-worker", std::time::Duration::from_secs(30))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let killed: (String, i64, bool) = sqlx::query_as("SELECT status, reserved_cost_microunits, settled FROM content_generation_jobs WHERE id = $1").bind(kill_job).fetch_one(&pool).await.unwrap();
+    assert_eq!(killed, ("blocked_disabled".into(), 0, true));
+
+    let expiry = queued_job(&app, &owner, "terminal-expiry").await;
+    sqlx::query("UPDATE content_generation_jobs SET max_attempts = 1, estimated_cost_microunits = attempt_cost_microunits, reserved_cost_microunits = attempt_cost_microunits WHERE id = $1").bind(expiry).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE content_budgets SET reserved_microunits = (SELECT reserved_cost_microunits FROM content_generation_jobs WHERE id = $1) WHERE budget_key = 'global'").bind(expiry).execute(&pool).await.unwrap();
+    let lease =
+        lease_next_generation_job(&pool, "expiry-worker", std::time::Duration::from_secs(30))
+            .await
+            .unwrap()
+            .unwrap();
+    assert!(
+        begin_provider_call(
+            &pool,
+            lease.job_id,
+            lease.provider_id,
+            lease.attempt_id,
+            lease.lease_token
+        )
+        .await
+        .unwrap()
+    );
+    sqlx::query("UPDATE content_generation_jobs SET lease_expires_at = now() - interval '1 second' WHERE id = $1").bind(expiry).execute(&pool).await.unwrap();
+    assert!(
+        lease_next_generation_job(&pool, "recovery-worker", std::time::Duration::from_secs(30))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let terminal: (String, String, String, i64) = sqlx::query_as(r#"SELECT job.status, attempt.status, artifact.artifact_kind,
+        (SELECT spent_microunits FROM content_budgets WHERE budget_key = 'global')
+        FROM content_generation_jobs job JOIN content_generation_attempts attempt ON attempt.job_id = job.id
+        JOIN content_artifacts artifact ON artifact.attempt_id = attempt.id WHERE job.id = $1"#)
+        .bind(expiry).fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        terminal,
+        ("failed".into(), "failed".into(), "error_receipt".into(), 80)
     );
 }

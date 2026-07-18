@@ -43,6 +43,7 @@ CREATE TABLE content_provider_configs (
     enabled boolean NOT NULL DEFAULT false,
     health_status text NOT NULL DEFAULT 'unverified' CHECK (health_status IN ('unverified', 'healthy', 'unhealthy')),
     last_health_at timestamptz,
+    consecutive_failures smallint NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
     supports_stream boolean NOT NULL DEFAULT false,
     supports_tools boolean NOT NULL DEFAULT false,
     fallback_provider_id uuid REFERENCES content_provider_configs(id),
@@ -84,7 +85,7 @@ CREATE TABLE content_generation_jobs (
         'queued', 'leased', 'blocked_disabled', 'blocked_missing_credential',
         'completed', 'failed', 'cancelled'
     )),
-    estimated_cost_microunits bigint NOT NULL CHECK (estimated_cost_microunits BETWEEN 1 AND 20000000000),
+    estimated_cost_microunits bigint NOT NULL CHECK (estimated_cost_microunits BETWEEN 1 AND 60000000000),
     attempt_cost_microunits bigint NOT NULL CHECK (attempt_cost_microunits BETWEEN 1 AND 20000000000),
     reserved_cost_microunits bigint NOT NULL DEFAULT 0 CHECK (reserved_cost_microunits >= 0),
     settled boolean NOT NULL DEFAULT false,
@@ -99,16 +100,24 @@ CREATE TABLE content_generation_jobs (
     updated_at timestamptz NOT NULL DEFAULT now(),
     archived_at timestamptz,
     cloned_from_job_id uuid REFERENCES content_generation_jobs(id),
+    create_idempotency_key uuid,
     clone_idempotency_key uuid,
+    retry_idempotency_key uuid,
     cancel_idempotency_key uuid,
     archive_idempotency_key uuid,
     CHECK ((status = 'leased') = (lease_owner IS NOT NULL AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)),
     CHECK (reserved_cost_microunits IN (0, estimated_cost_microunits)),
     CHECK (estimated_cost_microunits = attempt_cost_microunits * max_attempts)
 );
+CREATE UNIQUE INDEX content_jobs_create_idempotency_idx
+    ON content_generation_jobs (created_by, create_idempotency_key)
+    WHERE create_idempotency_key IS NOT NULL;
 CREATE UNIQUE INDEX content_jobs_clone_idempotency_idx
     ON content_generation_jobs (created_by, cloned_from_job_id, clone_idempotency_key)
     WHERE clone_idempotency_key IS NOT NULL;
+CREATE UNIQUE INDEX content_jobs_retry_idempotency_idx
+    ON content_generation_jobs (created_by, cloned_from_job_id, retry_idempotency_key)
+    WHERE retry_idempotency_key IS NOT NULL;
 CREATE INDEX content_jobs_ready_idx ON content_generation_jobs (available_at, created_at)
     WHERE status = 'queued';
 CREATE INDEX content_jobs_lease_idx ON content_generation_jobs (lease_expires_at)
@@ -123,6 +132,9 @@ CREATE TABLE content_generation_attempts (
     response_hash bytea CHECK (response_hash IS NULL OR octet_length(response_hash) = 32),
     status text NOT NULL CHECK (status IN ('running', 'retryable_failure', 'failed', 'completed', 'cancelled')),
     error_code text,
+    calls_started smallint NOT NULL DEFAULT 0 CHECK (calls_started BETWEEN 0 AND 20),
+    outputs_completed smallint NOT NULL DEFAULT 0 CHECK (outputs_completed BETWEEN 0 AND 20),
+    usage jsonb NOT NULL DEFAULT '{}'::jsonb,
     started_at timestamptz NOT NULL DEFAULT now(),
     completed_at timestamptz,
     UNIQUE (job_id, attempt_number)

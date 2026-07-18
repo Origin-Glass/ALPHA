@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import ContentStudioPage from "./ContentStudioPage";
@@ -50,7 +50,7 @@ test("폴링으로 대기 작업의 완료를 반영하고 불변 산출물을 �
     if (path === "/api/v1/content/jobs") {
       jobLoads += 1;
       const completed = jobLoads > 1;
-      return jsonResponse({ jobs: [{ id: "job-1", provider: "frontier", content_type: "code_reading", status: completed ? "completed" : "queued", attempts: completed ? 1 : 0 }] });
+      return jsonResponse({ jobs: [{ id: "job-1", provider: "frontier", content_type: "code_reading", status: completed ? "completed" : "queued", attempts: completed ? 1 : 0, has_artifact: completed }] });
     }
     if (path === "/api/v1/content/jobs/job-1") return jsonResponse({
       job: { id: "job-1", provider: "frontier", content_type: "code_reading", status: "completed", attempts: 1, request_spec: {} },
@@ -86,7 +86,7 @@ test("취소·복제·보관은 CSRF와 멱등성 키를 보내고 성공 결과
     if (path === "/api/v1/content/providers") return jsonResponse(providerPayload);
     if (path === "/api/v1/content/jobs") return jsonResponse({ jobs: [
       { id: "queued-1", provider: "frontier", content_type: "code_reading", status: "queued", attempts: 0 },
-      { id: "completed-1", provider: "frontier", content_type: "debugging", status: "completed", attempts: 1 },
+      { id: "completed-1", provider: "frontier", content_type: "debugging", status: "completed", attempts: 1, has_artifact: true },
     ] });
     if (options?.method === "POST") {
       postPaths.push(path);
@@ -124,4 +124,67 @@ test("취소·복제·보관은 CSRF와 멱등성 키를 보내고 성공 결과
   ]);
   expect(actionCalls.map(([, options]) => JSON.parse(String(options?.body)).idempotency_key)).toEqual(["cancel-key", "clone-key", "archive-key"]);
   expect(fetchMock.mock.calls.filter(([path]) => path === "/api/v1/content/jobs")).toHaveLength(4);
+  expect(screen.getAllByRole("button", { name: "비교 선택" })).toHaveLength(1);
+});
+
+test("응답 유실 뒤 같은 동작을 다시 누르면 멱등키를 재사용하고 실행 중에는 잘못된 복제·비교를 숨긴다", async () => {
+  let actionAttempts = 0;
+  const keys: string[] = [];
+  const fetchMock = vi.fn().mockImplementation((path: string, options?: RequestInit) => {
+    if (path === "/api/v1/content/providers") return jsonResponse(providerPayload);
+    if (path === "/api/v1/content/jobs") return jsonResponse({ jobs: [
+      { id: "leased-1", provider: "frontier", content_type: "debugging", status: "leased", attempts: 1 },
+      { id: "failed-1", provider: "frontier", content_type: "debugging", status: "failed", attempts: 1 },
+      { id: "corrupt-1", provider: "frontier", content_type: "debugging", status: "completed", attempts: 1, has_artifact: false },
+    ] });
+    if (path === "/api/v1/content/jobs/failed-1/retry" && options?.method === "POST") {
+      keys.push(JSON.parse(String(options.body)).idempotency_key);
+      actionAttempts += 1;
+      if (actionAttempts === 1) return Promise.reject(new Error("응답 유실"));
+      return jsonResponse({ id: "retry-1", status: "queued" });
+    }
+    if (path === "/api/v1/content/jobs/retry-1") return jsonResponse({ job: { id: "retry-1", status: "queued", request_spec: {} }, attempts: [], artifacts: [], audit: [] });
+    throw new Error(`unexpected fetch: ${path}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("crypto", { randomUUID: vi.fn().mockReturnValue("stable-retry-key") });
+  render(<ContentStudioPage />);
+  await screen.findByText("생성 중");
+  expect(screen.queryByRole("button", { name: "비교 선택" })).not.toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "복제" })).toHaveLength(2);
+  const leasedCard = screen.getByText("생성 중").closest("article");
+  expect(leasedCard && within(leasedCard).queryByRole("button", { name: "복제" })).toBeNull();
+  const retry = screen.getByRole("button", { name: "수동 재시도" });
+  fireEvent.click(retry);
+  await screen.findByText("응답 유실");
+  fireEvent.click(retry);
+  await waitFor(() => expect(keys).toEqual(["stable-retry-key", "stable-retry-key"]));
+});
+
+test("생성 응답 유실에는 같은 키를 재사용하고 성공한 다음 생성에는 새 키를 쓴다", async () => {
+  let creates = 0;
+  const keys: string[] = [];
+  const fetchMock = vi.fn().mockImplementation((path: string, options?: RequestInit) => {
+    if (path === "/api/v1/content/providers") return jsonResponse(providerPayload);
+    if (path === "/api/v1/content/jobs" && options?.method !== "POST") return jsonResponse({ jobs: [] });
+    if (path === "/api/v1/content/jobs" && options?.method === "POST") {
+      keys.push(JSON.parse(String(options.body)).idempotency_key);
+      creates += 1;
+      if (creates === 1) return Promise.reject(new Error("생성 응답 유실"));
+      return jsonResponse({ id: `job-${creates}`, status: "queued" }, 201);
+    }
+    throw new Error(`unexpected fetch: ${path}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("crypto", { randomUUID: vi.fn().mockReturnValueOnce("create-stable").mockReturnValueOnce("create-next") });
+  render(<ContentStudioPage />);
+  await screen.findByRole("option", { name: /frontier/ });
+  fireEvent.change(screen.getByRole("textbox", { name: "생성 주제" }), { target: { value: "멱등 생성 요청" } });
+  const submit = screen.getByRole("button", { name: "생성 작업 요청" });
+  fireEvent.click(submit);
+  await screen.findByText("생성 응답 유실");
+  fireEvent.click(submit);
+  await screen.findByText("생성 대기 중");
+  fireEvent.click(submit);
+  await waitFor(() => expect(keys).toEqual(["create-stable", "create-stable", "create-next"]));
 });
