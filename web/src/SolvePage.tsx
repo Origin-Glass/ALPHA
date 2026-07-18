@@ -109,7 +109,7 @@ function SolvePage({ slug }: { slug: string }) {
       }
     });
     return () => eventSource.close();
-  }, [submission?.id, submission?.status]);
+  }, [submission?.id]);
 
   const enqueue = async (mode: 'formal' | 'sample' | 'custom') => {
     setMessage('');

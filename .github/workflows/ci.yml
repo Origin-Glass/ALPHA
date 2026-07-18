@@ -84,3 +84,109 @@ jobs:
         run: docker build --tag "$JUDGE_TEST_IMAGE" judge
       - name: 언어·오류·격리 판정
         run: cargo test --test judge_docker -- --ignored --test-threads=1
+
+  compose-e2e:
+    name: 클린 설치·브라우저·복구
+    runs-on: ubuntu-latest
+    env:
+      ALPHA_PORT: 18080
+      TEST_IDENTITY_ENABLED: "true"
+      PLAYWRIGHT_BASE_URL: http://127.0.0.1:18080
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Compose 구성 검증
+        run: docker compose config --quiet
+      - name: 전체 스택 클린 기동
+        run: docker compose up --build --detach
+      - name: API·워커 준비 확인
+        run: |
+          curl --fail --retry 30 --retry-delay 2 http://127.0.0.1:18080/api/v1/problems
+          docker compose exec -T api curl --fail --silent http://127.0.0.1:8080/metrics | grep 'alpha_judge_workers{health="healthy"} 1'
+      - name: Chromium 설치
+        working-directory: web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: 접근성·로그인·실제 판정 E2E
+        working-directory: web
+        run: npm run test:e2e
+      - name: 백업·새 DB 복구·데이터 지문 비교
+        run: ./ops/recovery-smoke.sh
+      - name: 실패 로그
+        if: failure()
+        run: docker compose logs --no-color --tail=300
+      - name: 스택 정리
+        if: always()
+        run: docker compose down --volumes --remove-orphans
+
+  security:
+    name: 공급망·비밀 검증
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: RustSec 감사
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: 프런트엔드 의존성 감사
+        working-directory: web
+        run: |
+          npm ci
+          npm audit --audit-level=high
+      - name: 변경 의존성 검토
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v4
+      - name: 비밀 스캔
+        uses: gitleaks/gitleaks-action@v2
+
+  production-policy:
+    name: 운영 구성·문서 정책
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 필수 운영값 누락 시 실패
+        run: |
+          if env -i PATH="$PATH" docker compose -f compose.production.yaml config --quiet; then
+            echo "운영 구성이 필수값 없이 통과했습니다." >&2
+            exit 1
+          fi
+      - name: 운영 Compose 스키마 검증
+        env:
+          POSTGRES_PASSWORD: production-check
+          DATABASE_URL: postgres://alpha:production-check@db:5432/alpha
+          SESSION_SECRET: 0123456789abcdef0123456789abcdef
+          PUBLIC_BASE_URL: https://alpha.example.com
+          ALPHA_API_IMAGE: registry.example/alpha-api@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          ALPHA_WEB_IMAGE: registry.example/alpha-web@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          ALPHA_JUDGE_WORKER_IMAGE: registry.example/alpha-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          JUDGE_IMAGE: registry.example/alpha-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          ALPHA_JUDGE_WORKSPACE: /srv/alpha/judge-work
+        run: docker compose -f compose.production.yaml config --quiet
+      - name: main 대상 개발 문서 차단
+        if: github.event_name == 'pull_request' && github.base_ref == 'main'
+        run: |
+          git fetch origin main
+          forbidden=$(git diff --name-only origin/main...HEAD | grep -E '^(research|reports|plans|screenshots|notes|status-matrices|threat-model-workbooks)/' || true)
+          if [ -n "$forbidden" ]; then
+            echo "$forbidden"
+            exit 1
+          fi
