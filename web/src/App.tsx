@@ -24,6 +24,7 @@ import GovernancePage from './GovernancePage';
 import PoliciesPage from './PoliciesPage';
 import ContentStudioPage from './ContentStudioPage';
 import ProviderControlsPage from './ProviderControlsPage';
+import ReviewWorkspacePage from './ReviewWorkspacePage';
 
 const learningAxes = [
   { number: '01', title: '알고리즘 추론', description: '정답보다 사고 과정을 단단하게 만듭니다.' },
@@ -180,6 +181,7 @@ function App() {
   if (window.location.pathname === '/policies') return <PoliciesPage />;
   if (window.location.pathname === '/content-studio') return <ContentStudioPage />;
   if (window.location.pathname === '/provider-controls') return <ProviderControlsPage />;
+  if (window.location.pathname === '/content-reviews') return <ReviewWorkspacePage />;
   if (window.location.pathname === '/problems') return <ProblemsPage />;
   if (window.location.pathname.startsWith('/problems/')) return <ProblemDetailPage slug={decodeURIComponent(window.location.pathname.slice('/problems/'.length))} />;
   if (window.location.pathname.startsWith('/solve/')) return <SolvePage slug={decodeURIComponent(window.location.pathname.slice('/solve/'.length))} />;
