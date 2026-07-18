@@ -14,7 +14,16 @@ use uuid::Uuid;
 
 use crate::{auth::AuthError, http::AppState};
 
-type ProviderRow = (Uuid, String, String, String, String, Option<String>, bool);
+type ProviderRow = (
+    Uuid,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+    bool,
+);
 type JobRow = (
     Uuid,
     String,
@@ -280,6 +289,7 @@ pub struct ProviderRequest {
     protocol: String,
     base_url: String,
     model: String,
+    cost_per_generation_microunits: i64,
     credential_env_var: Option<String>,
     enabled: bool,
 }
@@ -300,6 +310,7 @@ pub async fn create_provider(
         })
         || request.model.trim().is_empty()
         || request.model.len() > 120
+        || !(1..=1_000_000_000).contains(&request.cost_per_generation_microunits)
         || !matches!(request.protocol.as_str(), "openai_compatible" | "anthropic")
         || (request.kind == "external"
             && !request
@@ -320,14 +331,16 @@ pub async fn create_provider(
     let mut transaction = state.pool().begin().await?;
     let id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO content_provider_configs
-           (name, kind, protocol, base_url, model, credential_env_var, enabled, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id"#,
+           (name, kind, protocol, base_url, model, cost_per_generation_microunits,
+            credential_env_var, enabled, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id"#,
     )
     .bind(&request.name)
     .bind(&request.kind)
     .bind(&request.protocol)
     .bind(&request.base_url)
     .bind(request.model.trim())
+    .bind(request.cost_per_generation_microunits)
     .bind(&request.credential_env_var)
     .bind(request.enabled)
     .bind(user_id)
@@ -345,18 +358,20 @@ pub async fn list_providers(
 ) -> Result<Json<Value>, ContentFactoryError> {
     authorize_read(&state, &headers, "content.generate").await?;
     let providers: Vec<ProviderRow> = sqlx::query_as(
-        r#"SELECT id, name, kind, protocol, model, credential_env_var, enabled
+        r#"SELECT id, name, kind, protocol, model, cost_per_generation_microunits,
+                      credential_env_var, enabled
                FROM content_provider_configs ORDER BY name"#,
     )
     .fetch_all(state.pool())
     .await?;
     Ok(Json(serde_json::json!({
-        "providers": providers.into_iter().map(|(id, name, kind, protocol, model, credential_env_var, enabled)| serde_json::json!({
+        "providers": providers.into_iter().map(|(id, name, kind, protocol, model, cost, credential_env_var, enabled)| serde_json::json!({
             "id": id,
             "name": name,
             "kind": kind,
             "protocol": protocol,
             "model": model,
+            "cost_per_generation_microunits": cost,
             "credential_available": credential_env_var.as_deref().is_none_or(|name| state.settings().has_content_ai_credential(name)),
             "enabled": enabled,
         })).collect::<Vec<_>>()
@@ -371,7 +386,6 @@ pub struct CreateJobRequest {
     topic: String,
     target_language: String,
     generation_count: i16,
-    estimated_cost_microunits: i64,
 }
 
 pub async fn create_job(
@@ -390,20 +404,24 @@ pub async fn create_job(
     ) || !(2..=200).contains(&request.topic.trim().chars().count())
         || request.target_language != "ko"
         || !(1..=20).contains(&request.generation_count)
-        || !(0..=1_000_000_000).contains(&request.estimated_cost_microunits)
     {
         return Err(ContentFactoryError::InvalidInput(
             "생성 작업 설정을 확인해 주세요",
         ));
     }
-    let provider: Option<(bool, String, Option<String>)> = sqlx::query_as(
-        "SELECT enabled, kind, credential_env_var FROM content_provider_configs WHERE id = $1",
+    let provider: Option<(bool, String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT enabled, kind, credential_env_var, cost_per_generation_microunits FROM content_provider_configs WHERE id = $1",
     )
     .bind(request.provider_id)
     .fetch_optional(state.pool())
     .await?;
-    let (enabled, provider_kind, credential_env_var) =
+    let (enabled, provider_kind, credential_env_var, unit_cost) =
         provider.ok_or(ContentFactoryError::NotFound)?;
+    let estimated_cost_microunits = unit_cost
+        .checked_mul(i64::from(request.generation_count))
+        .ok_or(ContentFactoryError::InvalidInput(
+            "제공자 가격을 확인해 주세요",
+        ))?;
     let provider_capability = if provider_kind == "local" {
         "provider.use.local"
     } else {
@@ -433,7 +451,7 @@ pub async fn create_job(
                WHERE budget_key = 'global'
                  AND reserved_microunits + spent_microunits + $1 <= limit_microunits"#,
         )
-        .bind(request.estimated_cost_microunits)
+        .bind(estimated_cost_microunits)
         .execute(&mut *transaction)
         .await?;
         if updated.rows_affected() != 1 {
@@ -441,7 +459,7 @@ pub async fn create_job(
                 "콘텐츠 생성 예산이 부족합니다",
             ));
         }
-        request.estimated_cost_microunits
+        estimated_cost_microunits
     } else {
         0
     };
@@ -457,7 +475,7 @@ pub async fn create_job(
     .bind(&spec)
     .bind(request_hash)
     .bind(status)
-    .bind(request.estimated_cost_microunits)
+    .bind(estimated_cost_microunits)
     .bind(reserved)
     .fetch_one(&mut *transaction)
     .await?;

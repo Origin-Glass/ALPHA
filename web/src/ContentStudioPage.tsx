@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import PortalHeader from "./PortalHeader";
 
-type Provider = { id: string; name: string; kind: string; protocol: string; model: string; enabled: boolean; credential_available: boolean };
+type Provider = { id: string; name: string; kind: string; protocol: string; model: string; cost_per_generation_microunits: number; enabled: boolean; credential_available: boolean };
 type Job = { id: string; provider: string; content_type: string; status: string; attempts: number; last_error_code?: string };
 
 const csrf = () => document.cookie.split(";").map((item) => item.trim())
@@ -19,7 +19,6 @@ function ContentStudioPage() {
   const [contentType, setContentType] = useState("code_reading");
   const [topic, setTopic] = useState("");
   const [count, setCount] = useState(1);
-  const [estimate, setEstimate] = useState(1000);
   const [message, setMessage] = useState("");
 
   const load = async () => {
@@ -47,7 +46,7 @@ function ContentStudioPage() {
       const response = await fetch("/api/v1/content/jobs", {
         method: "POST", credentials: "include",
         headers: { "content-type": "application/json", "x-csrf-token": csrf() },
-        body: JSON.stringify({ provider_id: providerId, content_type: contentType, topic, target_language: "ko", generation_count: count, estimated_cost_microunits: estimate }),
+        body: JSON.stringify({ provider_id: providerId, content_type: contentType, topic, target_language: "ko", generation_count: count }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error?.message ?? "생성 작업을 요청하지 못했습니다.");
@@ -70,7 +69,7 @@ function ContentStudioPage() {
           <option value="algorithm_problem">알고리즘 문제</option><option value="code_reading">코드 읽기</option><option value="debugging">디버깅</option><option value="documentation_lesson">문서 학습</option><option value="implementation_task">구현 과제</option>
         </select></label>
         <label><span>생성 주제</span><textarea minLength={2} maxLength={200} value={topic} onChange={(event) => setTopic(event.target.value)} required /></label>
-        <div className="factory-fields"><label><span>생성 수</span><input type="number" min="1" max="20" value={count} onChange={(event) => setCount(Number(event.target.value))} /></label><label><span>예약 예산(마이크로 단위)</span><input type="number" min="0" max="1000000000" value={estimate} onChange={(event) => setEstimate(Number(event.target.value))} /></label></div>
+        <div className="factory-fields"><label><span>생성 수</span><input type="number" min="1" max="20" value={count} onChange={(event) => setCount(Number(event.target.value))} /></label><p>서버 계산 예약액: {((providers.find((provider) => provider.id === providerId)?.cost_per_generation_microunits ?? 0) * count).toLocaleString()} 마이크로 단위</p></div>
         <button type="submit" disabled={!providerId || topic.trim().length < 2}>생성 작업 요청</button>
       </form></section>
       <section><h2>최근 작업</h2><div className="factory-jobs">

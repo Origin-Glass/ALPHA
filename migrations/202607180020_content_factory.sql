@@ -17,6 +17,8 @@ ALTER TABLE role_capabilities ADD CONSTRAINT role_capabilities_capability_check 
 );
 INSERT INTO role_capabilities (role, capability) VALUES
     ('CONTENT_CREATOR', 'content.generate'),
+    ('CONTENT_CREATOR', 'provider.use.frontier'),
+    ('CONTENT_CREATOR', 'provider.use.local'),
     ('AI_CONTENT_OPERATOR', 'content.generate'),
     ('AI_CONTENT_OPERATOR', 'provider.use.frontier'),
     ('AI_CONTENT_OPERATOR', 'provider.use.local'),
@@ -34,6 +36,7 @@ CREATE TABLE content_provider_configs (
     protocol text NOT NULL CHECK (protocol IN ('openai_compatible', 'anthropic')),
     base_url text NOT NULL CHECK (char_length(base_url) BETWEEN 8 AND 500),
     model text NOT NULL CHECK (char_length(model) BETWEEN 1 AND 120),
+    cost_per_generation_microunits bigint NOT NULL CHECK (cost_per_generation_microunits BETWEEN 1 AND 1000000000),
     credential_env_var text CHECK (credential_env_var IN (
         'CONTENT_AI_CUSTOM_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'
     )),
@@ -74,7 +77,7 @@ CREATE TABLE content_generation_jobs (
         'queued', 'leased', 'blocked_disabled', 'blocked_missing_credential',
         'completed', 'failed', 'cancelled'
     )),
-    estimated_cost_microunits bigint NOT NULL CHECK (estimated_cost_microunits BETWEEN 0 AND 1000000000),
+    estimated_cost_microunits bigint NOT NULL CHECK (estimated_cost_microunits BETWEEN 1 AND 20000000000),
     reserved_cost_microunits bigint NOT NULL DEFAULT 0 CHECK (reserved_cost_microunits >= 0),
     settled boolean NOT NULL DEFAULT false,
     attempt_count smallint NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),

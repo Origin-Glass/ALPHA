@@ -11,7 +11,7 @@ afterEach(() => {
 test("자격 증명이 없는 생성 요청을 성공으로 꾸미지 않고 차단 상태로 표시한다", async () => {
   const fetchMock = vi.fn().mockImplementation((path: string, options?: RequestInit) => {
     if (path === "/api/v1/content/providers") {
-      return Promise.resolve({ ok: true, json: async () => ({ providers: [{ id: "provider-1", name: "frontier", kind: "external", protocol: "openai_compatible", model: "test-model", enabled: true, credential_available: false }] }) });
+      return Promise.resolve({ ok: true, json: async () => ({ providers: [{ id: "provider-1", name: "frontier", kind: "external", protocol: "openai_compatible", model: "test-model", cost_per_generation_microunits: 1000, enabled: true, credential_available: false }] }) });
     }
     if (path === "/api/v1/content/jobs" && !options?.method) {
       return Promise.resolve({ ok: true, json: async () => ({ jobs: [] }) });

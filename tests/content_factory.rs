@@ -128,9 +128,88 @@ fn provider(name: &str, kind: &str, base_url: &str) -> Value {
         "protocol": "openai_compatible",
         "base_url": base_url,
         "model": "test-model",
+        "cost_per_generation_microunits": 80,
         "credential_env_var": if kind == "local" { Value::Null } else { json!("OPENAI_API_KEY") },
         "enabled": true
     })
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn reservation_uses_server_provider_price_not_client_estimate(pool: PgPool) {
+    let (app, session) = app(pool.clone(), true).await;
+    let mut priced_provider = provider("server-priced", "external", "https://api.example.com");
+    priced_provider["cost_per_generation_microunits"] = json!(30);
+    let created = post(&app, &session, "/api/v1/content/providers", priced_provider).await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let provider_id = json_body(created).await["id"].as_str().unwrap().to_owned();
+    let created_job = post(
+        &app,
+        &session,
+        "/api/v1/content/jobs",
+        json!({
+            "provider_id": provider_id,
+            "content_type": "code_reading",
+            "topic": "서버 가격 기반 예약",
+            "target_language": "ko",
+            "generation_count": 2
+        }),
+    )
+    .await;
+    assert_eq!(created_job.status(), StatusCode::CREATED);
+    let reserved: i64 = sqlx::query_scalar(
+        "SELECT reserved_microunits FROM content_budgets WHERE budget_key = 'global'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(reserved, 60);
+
+    let mut zero_price = provider("zero-price", "external", "https://api.example.com");
+    zero_price["cost_per_generation_microunits"] = json!(0);
+    assert_eq!(
+        post(&app, &session, "/api/v1/content/providers", zero_price)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn content_creator_can_use_enabled_frontier_provider(pool: PgPool) {
+    let (app, session) = app(pool.clone(), true).await;
+    let created = post(
+        &app,
+        &session,
+        "/api/v1/content/providers",
+        provider("creator-frontier", "external", "https://api.example.com"),
+    )
+    .await;
+    let provider_id = json_body(created).await["id"].as_str().unwrap().to_owned();
+    sqlx::query("DELETE FROM user_roles WHERE user_id = $1 AND role = 'ADMIN'")
+        .bind(session.user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO user_roles (user_id, role) VALUES ($1, 'CONTENT_CREATOR')")
+        .bind(session.user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let response = post(
+        &app,
+        &session,
+        "/api/v1/content/jobs",
+        json!({
+            "provider_id": provider_id,
+            "content_type": "debugging",
+            "topic": "작성자 생성 권한",
+            "target_language": "ko",
+            "generation_count": 1
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -256,8 +335,7 @@ async fn missing_credential_blocks_job_without_artifact_or_secret_persistence(po
             "content_type": "code_reading",
             "topic": "이진 탐색 경계 오류",
             "target_language": "ko",
-            "generation_count": 1,
-            "estimated_cost_microunits": 50
+            "generation_count": 1
         }),
     )
     .await;
@@ -309,8 +387,7 @@ async fn concurrent_jobs_cannot_reserve_beyond_one_budget(pool: PgPool) {
         "content_type": "debugging",
         "topic": "상태 전이 오류",
         "target_language": "ko",
-        "generation_count": 1,
-        "estimated_cost_microunits": 80
+        "generation_count": 1
     });
 
     let (first, second) = tokio::join!(
@@ -353,8 +430,7 @@ async fn queued_job(app: &axum::Router, session: &Session, name: &str) -> Uuid {
             "content_type": "code_reading",
             "topic": "재시도 산출물 보존",
             "target_language": "ko",
-            "generation_count": 1,
-            "estimated_cost_microunits": 80
+            "generation_count": 1
         }),
     )
     .await;

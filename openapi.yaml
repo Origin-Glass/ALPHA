@@ -1022,13 +1022,14 @@ components:
     ContentProviderRequest:
       type: object
       additionalProperties: false
-      required: [name, kind, protocol, base_url, model, credential_env_var, enabled]
+      required: [name, kind, protocol, base_url, model, cost_per_generation_microunits, credential_env_var, enabled]
       properties:
         name: { type: string, pattern: "^[a-z0-9][a-z0-9_-]{2,39}$" }
         kind: { type: string, enum: [external, local] }
         protocol: { type: string, enum: [openai_compatible, anthropic] }
         base_url: { type: string, format: uri }
         model: { type: string, minLength: 1, maxLength: 120 }
+        cost_per_generation_microunits: { type: integer, minimum: 1, maximum: 1000000000 }
         credential_env_var:
           oneOf:
             - { type: string, enum: [CONTENT_AI_CUSTOM_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY] }
@@ -1037,14 +1038,13 @@ components:
     ContentGenerationJobRequest:
       type: object
       additionalProperties: false
-      required: [provider_id, content_type, topic, target_language, generation_count, estimated_cost_microunits]
+      required: [provider_id, content_type, topic, target_language, generation_count]
       properties:
         provider_id: { type: string, format: uuid }
         content_type: { type: string, enum: [algorithm_problem, code_reading, debugging, documentation_lesson, implementation_task] }
         topic: { type: string, minLength: 2, maxLength: 200 }
         target_language: { type: string, const: ko }
         generation_count: { type: integer, minimum: 1, maximum: 20 }
-        estimated_cost_microunits: { type: integer, minimum: 0, maximum: 1000000000 }
     OnboardingRequest:
       type: object
       additionalProperties: false
