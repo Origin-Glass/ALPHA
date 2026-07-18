@@ -95,7 +95,7 @@ function LandingPage() {
       <main>
         <section className="hero" aria-labelledby="hero-title">
           <div className="hero-copy">
-            <p className="eyebrow">KOREAN-FIRST SOFTWARE LEARNING</p>
+            <p className="eyebrow">한국어 우선 소프트웨어 학습</p>
             <h1 id="hero-title" aria-label="생각하는 힘을, 코드로 증명하세요">생각하는 힘을,<br /><span>코드로 증명하세요</span></h1>
             <p className="hero-description">
               빠른 채점과 대회의 긴장감은 유지하고, 코드 독해·디버깅·문서 탐색까지 하나의 성장 경로로 연결합니다.
@@ -122,7 +122,7 @@ function LandingPage() {
 
         <section className="axis-section" aria-labelledby="axis-title">
           <div className="section-heading">
-            <p className="eyebrow">ONE PLATFORM, FOUR SKILLS</p>
+            <p className="eyebrow">하나의 플랫폼, 네 가지 역량</p>
             <h2 id="axis-title">풀기에서 끝나지 않는 학습</h2>
           </div>
           <div className="axis-grid">
@@ -138,13 +138,13 @@ function LandingPage() {
 
         <section className="service-state" aria-labelledby="service-state-title">
           <div>
-            <p className="eyebrow">EXTERNAL METADATA STATUS</p>
+            <p className="eyebrow">외부 메타데이터 상태</p>
             <h2 id="service-state-title">출처와 상태를 숨기지 않습니다</h2>
           </div>
           <p>
             BOJ 서비스와 solved.ac 연동은 2026년 4월 28일 종료됐습니다. ALPHA는 확인된 마지막 메타데이터를 출처와 갱신 시각과 함께 보존하며, 새로운 값을 임의로 만들지 않습니다.
           </p>
-          <span className="blocked-badge">LIVE SYNC · BLOCKED</span>
+          <span className="blocked-badge">실시간 연동 · 중단</span>
         </section>
       </main>
 

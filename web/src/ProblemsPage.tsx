@@ -73,7 +73,7 @@ function ProblemsPage() {
     <div className="learning-page">
       <PortalHeader />
       <main className="catalog-panel" aria-labelledby="catalog-title">
-        <p className="eyebrow">PROBLEM DISCOVERY</p>
+        <p className="eyebrow">문제 탐색</p>
         <h1 id="catalog-title">근거를 찾는<br /><span>문제 탐색</span></h1>
         <p className="catalog-description">검색·태그·학습 축·난이도를 함께 좁혀 지금 필요한 문제를 찾습니다.</p>
 

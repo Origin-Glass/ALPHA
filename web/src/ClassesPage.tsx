@@ -121,7 +121,7 @@ function ClassesPage({ joinMode = false }: { joinMode?: boolean }) {
       <div className="learning-page">
         <PortalHeader />
         <main className="class-join">
-          <p className="eyebrow">CLASS INVITATION</p>
+          <p className="eyebrow">학급 초대</p>
           <h1>학급 초대 수락</h1>
           <p>강사가 공유한 일회용 초대 코드를 확인합니다.</p>
           <form onSubmit={accept}>
@@ -148,7 +148,7 @@ function ClassesPage({ joinMode = false }: { joinMode?: boolean }) {
     <div className="learning-page">
       <PortalHeader />
       <main className="classes-page">
-        <p className="eyebrow">ALPHA CLASSROOM</p>
+        <p className="eyebrow">ALPHA 학급</p>
         <div className="classes-heading">
           <div>
             <h1>
@@ -185,7 +185,7 @@ function ClassesPage({ joinMode = false }: { joinMode?: boolean }) {
         {canCreate && (
           <section className="class-create">
             <div>
-              <p className="eyebrow">INSTRUCTOR SETUP</p>
+              <p className="eyebrow">강사 설정</p>
               <h2>새 조직과 학급</h2>
             </div>
             <form onSubmit={create}>

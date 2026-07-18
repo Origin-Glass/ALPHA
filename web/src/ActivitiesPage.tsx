@@ -44,7 +44,7 @@ function ActivitiesPage() {
     <div className="learning-page">
       <PortalHeader />
       <main className="activity-catalog">
-        <p className="eyebrow">CODE LITERACY LAB</p>
+        <p className="eyebrow">코드 문해력 학습실</p>
         <h1>코드를 쓰기 전에<br /><span>읽는 힘부터</span></h1>
         <p className="catalog-description">출력 예측, 상태 추적, 결함 분류, 테스트 평가를 각각 다른 형식으로 연습합니다.</p>
         <div className="activity-grid">

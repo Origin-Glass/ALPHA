@@ -53,7 +53,7 @@ function TermsPage() {
     <div className="auth-page">
       <a className="brand auth-brand" href="/" aria-label="ALPHA 홈">ALPHA<span aria-hidden="true">.</span></a>
       <main className="auth-card terms-card" aria-labelledby="terms-title">
-        <p className="eyebrow">TERMS &amp; PRIVACY</p>
+        <p className="eyebrow">약관 및 개인정보</p>
         <h1 id="terms-title">시작하기 전,<br /><span>약속을 확인해요</span></h1>
         {handle && <p className="auth-description"><strong>{handle}</strong> 계정의 학습 기록이 어떻게 처리되는지 확인해 주세요.</p>}
         <section className="terms-summary" aria-label="핵심 약관 요약">

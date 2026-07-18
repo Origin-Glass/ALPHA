@@ -27,7 +27,7 @@ function DocsTrackPage() {
       <PortalHeader />
       <main className="docs-track">
         {data ? <>
-          <p className="eyebrow">DOCUMENTATION-DRIVEN TRACK</p>
+          <p className="eyebrow">문서 기반 학습 트랙</p>
           <h1>{data.track.title}</h1>
           <p className="path-description">{data.track.description}</p>
           <div className="track-roadmap">

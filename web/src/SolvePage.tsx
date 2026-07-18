@@ -141,7 +141,7 @@ function SolvePage({ slug }: { slug: string }) {
       {problem ? (
         <main className="solve-workspace">
           <section className="solve-problem" aria-labelledby="solve-title">
-            <p className="eyebrow">ALGORITHM WORKSPACE</p>
+            <p className="eyebrow">알고리즘 풀이 공간</p>
             <h1 id="solve-title">{problem.title}</h1>
             <div className="solve-limits"><span>{problem.time_limit_ms}ms</span><span>{problem.memory_limit_mb}MB</span></div>
             <article>{problem.statement.split('\n').map((line, index) => <p key={`${index}-${line}`}>{line || '\u00a0'}</p>)}</article>

@@ -66,7 +66,7 @@ function LoginPage() {
     <div className="auth-page">
       <a className="brand auth-brand" href="/" aria-label="ALPHA 홈">ALPHA<span aria-hidden="true">.</span></a>
       <main className="auth-card" aria-labelledby="login-title">
-        <p className="eyebrow">SECURE SIGN IN</p>
+        <p className="eyebrow">안전한 로그인</p>
         <h1 id="login-title">배움을 이어갈<br /><span>계정으로 로그인</span></h1>
         <p className="auth-description">소스 코드와 학습 기록을 보호하기 위해 OAuth와 보안 세션을 사용합니다.</p>
 

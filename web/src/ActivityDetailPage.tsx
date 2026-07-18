@@ -121,7 +121,7 @@ function ActivityDetailPage({ slug }: { slug: string }) {
         {activity ? <>
           <section className="activity-prompt">
             <a className="back-link" href="/activities">← 활동 목록</a>
-            <p className="eyebrow">{activity.lesson_title ?? 'CODE LITERACY'}</p>
+            <p className="eyebrow">{activity.lesson_title ?? '코드 문해력'}</p>
             <h1>{activity.title}</h1>
             <p className="activity-instructions">{activity.instructions}</p>
             {activity.starter_code && <pre>{activity.starter_code}</pre>}
@@ -134,7 +134,7 @@ function ActivityDetailPage({ slug }: { slug: string }) {
             <div className="learning-criteria"><div><strong>통과 기준</strong><span>{activity.mastery_criteria}</span></div><div><strong>막혔을 때</strong><span>{activity.remediation}</span></div></div>
           </section>
           <section className="activity-answer" aria-labelledby="answer-title">
-            <div className="activity-answer__heading"><div><p className="eyebrow">STRUCTURED RESPONSE</p><h2 id="answer-title">내 답안</h2></div><span>{activity.estimated_minutes}분</span></div>
+            <div className="activity-answer__heading"><div><p className="eyebrow">구조화 답안</p><h2 id="answer-title">내 답안</h2></div><span>{activity.estimated_minutes}분</span></div>
             <form onSubmit={submit}>
               {schema?.type === 'choice' && <fieldset className="activity-choices"><legend className="sr-only">답 선택</legend>{schema.options.map((option) => <label key={option.value}><input type="radio" name="answer" value={option.value} checked={answer === option.value} onChange={(event) => setAnswer(event.target.value)} /><span>{option.label}</span></label>)}</fieldset>}
               {(schema?.type === 'text' || schema?.type === 'tokens') && <label className="activity-input"><span>{schema.label}</span><input value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder={schema.type === 'tokens' ? '예: -, >=, -=' : '답을 입력하세요'} /></label>}

@@ -66,8 +66,8 @@ function ProgressionPage() {
       <main className="progression-dashboard">
         {data ? <>
           <section className="progression-hero">
-            <div><p className="eyebrow">MY ALPHA PROGRESSION</p><h1>{data.display_name}의<br /><span>성장 기록</span></h1><a href={`/u/${data.handle}`}>공개 프로필 보기</a></div>
-            <div className="level-orb" aria-label={`레벨 ${data.progression.level}, 다음 레벨까지 ${500 - xpInLevel} XP`}><span>LEVEL</span><strong>{data.progression.level}</strong><progress max="500" value={xpInLevel} /><small>{data.progression.xp.toLocaleString()} XP</small></div>
+            <div><p className="eyebrow">나의 ALPHA 성장</p><h1>{data.display_name}의<br /><span>성장 기록</span></h1><a href={`/u/${data.handle}`}>공개 프로필 보기</a></div>
+            <div className="level-orb" aria-label={`레벨 ${data.progression.level}, 다음 레벨까지 ${500 - xpInLevel} XP`}><span>레벨</span><strong>{data.progression.level}</strong><progress max="500" value={xpInLevel} /><small>{data.progression.xp.toLocaleString()} XP</small></div>
           </section>
           <section className="progression-stats" aria-label="핵심 성장 지표">
             <article><span>현재 스트릭</span><strong>{data.progression.current_streak}일</strong><small>최고 {data.progression.best_streak}일 · 보호권 {data.progression.streak_protections}개</small></article>

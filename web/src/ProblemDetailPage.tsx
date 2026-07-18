@@ -44,7 +44,7 @@ function ProblemDetailPage({ slug }: { slug: string }) {
           <>
             <a className="back-link" href="/problems">← 문제 목록</a>
             <div className="problem-title-row">
-              <div><p className="eyebrow">ALGORITHM PROBLEM</p><h1>{problem.title}</h1></div>
+              <div><p className="eyebrow">알고리즘 문제</p><h1>{problem.title}</h1></div>
               <div className="limit-card"><span>시간 {problem.time_limit_ms}ms</span><span>메모리 {problem.memory_limit_mb}MB</span></div>
             </div>
             {problem.source_kind === 'original' && <a className="primary-action solve-action" href={`/solve/${problem.slug}`}>브라우저 IDE에서 풀기</a>}
