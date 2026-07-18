@@ -91,6 +91,13 @@ fn draft_payload() -> Value {
     })
 }
 
+fn policy_consent() -> Value {
+    json!({
+        "version": "2026-07-18",
+        "choices": {"terms": true, "privacy": true}
+    })
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn publication_requires_usable_rights_and_two_non_author_reviewers(pool: PgPool) {
     let settings = Settings::from_pairs(HashMap::from([
@@ -111,14 +118,9 @@ async fn publication_requires_usable_rights_and_two_non_author_reviewers(pool: P
     grant(&pool, &rights_reviewer, "RIGHTS_REVIEWER").await;
     for session in [&author, &content_reviewer, &rights_reviewer] {
         assert_eq!(
-            post(
-                &app,
-                session,
-                "/api/v1/policies/consents",
-                json!({"version": "2026-07-18"})
-            )
-            .await
-            .status(),
+            post(&app, session, "/api/v1/policies/consents", policy_consent())
+                .await
+                .status(),
             StatusCode::OK
         );
     }
@@ -287,6 +289,94 @@ async fn publication_requires_usable_rights_and_two_non_author_reviewers(pool: P
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn revision_author_cannot_approve_own_revision(pool: PgPool) {
+    let settings = Settings::from_pairs(HashMap::from([
+        ("APP_ENV", "test"),
+        ("DATABASE_URL", "postgres://test"),
+        ("TEST_IDENTITY_ENABLED", "true"),
+    ]))
+    .unwrap();
+    let app = router(AppState::new(pool.clone(), settings));
+    let problem_author = login(&app, "problem-author").await;
+    let revision_author = login(&app, "revision-author").await;
+    grant(&pool, &problem_author, "CONTENT_CREATOR").await;
+    grant(&pool, &revision_author, "ADMIN").await;
+    for session in [&problem_author, &revision_author] {
+        assert_eq!(
+            post(&app, session, "/api/v1/policies/consents", policy_consent(),)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        post(
+            &app,
+            &problem_author,
+            "/api/v1/admin/problems",
+            draft_payload(),
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let mut revision = draft_payload();
+    revision.as_object_mut().unwrap().remove("slug");
+    revision["statement"] = json!("관리자가 작성한 새 리비전입니다.");
+    assert_eq!(
+        post(
+            &app,
+            &revision_author,
+            "/api/v1/admin/problems/rights-gated-problem/revisions",
+            revision,
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+
+    let rights_uri = "/api/v1/governance/problems/rights-gated-problem/rights";
+    let rights = json!({
+        "basis": "original", "evidence": "원 문제 작성자가 보관한 제작 이력",
+        "commercial_use_allowed": true, "redistribution_allowed": true
+    });
+    assert_eq!(
+        post(&app, &problem_author, rights_uri, rights.clone())
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        post(
+            &app,
+            &revision_author,
+            "/api/v1/governance/problems/rights-gated-problem/reviews/content",
+            json!({"note": "자기 리비전 사람 승인 시도"}),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(&app, &problem_author, rights_uri, rights)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        post(
+            &app,
+            &revision_author,
+            "/api/v1/governance/problems/rights-gated-problem/reviews/rights",
+            json!({"note": "자기 리비전 권리 승인 시도"}),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn required_policy_consent_and_data_requests_are_user_scoped(pool: PgPool) {
     let settings = Settings::from_pairs(HashMap::from([
         ("APP_ENV", "test"),
@@ -322,16 +412,23 @@ async fn required_policy_consent_and_data_requests_are_user_scoped(pool: PgPool)
         StatusCode::FORBIDDEN
     );
 
+    assert_eq!(
+        post(
+            &app,
+            &owner,
+            "/api/v1/policies/consents",
+            json!({"version": "2026-07-18"}),
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
     for session in [&owner, &other] {
         assert_eq!(
-            post(
-                &app,
-                session,
-                "/api/v1/policies/consents",
-                json!({"version": "2026-07-18"})
-            )
-            .await
-            .status(),
+            post(&app, session, "/api/v1/policies/consents", policy_consent())
+                .await
+                .status(),
             StatusCode::OK
         );
     }
@@ -385,11 +482,50 @@ async fn required_policy_consent_and_data_requests_are_user_scoped(pool: PgPool)
         StatusCode::NOT_FOUND
     );
 
-    let stored_version: String =
-        sqlx::query_scalar("SELECT policy_version FROM policy_consents WHERE user_id = $1")
-            .bind(owner.user_id)
-            .fetch_one(&pool)
-            .await
+    let policy_response = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/policies")
+                .header(header::COOKIE, &owner.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(policy_response.status(), StatusCode::OK);
+    let policy_body: Value =
+        serde_json::from_slice(&to_bytes(policy_response.into_body(), 32_768).await.unwrap())
             .unwrap();
-    assert_eq!(stored_version, "2026-07-18");
+    let policy = &policy_body["items"][0];
+    assert!(policy["body"].as_str().unwrap().contains("이용약관"));
+    assert!(
+        policy["body"]
+            .as_str()
+            .unwrap()
+            .contains("개인정보 처리방침")
+    );
+    assert_eq!(
+        policy["consent"]["choices"],
+        json!({"terms": true, "privacy": true})
+    );
+    assert_eq!(policy["consent"]["body"], policy["body"]);
+
+    let stored: (String, String, Value) = sqlx::query_as(
+        "SELECT policy_title_ko, policy_body_ko, choices FROM policy_consents WHERE user_id = $1",
+    )
+    .bind(owner.user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stored.0, policy["title"]);
+    assert_eq!(stored.1, policy["body"]);
+    assert_eq!(stored.2, json!({"terms": true, "privacy": true}));
+    let audit_choices: Value = sqlx::query_scalar(
+        "SELECT metadata->'choices' FROM audit_events WHERE actor_user_id = $1 AND action = 'policy.consented' ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind(owner.user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit_choices, stored.2);
 }

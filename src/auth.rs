@@ -26,9 +26,18 @@ pub struct TestSessionRequest {
     handle: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyChoices {
+    terms: bool,
+    privacy: bool,
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TermsRequest {
     version: String,
+    choices: PolicyChoices,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -889,7 +898,7 @@ pub async fn accept_terms(
     headers: HeaderMap,
     Json(request): Json<TermsRequest>,
 ) -> Result<Json<UserView>, AuthError> {
-    if request.version != "2026-07-18" {
+    if request.version != "2026-07-18" || !request.choices.terms || !request.choices.privacy {
         return Err(AuthError::InvalidInput("지원하지 않는 약관 버전입니다"));
     }
     let session_token = cookie_value(&headers, SESSION_COOKIE).ok_or(AuthError::Unauthorized)?;
@@ -913,6 +922,15 @@ pub async fn accept_terms(
         return Err(AuthError::Forbidden);
     }
 
+    let (policy_title, policy_body): (String, String) = sqlx::query_as(
+        "SELECT title_ko, body_ko FROM policy_versions WHERE version = $1 AND required",
+    )
+    .bind(&request.version)
+    .fetch_optional(state.pool())
+    .await?
+    .ok_or(AuthError::InvalidInput("지원하지 않는 약관 버전입니다"))?;
+    let choices = serde_json::to_value(&request.choices)
+        .map_err(|_| AuthError::InvalidInput("정책 동의 선택을 확인해 주세요"))?;
     let mut transaction = state.pool().begin().await?;
     sqlx::query(
         "UPDATE users SET terms_accepted_at = now(), terms_accepted_version = $2, updated_at = now() WHERE id = $1",
@@ -922,18 +940,24 @@ pub async fn accept_terms(
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO policy_consents (user_id, policy_version) VALUES ($1, $2) ON CONFLICT (user_id, policy_version) DO NOTHING",
+        "INSERT INTO policy_consents (user_id, policy_version, policy_title_ko, policy_body_ko, choices) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id, policy_version) DO NOTHING",
     )
     .bind(user_id)
     .bind(&request.version)
+    .bind(&policy_title)
+    .bind(&policy_body)
+    .bind(&choices)
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, 'terms.accepted', 'user', $2, jsonb_build_object('version', $3::text))",
+        "INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, 'terms.accepted', 'user', $2, jsonb_build_object('version', $3::text, 'title_ko', $4::text, 'body_ko', $5::text, 'choices', $6::jsonb))",
     )
     .bind(user_id)
     .bind(user_id.to_string())
     .bind(&request.version)
+    .bind(&policy_title)
+    .bind(&policy_body)
+    .bind(&choices)
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
@@ -966,29 +990,39 @@ pub async fn accept_policy(
     Json(request): Json<TermsRequest>,
 ) -> Result<Json<Value>, AuthError> {
     let user_id = authenticated_user_id_with_csrf(&state, &headers).await?;
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM policy_versions WHERE version = $1 AND required)",
+    if !request.choices.terms || !request.choices.privacy {
+        return Err(AuthError::InvalidInput("정책 동의 선택을 확인해 주세요"));
+    }
+    let policy: Option<(String, String)> = sqlx::query_as(
+        "SELECT title_ko, body_ko FROM policy_versions WHERE version = $1 AND required",
     )
     .bind(&request.version)
-    .fetch_one(state.pool())
+    .fetch_optional(state.pool())
     .await?;
-    if !exists {
-        return Err(AuthError::InvalidInput("지원하지 않는 정책 버전입니다"));
-    }
+    let (policy_title, policy_body) =
+        policy.ok_or(AuthError::InvalidInput("지원하지 않는 정책 버전입니다"))?;
+    let choices = serde_json::to_value(&request.choices)
+        .map_err(|_| AuthError::InvalidInput("정책 동의 선택을 확인해 주세요"))?;
     let mut transaction = state.pool().begin().await?;
     sqlx::query(
-        "INSERT INTO policy_consents (user_id, policy_version) VALUES ($1, $2) ON CONFLICT (user_id, policy_version) DO NOTHING",
+        "INSERT INTO policy_consents (user_id, policy_version, policy_title_ko, policy_body_ko, choices) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id, policy_version) DO NOTHING",
     )
     .bind(user_id)
     .bind(&request.version)
+    .bind(&policy_title)
+    .bind(&policy_body)
+    .bind(&choices)
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, 'policy.consented', 'user', $2, jsonb_build_object('version', $3::text))",
+        "INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, 'policy.consented', 'user', $2, jsonb_build_object('version', $3::text, 'title_ko', $4::text, 'body_ko', $5::text, 'choices', $6::jsonb))",
     )
     .bind(user_id)
     .bind(user_id.to_string())
     .bind(&request.version)
+    .bind(&policy_title)
+    .bind(&policy_body)
+    .bind(&choices)
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
@@ -1002,9 +1036,19 @@ pub async fn policies(
     headers: HeaderMap,
 ) -> Result<Json<Value>, AuthError> {
     let user_id = authenticated_user_id(&state, &headers).await?;
-    let versions: Vec<(String, String, bool, bool)> = sqlx::query_as(
-        r#"SELECT version.version, version.title_ko, version.required,
-                  consent.user_id IS NOT NULL
+    let versions: Vec<(
+        String,
+        String,
+        String,
+        bool,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<Value>,
+    )> = sqlx::query_as(
+        r#"SELECT version.version, version.title_ko, version.body_ko, version.required,
+                  consent.consented_at::text, consent.policy_title_ko,
+                  consent.policy_body_ko, consent.choices
            FROM policy_versions version
            LEFT JOIN policy_consents consent
              ON consent.policy_version = version.version AND consent.user_id = $1
@@ -1014,9 +1058,19 @@ pub async fn policies(
     .fetch_all(state.pool())
     .await?;
     Ok(Json(
-        serde_json::json!({"items": versions.into_iter().map(|(version, title, required, consented)| serde_json::json!({
-        "version": version, "title": title, "required": required, "consented": consented
-    })).collect::<Vec<_>>()}),
+        serde_json::json!({"items": versions.into_iter().map(|(version, title, body, required, consented_at, consent_title, consent_body, choices)| {
+            let consented = consented_at.is_some();
+            let consent = consented_at.map(|consented_at| serde_json::json!({
+                "consented_at": consented_at,
+                "title": consent_title,
+                "body": consent_body,
+                "choices": choices,
+            }));
+            serde_json::json!({
+                "version": version, "title": title, "body": body,
+                "required": required, "consented": consented, "consent": consent
+            })
+        }).collect::<Vec<_>>() }),
     ))
 }
 

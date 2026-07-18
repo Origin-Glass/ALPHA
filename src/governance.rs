@@ -123,14 +123,24 @@ pub async fn record_rights(
         return Err(GovernanceError::InvalidInput("권리 근거를 확인해 주세요"));
     }
     let mut transaction = state.pool().begin().await?;
-    let (problem_id, revision_id, author_id): (Uuid, Uuid, Uuid) = sqlx::query_as(
-        "SELECT id, current_revision_id, created_by FROM problems WHERE slug = $1 AND status = 'draft' FOR UPDATE",
+    let (problem_id, revision_id, problem_author_id, revision_author_id): (
+        Uuid,
+        Uuid,
+        Uuid,
+        Uuid,
+    ) = sqlx::query_as(
+        r#"SELECT problem.id, problem.current_revision_id, problem.created_by, revision.authored_by
+           FROM problems problem
+           JOIN problem_revisions revision ON revision.id = problem.current_revision_id
+           WHERE problem.slug = $1 AND problem.status = 'draft'
+             AND revision.authored_by IS NOT NULL
+           FOR UPDATE OF problem, revision"#,
     )
     .bind(&slug)
     .fetch_optional(&mut *transaction)
     .await?
     .ok_or(GovernanceError::NotFound)?;
-    if author_id != user_id {
+    if problem_author_id != user_id {
         return Err(GovernanceError::Forbidden);
     }
     sqlx::query(
@@ -148,7 +158,7 @@ pub async fn record_rights(
     )
     .bind(revision_id)
     .bind(problem_id)
-    .bind(author_id)
+    .bind(revision_author_id)
     .bind(&request.basis)
     .bind(request.evidence.trim())
     .bind(request.commercial_use_allowed)
@@ -193,14 +203,16 @@ async fn review(
         Option<Uuid>,
         bool,
     ) = sqlx::query_as(
-        r#"SELECT governance.problem_revision_id, governance.author_user_id,
+        r#"SELECT governance.problem_revision_id, revision.authored_by,
                   governance.content_reviewed_by, governance.rights_reviewed_by,
                   governance.commercial_use_allowed AND governance.redistribution_allowed
            FROM content_governance governance
            JOIN problems problem ON problem.id = governance.problem_id
+           JOIN problem_revisions revision ON revision.id = governance.problem_revision_id
            WHERE problem.slug = $1 AND problem.status = 'draft'
              AND problem.current_revision_id = governance.problem_revision_id
-           FOR UPDATE OF governance, problem"#,
+             AND revision.authored_by IS NOT NULL
+           FOR UPDATE OF governance, problem, revision"#,
     )
     .bind(&slug)
     .fetch_optional(&mut *transaction)
@@ -266,11 +278,14 @@ pub async fn publish(
         Option<bool>,
         Option<Uuid>,
         Option<Uuid>,
+        Option<Uuid>,
     )> = sqlx::query_as(
         r#"SELECT problem.id, problem.current_revision_id,
                   governance.commercial_use_allowed, governance.redistribution_allowed,
-                  governance.content_reviewed_by, governance.rights_reviewed_by
+                  governance.content_reviewed_by, governance.rights_reviewed_by,
+                  revision.authored_by
            FROM problems problem
+           JOIN problem_revisions revision ON revision.id = problem.current_revision_id
            LEFT JOIN content_governance governance
              ON governance.problem_revision_id = problem.current_revision_id
            WHERE problem.slug = $1 AND problem.status = 'draft'
@@ -286,6 +301,7 @@ pub async fn publish(
         redistribution,
         content_reviewer,
         rights_reviewer,
+        revision_author,
     )) = row
     else {
         return Err(GovernanceError::Conflict("게시 요건을 충족하지 못했습니다"));
@@ -295,6 +311,8 @@ pub async fn publish(
         || content_reviewer.is_none()
         || rights_reviewer.is_none()
         || content_reviewer == rights_reviewer
+        || content_reviewer == revision_author
+        || rights_reviewer == revision_author
     {
         return Err(GovernanceError::Conflict(
             "권리 및 분리 검토 승인이 모두 필요합니다",

@@ -698,6 +698,7 @@ footer strong { color: var(--ink); font-style: italic; }
 .policy-list article { padding: 20px; display: flex; justify-content: space-between; gap: 20px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.55); }
 .policy-list article div { display: grid; gap: 5px; }
 .policy-list span, .data-controls p, .governance-grid p { color: var(--muted); font-size: .78rem; }
+.policy-list .policy-body { color: var(--ink); font-size: .9rem; line-height: 1.7; white-space: pre-line; }
 .policy-list b { color: var(--violet); font-size: .78rem; }
 .policy-consent, .data-controls { margin-top: 22px; padding: 24px; border-radius: 18px; background: #e8edf3; }
 .policy-consent label, .governance-check { display: flex !important; grid-template-columns: auto 1fr; align-items: center; gap: 10px; }
