@@ -107,6 +107,51 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(crate::governance::cancel_data_request),
         )
         .route(
+            "/api/v1/content/providers",
+            get(crate::content_factory::list_providers)
+                .post(crate::content_factory::create_provider),
+        )
+        .route(
+            "/api/v1/content/providers/{id}",
+            axum::routing::put(crate::content_factory::update_provider),
+        )
+        .route(
+            "/api/v1/content/providers/{id}/validate",
+            axum::routing::post(crate::content_factory::validate_provider),
+        )
+        .route(
+            "/api/v1/content/jobs",
+            get(crate::content_factory::list_jobs).post(crate::content_factory::create_job),
+        )
+        .route(
+            "/api/v1/content/jobs/compare",
+            get(crate::content_factory::compare_jobs),
+        )
+        .route(
+            "/api/v1/content/jobs/{id}",
+            get(crate::content_factory::job_detail),
+        )
+        .route(
+            "/api/v1/content/jobs/{id}/cancel",
+            axum::routing::post(crate::content_factory::cancel_job),
+        )
+        .route(
+            "/api/v1/content/jobs/{id}/retry",
+            axum::routing::post(crate::content_factory::retry_job),
+        )
+        .route(
+            "/api/v1/content/jobs/{id}/clone",
+            axum::routing::post(crate::content_factory::clone_job),
+        )
+        .route(
+            "/api/v1/content/jobs/{id}/archive",
+            axum::routing::post(crate::content_factory::archive_job),
+        )
+        .route(
+            "/api/v1/content/budget",
+            get(crate::content_factory::get_budget).post(crate::content_factory::update_budget),
+        )
+        .route(
             "/api/v1/auth/{provider}/start",
             get(crate::auth::oauth_start),
         )

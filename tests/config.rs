@@ -3,6 +3,22 @@ use std::collections::HashMap;
 use alpha::config::Settings;
 
 #[test]
+fn api_accepts_only_ai_credential_presence_references() {
+    let values = HashMap::from([
+        (
+            "CONTENT_AI_CREDENTIALS_AVAILABLE",
+            "OPENAI_API_KEY,SESSION_SECRET",
+        ),
+        ("SESSION_SECRET", "must-never-be-an-ai-provider-key"),
+    ]);
+
+    let settings = Settings::from_pairs(values).unwrap();
+
+    assert!(settings.has_content_ai_credential("OPENAI_API_KEY"));
+    assert!(!settings.has_content_ai_credential("SESSION_SECRET"));
+}
+
+#[test]
 fn production_rejects_test_identity() {
     let values = HashMap::from([
         ("APP_ENV", "production"),

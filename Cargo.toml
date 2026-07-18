@@ -4,6 +4,10 @@ version = "1.0.0"
 edition = "2024"
 license = "MIT"
 
+[[bin]]
+name = "content_worker"
+path = "src/bin/content_worker.rs"
+
 [dependencies]
 axum = "0.8.4"
 async-stream = "0.3"

@@ -4,6 +4,7 @@ pub mod auth;
 pub mod classes;
 pub mod community;
 pub mod config;
+pub mod content_factory;
 pub mod contests;
 pub mod db;
 pub mod gamification;

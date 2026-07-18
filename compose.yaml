@@ -13,8 +13,8 @@ x-app-environment: &app-environment
   GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
   PAYMENTS_ENABLED: "false"
   PAYMENT_PROVIDER: disabled
-  AI_ENABLED: "false"
-  AI_PROVIDER: disabled
+  CONTENT_AI_ENABLED: ${CONTENT_AI_ENABLED:-false}
+  CONTENT_AI_CREDENTIALS_AVAILABLE: ${CONTENT_AI_CREDENTIALS_AVAILABLE:-}
   SOLVED_AC_ENABLED: "false"
 
 services:
@@ -90,6 +90,28 @@ services:
     environment:
       <<: *app-environment
       METADATA_REFRESH_INTERVAL_SECONDS: ${METADATA_REFRESH_INTERVAL_SECONDS:-3600}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  content-worker:
+    image: alpha-api:local
+    command: ["content_worker"]
+    environment:
+      DATABASE_URL: postgres://alpha:${POSTGRES_PASSWORD:-alpha-local-only}@db:5432/alpha
+      CONTENT_AI_ENABLED: ${CONTENT_AI_ENABLED:-false}
+      CONTENT_WORKER_ID: ${CONTENT_WORKER_ID:-content-worker-1}
+      CONTENT_AI_CUSTOM_API_KEY: ${CONTENT_AI_CUSTOM_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      RUST_LOG: alpha=info,content_worker=info
     depends_on:
       migrate:
         condition: service_completed_successfully
