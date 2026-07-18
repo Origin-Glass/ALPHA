@@ -118,6 +118,23 @@ pub fn router(state: AppState) -> Router {
             get(crate::gamification::profile),
         )
         .route("/api/v1/rankings", get(crate::gamification::rankings))
+        .route(
+            "/api/v1/community",
+            get(crate::community::list).post(crate::community::create_post),
+        )
+        .route("/api/v1/community/{post_id}", get(crate::community::detail))
+        .route(
+            "/api/v1/community/{post_id}/answers",
+            axum::routing::post(crate::community::create_answer),
+        )
+        .route(
+            "/api/v1/community/{post_id}/answers/{answer_id}/accept",
+            axum::routing::post(crate::community::accept_answer),
+        )
+        .route(
+            "/api/v1/community/reports",
+            axum::routing::post(crate::community::create_report),
+        )
         .route("/api/v1/contests", get(crate::contests::list))
         .route("/api/v1/contests/{slug}", get(crate::contests::detail))
         .route(
@@ -140,6 +157,28 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/admin/metadata/solved-ac/{external_problem_id}/refresh",
             axum::routing::post(crate::metadata::admin_refresh),
         )
+        .route(
+            "/api/v1/admin/problems",
+            axum::routing::post(crate::admin::create_problem),
+        )
+        .route(
+            "/api/v1/admin/problems/{slug}/revisions",
+            axum::routing::post(crate::admin::revise_problem),
+        )
+        .route(
+            "/api/v1/admin/notices",
+            axum::routing::post(crate::community::create_notice),
+        )
+        .route(
+            "/api/v1/admin/community/reports",
+            get(crate::community::report_queue),
+        )
+        .route(
+            "/api/v1/admin/community/reports/{report_id}/resolve",
+            axum::routing::post(crate::community::resolve_report),
+        )
+        .route("/api/v1/admin/judge/workers", get(crate::admin::workers))
+        .route("/api/v1/admin/audit", get(crate::admin::audit_log))
         .route(
             "/api/v1/payments/checkout",
             axum::routing::post(crate::payments::create_checkout),

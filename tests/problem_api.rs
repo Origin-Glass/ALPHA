@@ -59,8 +59,12 @@ async fn public_problem_detail_never_leaks_hidden_tests(pool: PgPool) {
 
     sqlx::query(
         r#"
-        INSERT INTO problem_test_cases (id, problem_id, ordinal, input, expected_output, visibility)
-        VALUES ($1, $2, 1, 'do-not-leak-input', 'do-not-leak-answer', 'hidden')
+        INSERT INTO problem_test_cases (
+            id, problem_id, problem_revision_id, ordinal, input, expected_output, visibility
+        ) VALUES (
+            $1, $2, (SELECT current_revision_id FROM problems WHERE id = $2),
+            1, 'do-not-leak-input', 'do-not-leak-answer', 'hidden'
+        )
         "#,
     )
     .bind(Uuid::now_v7())

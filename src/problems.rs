@@ -326,7 +326,9 @@ pub async fn detail(
         r#"
         SELECT ordinal, input, expected_output
         FROM problem_test_cases
-        WHERE problem_id = $1 AND visibility = 'sample'
+        WHERE problem_id = $1
+          AND problem_revision_id = (SELECT current_revision_id FROM problems WHERE id = $1)
+          AND visibility = 'sample'
         ORDER BY ordinal
         "#,
     )
