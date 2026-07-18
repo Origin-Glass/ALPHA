@@ -1458,8 +1458,8 @@ components:
     ProjectMilestone:
       type: object
       additionalProperties: false
-      required: [position, title, estimated_minutes, visible_result, required_activity_slug]
-      properties: { id: { type: string, format: uuid }, position: { type: integer, minimum: 1, maximum: 3 }, title: { type: string, minLength: 1, maxLength: 160 }, estimated_minutes: { type: integer, minimum: 30, maximum: 120 }, visible_result: { type: boolean, const: true }, required_activity_slug: { type: string, pattern: "^[a-z0-9-]{1,64}$", description: 공개 활동 식별자이며 정답·숨은 테스트는 포함하지 않음 }, status: { type: string, enum: [planned, active, completed] } }
+      required: [position, title, estimated_minutes, visible_result, required_activity_slug, required_skill]
+      properties: { id: { type: string, format: uuid }, position: { type: integer, minimum: 1, maximum: 3 }, title: { type: string, minLength: 1, maxLength: 160 }, estimated_minutes: { type: integer, minimum: 30, maximum: 120 }, visible_result: { type: boolean, const: true }, required_activity_slug: { type: string, pattern: "^[a-z0-9-]{1,64}$", description: 공개 활동 식별자이며 정답·숨은 테스트는 포함하지 않음 }, required_skill: { type: string, enum: [algorithmic_reasoning, code_literacy, docs_learning, independent_coding] }, status: { type: string, enum: [planned, active, completed] } }
     ProjectIdeaResponse:
       type: object
       additionalProperties: false
@@ -1530,12 +1530,12 @@ components:
       type: object
       additionalProperties: false
       required: [milestone_id, skill, kind, successful, source_attempt_id, idempotency_key]
-      properties: { milestone_id: { type: string, format: uuid }, skill: { type: string, pattern: "^[a-z0-9+#.-]{1,32}$" }, kind: { type: string, enum: [mastery, attempt] }, successful: { type: boolean }, source_attempt_id: { type: string, format: uuid }, idempotency_key: { type: string, format: uuid } }
+      properties: { milestone_id: { type: string, format: uuid }, skill: { type: string, enum: [algorithmic_reasoning, code_literacy, docs_learning, independent_coding] }, kind: { type: string, enum: [mastery, attempt] }, successful: { type: boolean }, source_attempt_id: { type: string, format: uuid }, idempotency_key: { type: string, format: uuid } }
     AssistanceRequest:
       type: object
       additionalProperties: false
       required: [milestone_id, skill, idempotency_key]
-      properties: { milestone_id: { type: string, format: uuid }, skill: { type: string, pattern: "^[a-z0-9+#.-]{1,32}$" }, idempotency_key: { type: string, format: uuid } }
+      properties: { milestone_id: { type: string, format: uuid }, skill: { type: string, enum: [algorithmic_reasoning, code_literacy, docs_learning, independent_coding] }, idempotency_key: { type: string, format: uuid } }
     AssistanceMode:
       type: string
       enum: [guided_ai, socratic_ai, documentation_navigator, curated_documentation, cheat_sheet_only, independent, transfer_challenge]

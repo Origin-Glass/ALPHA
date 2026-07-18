@@ -14,7 +14,7 @@ test('AI 비활성 계획도 이유를 보여주고 학습자가 추천을 거�
     if(path.includes('/reject'))return ok({rejected:true});throw new Error(`unexpected ${path}`);
   });
   let sequence=0;vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('crypto', { randomUUID: () => `key-${++sequence}` });
-  render(<LearningPlanBuilderPage />); fireEvent.click(screen.getByRole('button', { name: '계획 만들기' }));
+  render(<LearningPlanBuilderPage />);fireEvent.change(screen.getByLabelText('선호 언어'),{target:{value:'python'}});fireEvent.change(screen.getByLabelText('경로 방식'),{target:{value:'exploratory'}});fireEvent.change(screen.getByLabelText('도움 정책'),{target:{value:'transfer_challenge'}});fireEvent.change(screen.getByLabelText('algorithmic_reasoning'),{target:{value:'73'}}); fireEvent.click(screen.getByRole('button', { name: '계획 만들기' }));
   expect(await screen.findByText(/AI 사용 아니요/)).toBeInTheDocument();
   expect(screen.getByText(/mastery_gap:independent_coding/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '이 추천 거부' }));
@@ -24,19 +24,20 @@ test('AI 비활성 계획도 이유를 보여주고 학습자가 추천을 거�
   expect(rejection[1].headers['x-csrf-token']).toBe('plan-csrf');
   fireEvent.click(screen.getByRole('button',{name:'계획 만들기'}));await waitFor(()=>expect(fetchMock.mock.calls.filter(([path,options])=>path==='/api/v1/learning/plans'&&options?.method==='POST')).toHaveLength(2));
   const planCalls=fetchMock.mock.calls.filter(([path,options])=>path==='/api/v1/learning/plans'&&options?.method==='POST');expect(JSON.parse(planCalls[0][1].body).idempotency_key).not.toBe(JSON.parse(planCalls[1][1].body).idempotency_key);
-  expect(JSON.parse(planCalls[0][1].body)).toMatchObject({deadline:'2026-12-31',preferred_framework:'react',origin:'learner',template_id:null,privacy:'private'});
+  expect(JSON.parse(planCalls[0][1].body)).toMatchObject({deadline:'2026-12-31',preferred_framework:'react',origin:'learner',template_id:null,privacy:'private',preferred_language:'python',path_mode:'exploratory',assistance_policy:'transfer_challenge',diagnostic_scores:{algorithmic_reasoning:73}});
 });
 
 test('과도한 아이디어의 축소 결과와 첫 보이는 마일스톤을 선택한다', async () => {
-  const idea={ id: 'idea-1',revision:1, title: '기록 앱', features: ['학습 기록', '목록'], scope_reduced: true,feasibility_reasons:['weekly_minutes:120'],excluded_features:[{feature:'채팅',reason_code:'scope_limit'}], milestones: [{ position: 1, title: '기록 작동 결과', estimated_minutes: 60,visible_result:true,required_activity_slug:'code-reading' }],source_kind:'original',repository_url:null,repository_revision:null,ownership_basis:null,license_identifier:null,lineage_id:'lineage-1',restored_from_id:null };
+  const idea={ id: 'idea-1',revision:1, title: '기록 앱', features: ['학습 기록', '목록'], scope_reduced: true,feasibility_reasons:['weekly_minutes:120'],excluded_features:[{feature:'채팅',reason_code:'scope_limit'}], milestones: [{ position: 1, title: '기록 작동 결과', estimated_minutes: 60,visible_result:true,required_activity_slug:'code-reading',required_skill:'code_literacy' }],source_kind:'original',repository_url:null,repository_revision:null,ownership_basis:null,license_identifier:null,lineage_id:'lineage-1',restored_from_id:null };
   const fetchMock = vi.fn().mockImplementation((path:string,options?:RequestInit)=>path==='/api/v1/projects/ideas'&&!options?.method?ok({ideas:[]}):ok(idea));
   let sequence=0;vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('crypto', { randomUUID: () => `idea-key-${++sequence}` });
-  render(<ProjectIdeationPage />); fireEvent.click(screen.getByRole('button', { name: '실행 가능한 범위 확인' }));
+  render(<ProjectIdeationPage />);fireEvent.change(screen.getByLabelText('도움 정책'),{target:{value:'independent'}});fireEvent.change(screen.getByLabelText('숙련도'),{target:{value:'advanced'}});fireEvent.change(screen.getByLabelText('실행 환경'),{target:{value:'server'}});fireEvent.change(screen.getByLabelText('인프라'),{target:{value:'container_available'}});fireEvent.change(screen.getByLabelText('소스 종류'),{target:{value:'imported'}});fireEvent.change(screen.getByLabelText('저장소 URL'),{target:{value:'https://github.com/example/owned'}});fireEvent.change(screen.getByLabelText('고정 리비전'),{target:{value:'a'.repeat(40)}});fireEvent.change(screen.getByLabelText('소스 종류'),{target:{value:'original'}});expect(screen.queryByLabelText('저장소 URL')).not.toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: '실행 가능한 범위 확인' }));
   expect(await screen.findByText(/첫 버전에 필요한 기능으로 줄였습니다/)).toBeInTheDocument();
   expect(screen.getByText(/채팅 제외/)).toBeInTheDocument();
-  expect(screen.getByText(/60분 · 보이는 결과 · 활동 code-reading/)).toBeInTheDocument();
+  expect(screen.getByText(/60분 · 보이는 결과 · 역량 code_literacy · 활동 code-reading/)).toBeInTheDocument();
   const ideaCalls=()=>fetchMock.mock.calls.filter(([path,options])=>path==='/api/v1/projects/ideas'&&options?.method==='POST');
   await waitFor(() => expect(JSON.parse(ideaCalls()[0][1].body).requested_features).toHaveLength(6));
   expect(JSON.parse(ideaCalls()[0][1].body).requested_features).toContain('학습 기록');
+  expect(JSON.parse(ideaCalls()[0][1].body)).toMatchObject({assistance_policy:'independent',skill_level:'advanced',runtime:'server',infrastructure:'container_available',source_kind:'original',repository_url:null,repository_revision:null,ownership_basis:null,license_identifier:null});
   const firstKey=JSON.parse(ideaCalls()[0][1].body).idempotency_key;fireEvent.change(screen.getByLabelText(/원하는 기능/),{target:{value:'학습 기록,목록'}});expect(screen.queryByText(/채팅 제외/)).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'실행 가능한 범위 확인'}));await waitFor(()=>expect(ideaCalls()).toHaveLength(2));expect(JSON.parse(ideaCalls()[1][1].body).idempotency_key).not.toBe(firstKey);
 });
