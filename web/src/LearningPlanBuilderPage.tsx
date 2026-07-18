@@ -3,6 +3,7 @@ import PortalHeader from './PortalHeader';
 
 type Plan = { id:string; revision:number; target_outcome: string; recommendation_key: string; reason_codes: string[]; items: Array<{ kind: string; title: string; estimated_minutes: number }>; provider_used: boolean; rule_version: string; restored_from_id:string|null; deadline:string;preferred_framework:string;privacy:string };
 const csrf = () => document.cookie.split(';').map((v) => v.trim()).find((v) => v.startsWith('alpha_csrf='))?.slice(11) ?? '';
+const axisLabels:Record<string,string>={algorithmic_reasoning:'알고리즘 추론 진단',code_literacy:'코드 이해 진단',docs_learning:'문서 학습 진단',independent_coding:'독립 구현 진단'};
 
 function LearningPlanBuilderPage() {
   const [plan, setPlan] = useState<Plan | null>(null);
@@ -52,7 +53,7 @@ function LearningPlanBuilderPage() {
       <label>경로 방식<select value={pathMode} onChange={(e)=>{setPathMode(e.target.value);changed();}}><option value="structured">구조화 경로</option><option value="exploratory">탐색형 경로</option></select></label>
       <label>관심사(쉼표 구분)<input value={interests} onChange={(e)=>{setInterests(e.target.value);changed();}} required /></label>
       <label>학습 목표(쉼표 구분)<input value={goals} onChange={(e)=>{setGoals(e.target.value);changed();}} required /></label>
-      {Object.entries(diagnostics).map(([axis,score])=><label key={axis}>{axis}<input type="number" min={0} max={100} value={score} onChange={(e)=>{setDiagnostics({...diagnostics,[axis]:Number(e.target.value)});changed();}} required /></label>)}
+      {Object.entries(diagnostics).map(([axis,score])=><label key={axis}>{axisLabels[axis]}<input type="number" min={0} max={100} value={score} onChange={(e)=>{setDiagnostics({...diagnostics,[axis]:Number(e.target.value)});changed();}} required /></label>)}
       <label>완료 기한<input type="date" value={deadline} onChange={(e)=>{setDeadline(e.target.value);changed();}} required /></label>
       <label>선호 프레임워크<input value={framework} maxLength={64} onChange={(e)=>{setFramework(e.target.value);changed();}} required /></label>
       <label>만들고 싶은 프로젝트<input value={desiredProject} maxLength={200} onChange={(e)=>{setDesiredProject(e.target.value);changed();}} required /></label>
