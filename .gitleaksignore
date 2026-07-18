@@ -1,0 +1,9 @@
+# 검토 완료: SESSION_SECRET 길이 검증용 공개 테스트 픽스처
+cbf2bd152edd0831fb5525205fce5ee6cb795ec3:.github/workflows/ci.yml:generic-api-key:176
+11927e587858c9671c2628354d52e727e50a06fe:tests/session_api.rs:generic-api-key:172
+d0d8c8ff17c73142be98d4c21f06b7028cb05112:tests/config.rs:generic-api-key:76
+d0d8c8ff17c73142be98d4c21f06b7028cb05112:tests/session_api.rs:generic-api-key:25
+d0d8c8ff17c73142be98d4c21f06b7028cb05112:tests/session_api.rs:generic-api-key:132
+9306f0ded959ce279520e25de4dec9e01c424297:tests/config.rs:generic-api-key:10
+9306f0ded959ce279520e25de4dec9e01c424297:tests/config.rs:generic-api-key:27
+9306f0ded959ce279520e25de4dec9e01c424297:tests/config.rs:generic-api-key:44
