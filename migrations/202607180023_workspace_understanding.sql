@@ -78,12 +78,14 @@ CREATE TABLE workspace_runs (
     template_id uuid NOT NULL, template_revision integer NOT NULL,
     template_digest bytea NOT NULL CHECK (octet_length(template_digest)=32),
     image_reference text NOT NULL CHECK (image_reference ~ '@sha256:[0-9a-f]{64}$'),
+    execution_image_digest text CHECK (execution_image_digest IS NULL OR execution_image_digest ~ '^sha256:[0-9a-f]{64}$'),
     artifact jsonb NOT NULL CHECK (jsonb_typeof(artifact)='array'),
     artifact_hash bytea NOT NULL CHECK (octet_length(artifact_hash)=32),
     semantic_hash bytea NOT NULL CHECK (octet_length(semantic_hash)=32),
     validation_kind text NOT NULL DEFAULT 'baseline' CHECK(validation_kind IN('baseline','modification','transfer')),
     challenge_id uuid,
     check_suite_id text NOT NULL, check_suite_hash bytea NOT NULL CHECK(octet_length(check_suite_hash)=32),
+    supports_tests_snapshot boolean NOT NULL,
     command jsonb NOT NULL CHECK (jsonb_typeof(command)='array' AND jsonb_array_length(command) BETWEEN 1 AND 16),
     status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','leased','running','succeeded','failed','cancelled','expired')),
     attempt smallint NOT NULL DEFAULT 0 CHECK (attempt BETWEEN 0 AND 3),
@@ -92,6 +94,7 @@ CREATE TABLE workspace_runs (
     stdout_hash bytea CHECK(stdout_hash IS NULL OR octet_length(stdout_hash)=32),
     deterministic_checks_passed boolean NOT NULL DEFAULT false,
     runner_receipt_hash bytea CHECK(runner_receipt_hash IS NULL OR octet_length(runner_receipt_hash)=32),
+    runner_receipt_mac bytea CHECK(runner_receipt_mac IS NULL OR octet_length(runner_receipt_mac)=32),
     output_truncated boolean NOT NULL DEFAULT false,
     idempotency_key uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz,
     request_hash bytea NOT NULL CHECK(octet_length(request_hash)=32),
@@ -116,6 +119,8 @@ CREATE TABLE understanding_challenges (
     kind text NOT NULL CHECK(kind IN ('explanation_modification_transfer')),
     prompt jsonb NOT NULL CHECK(jsonb_typeof(prompt)='object'),
     expected_concepts jsonb NOT NULL CHECK(jsonb_typeof(expected_concepts)='array' AND jsonb_array_length(expected_concepts)>0),
+    modification_prediction text, transfer_prediction text, predictions_committed_at timestamptz,
+    prediction_idempotency_key uuid, prediction_request_hash bytea CHECK(prediction_request_hash IS NULL OR octet_length(prediction_request_hash)=32),
     state text NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','reviewed','understood','independently_modifiable','transfer_verified')),
     idempotency_key uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
     request_hash bytea NOT NULL CHECK(octet_length(request_hash)=32),
@@ -177,5 +182,27 @@ CREATE TABLE portfolio_items (
 
 CREATE FUNCTION deny_workspace_evidence_mutation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'immutable workspace evidence'; END $$;
 CREATE TRIGGER workspace_runs_no_update AFTER UPDATE ON workspace_runs FOR EACH ROW WHEN (OLD.status IN ('succeeded','failed','cancelled','expired')) EXECUTE FUNCTION deny_workspace_evidence_mutation();
+CREATE TRIGGER workspace_templates_no_mutation BEFORE UPDATE OR DELETE ON workspace_templates FOR EACH ROW EXECUTE FUNCTION deny_workspace_evidence_mutation();
+CREATE TRIGGER workspace_revisions_no_mutation BEFORE UPDATE OR DELETE ON workspace_revisions FOR EACH ROW EXECUTE FUNCTION deny_workspace_evidence_mutation();
 CREATE TRIGGER understanding_receipts_no_update BEFORE UPDATE OR DELETE ON understanding_receipts FOR EACH ROW EXECUTE FUNCTION deny_workspace_evidence_mutation();
 CREATE TRIGGER portfolio_rights_no_update BEFORE UPDATE OR DELETE ON portfolio_rights_receipts FOR EACH ROW EXECUTE FUNCTION deny_workspace_evidence_mutation();
+
+CREATE FUNCTION enforce_workspace_run_transition() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (NEW.workspace_id,NEW.user_id,NEW.workspace_version,NEW.template_id,NEW.template_revision,NEW.template_digest,NEW.image_reference,NEW.artifact,NEW.artifact_hash,NEW.semantic_hash,NEW.validation_kind,NEW.challenge_id,NEW.check_suite_id,NEW.check_suite_hash,NEW.supports_tests_snapshot,NEW.command,NEW.idempotency_key,NEW.request_hash)
+     IS DISTINCT FROM
+     (OLD.workspace_id,OLD.user_id,OLD.workspace_version,OLD.template_id,OLD.template_revision,OLD.template_digest,OLD.image_reference,OLD.artifact,OLD.artifact_hash,OLD.semantic_hash,OLD.validation_kind,OLD.challenge_id,OLD.check_suite_id,OLD.check_suite_hash,OLD.supports_tests_snapshot,OLD.command,OLD.idempotency_key,OLD.request_hash)
+  THEN RAISE EXCEPTION 'workspace execution snapshot is immutable';
+  END IF;
+  IF NEW.status IN ('succeeded','failed') AND NOT (
+    OLD.status='running' AND OLD.lease_token IS NOT NULL AND
+    NEW.runner_receipt_hash IS NOT NULL AND NEW.runner_receipt_mac IS NOT NULL AND
+    NEW.execution_image_digest IS NOT NULL
+  ) THEN RAISE EXCEPTION 'terminal workspace result requires active worker lease and signed receipt';
+  END IF;
+  IF OLD.status='queued' AND NEW.status NOT IN ('queued','leased','cancelled','expired') THEN
+    RAISE EXCEPTION 'invalid workspace run transition';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER workspace_run_transition BEFORE UPDATE ON workspace_runs FOR EACH ROW EXECUTE FUNCTION enforce_workspace_run_transition();

@@ -1235,17 +1235,17 @@ paths:
 
   /api/v1/workspaces:
     get: { summary: 내 작업공간 목록, responses: { "200": { description: 목록, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceList" } } } } } }
-    post: { summary: 작업공간 생성, security: *write, requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CreateWorkspaceRequest" } } } }, responses: { "201": { description: 생성됨, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }, "400": { $ref: "#/components/responses/Error" } } }
+    post: { summary: 작업공간 생성, security: *write, requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CreateWorkspaceRequest" } } } }, responses: { "200": { description: 멱등 재생, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }, "201": { description: 생성됨, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }, "400": { $ref: "#/components/responses/Error" } } }
   /api/v1/workspaces/{id}:
     parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
     get: { summary: 작업공간 상세, responses: { "200": { description: 상세, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }, "404": { $ref: "#/components/responses/Error" } } }
     put: { summary: 파일 리비전 저장, security: *write, requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SaveWorkspaceRequest" } } } }, responses: { "200": { description: 저장됨, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }, "409": { $ref: "#/components/responses/Error" } } }
   /api/v1/workspaces/{id}/runs:
-    post: { summary: 격리 실행 생성, security: *write, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CreateWorkspaceRunRequest" } } } }, responses: { "201": { description: 대기, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceRun" } } } }, "400": { $ref: "#/components/responses/Error" } } }
+    post: { summary: 격리 실행 생성, security: *write, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CreateWorkspaceRunRequest" } } } }, responses: { "200": { description: 멱등 재생, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceRun" } } } }, "201": { description: 대기, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceRun" } } } }, "400": { $ref: "#/components/responses/Error" } } }
   /api/v1/workspaces/{id}/revisions/{version}:
     get: { summary: 불변 작업공간 리비전과 경로 diff, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }, { name: version, in: path, required: true, schema: { type: integer, minimum: 1 } }], responses: { "200": { description: 리비전, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceRevision" } } } }, "404": { $ref: "#/components/responses/Error" } } }
   /api/v1/workspaces/{id}/checkpoints:
-    post: { summary: 체크포인트 생성, security: *write, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CheckpointRequest" } } } }, responses: { "201": { description: 체크포인트, content: { application/json: { schema: { $ref: "#/components/schemas/Checkpoint" } } } }, "409": { $ref: "#/components/responses/Error" } } }
+    post: { summary: 체크포인트 생성, security: *write, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CheckpointRequest" } } } }, responses: { "200": { description: 멱등 재생, content: { application/json: { schema: { $ref: "#/components/schemas/Checkpoint" } } } }, "201": { description: 체크포인트, content: { application/json: { schema: { $ref: "#/components/schemas/Checkpoint" } } } }, "409": { $ref: "#/components/responses/Error" } } }
   /api/v1/workspaces/{id}/reset:
     post: { summary: 불변 리비전으로 초기화, security: *write, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ResetWorkspaceRequest" } } } }, responses: { "200": { description: 초기화됨, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }, "409": { $ref: "#/components/responses/Error" } } }
   /api/v1/workspace-runs/{id}:
@@ -1253,14 +1253,16 @@ paths:
   /api/v1/workspace-runs/{id}/cancel:
     post: { summary: 실행 취소, security: *write, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], responses: { "200": { description: 취소 요청, content: { application/json: { schema: { type: object, additionalProperties: false, required: [id, cancel_requested], properties: { id: { type: string, format: uuid }, cancel_requested: { type: boolean } } } } } } } }
   /api/v1/understanding/challenges:
-    post: { summary: 이해 과제 생성, security: *write, requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CreateUnderstandingRequest" } } } }, responses: { "201": { description: 과제, content: { application/json: { schema: { $ref: "#/components/schemas/UnderstandingChallenge" } } } }, "409": { $ref: "#/components/responses/Error" } } }
+    post: { summary: 이해 과제 생성, security: *write, requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CreateUnderstandingRequest" } } } }, responses: { "200": { description: 멱등 재생, content: { application/json: { schema: { $ref: "#/components/schemas/UnderstandingChallenge" } } } }, "201": { description: 과제, content: { application/json: { schema: { $ref: "#/components/schemas/UnderstandingChallenge" } } } }, "409": { $ref: "#/components/responses/Error" } } }
+  /api/v1/understanding/challenges/{id}/predictions:
+    post: { summary: 실행 전 결과 예측 확정, security: *write, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CommitUnderstandingPredictionsRequest" } } } }, responses: { "200": { description: 멱등 재생 }, "201": { description: 예측 확정 }, "409": { $ref: "#/components/responses/Error" } } }
   /api/v1/understanding/challenges/{id}/submit:
     post: { summary: 이해 증거 제출, security: *write, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/SubmitUnderstandingRequest" } } } }, responses: { "200": { description: 검증 결과, content: { application/json: { schema: { $ref: "#/components/schemas/UnderstandingResult" } } } }, "400": { $ref: "#/components/responses/Error" } } }
   /api/v1/portfolio:
     get: { summary: 내 포트폴리오, responses: { "200": { description: 목록, content: { application/json: { schema: { type: object, additionalProperties: false, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/PortfolioItem" } } } } } } } } }
-    post: { summary: 포트폴리오 초안, security: *write, requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CreatePortfolioRequest" } } } }, responses: { "201": { description: 초안, content: { application/json: { schema: { $ref: "#/components/schemas/PortfolioItem" } } } }, "400": { $ref: "#/components/responses/Error" } } }
+    post: { summary: 포트폴리오 초안, security: *write, requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CreatePortfolioRequest" } } } }, responses: { "200": { description: 멱등 재생, content: { application/json: { schema: { $ref: "#/components/schemas/PortfolioItem" } } } }, "201": { description: 초안, content: { application/json: { schema: { $ref: "#/components/schemas/PortfolioItem" } } } }, "400": { $ref: "#/components/responses/Error" } } }
   /api/v1/portfolio/rights:
-    post: { summary: 권리 검토 승인, security: *write, requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PortfolioRightsRequest" } } } }, responses: { "201": { description: 승인 영수증, content: { application/json: { schema: { $ref: "#/components/schemas/PortfolioRightsReceipt" } } } }, "403": { $ref: "#/components/responses/Error" } } }
+    post: { summary: 권리 검토 승인, security: *write, requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PortfolioRightsRequest" } } } }, responses: { "200": { description: 멱등 재생, content: { application/json: { schema: { $ref: "#/components/schemas/PortfolioRightsReceipt" } } } }, "201": { description: 승인 영수증, content: { application/json: { schema: { $ref: "#/components/schemas/PortfolioRightsReceipt" } } } }, "403": { $ref: "#/components/responses/Error" } } }
   /api/v1/portfolio/{id}:
     get: { summary: 소유한 포트폴리오 상세, parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }], responses: { "200": { description: 상세, content: { application/json: { schema: { $ref: "#/components/schemas/PortfolioItem" } } } }, "404": { $ref: "#/components/responses/Error" } } }
   /api/v1/portfolio/{id}/publish:
@@ -1638,7 +1640,7 @@ components:
       type: object
       additionalProperties: false
       required: [id, status]
-      properties: { id: { type: string, format: uuid }, status: { type: string, enum: [queued, leased, running, succeeded, failed, cancelled, expired] }, exit_code: { type: [integer, "null"] }, stdout: { type: [string, "null"] }, stderr: { type: [string, "null"] }, output_truncated: { type: boolean } }
+      properties: { id: { type: string, format: uuid }, status: { type: string, enum: [queued, leased, running, succeeded, failed, cancelled, expired] }, exit_code: { type: [integer, "null"] }, stdout: { type: [string, "null"] }, stderr: { type: [string, "null"] }, output_truncated: { type: boolean }, cancel_requested: { type: boolean } }
     CreateUnderstandingRequest:
       type: object
       additionalProperties: false
@@ -1652,8 +1654,13 @@ components:
     SubmitUnderstandingRequest:
       type: object
       additionalProperties: false
-      required: [explanation, prediction, modification, transfer_answer, modification_run_id, transfer_run_id, idempotency_key]
-      properties: { explanation: { type: string, minLength: 20, maxLength: 4000 }, prediction: { type: string }, modification: { type: string }, transfer_answer: { type: string }, modification_run_id: { type: string, format: uuid }, transfer_run_id: { type: string, format: uuid }, idempotency_key: { type: string, format: uuid } }
+      required: [explanation, modification, modification_run_id, transfer_run_id, idempotency_key]
+      properties: { explanation: { type: string, minLength: 20, maxLength: 4000 }, modification: { type: string }, modification_run_id: { type: string, format: uuid }, transfer_run_id: { type: string, format: uuid }, idempotency_key: { type: string, format: uuid } }
+    CommitUnderstandingPredictionsRequest:
+      type: object
+      additionalProperties: false
+      required: [modification_prediction, transfer_prediction, idempotency_key]
+      properties: { modification_prediction: { type: string, minLength: 1 }, transfer_prediction: { type: string, minLength: 1 }, idempotency_key: { type: string, format: uuid } }
     UnderstandingResult:
       type: object
       additionalProperties: false
@@ -1665,8 +1672,8 @@ components:
     CreatePortfolioRequest:
       type: object
       additionalProperties: false
-      required: [title, problem, target_user, workspace_id, source_run_id, rights_receipt_id, visibility, assistance_disclosure, evidence_labels, idempotency_key]
-      properties: { title: { type: string, minLength: 1, maxLength: 120 }, problem: { type: string, minLength: 1, maxLength: 1000 }, target_user: { type: string, minLength: 1, maxLength: 300 }, workspace_id: { type: string, format: uuid }, source_run_id: { type: string, format: uuid }, rights_receipt_id: { type: string, format: uuid }, visibility: { type: string, enum: [private, public] }, assistance_disclosure: { type: string, minLength: 2, maxLength: 2000 }, evidence_labels: { type: array, minItems: 1, items: { $ref: "#/components/schemas/EvidenceLabel" } }, idempotency_key: { type: string, format: uuid } }
+      required: [title, problem, target_user, workspace_id, source_run_id, rights_receipt_id, visibility, assistance_disclosure, idempotency_key]
+      properties: { title: { type: string, minLength: 1, maxLength: 120 }, problem: { type: string, minLength: 1, maxLength: 1000 }, target_user: { type: string, minLength: 1, maxLength: 300 }, workspace_id: { type: string, format: uuid }, source_run_id: { type: string, format: uuid }, rights_receipt_id: { type: string, format: uuid }, visibility: { type: string, enum: [private, public] }, assistance_disclosure: { type: string, minLength: 2, maxLength: 2000 }, idempotency_key: { type: string, format: uuid } }
     PortfolioItem:
       type: object
       additionalProperties: false

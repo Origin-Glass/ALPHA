@@ -83,12 +83,27 @@ pub struct CreateChallengeRequest {
 #[serde(deny_unknown_fields)]
 pub struct SubmitChallengeRequest {
     explanation: String,
-    prediction: String,
     modification: String,
-    transfer_answer: String,
     modification_run_id: Uuid,
     transfer_run_id: Uuid,
     idempotency_key: Uuid,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommitPredictionsRequest {
+    modification_prediction: String,
+    transfer_prediction: String,
+    idempotency_key: Uuid,
+}
+
+fn signed_receipt_valid(state: &AppState, hash: Option<&Vec<u8>>, mac: Option<&Vec<u8>>) -> bool {
+    hash.zip(mac).is_some_and(|(hash, mac)| {
+        crate::workspaces::verify_receipt(
+            state.settings().workspace_receipt_secret.as_bytes(),
+            hash,
+            mac,
+        )
+    })
 }
 
 pub async fn create(
@@ -115,7 +130,7 @@ pub async fn create(
         .await?
         .ok_or(UnderstandingError::NotFound)?;
     if let Some((id,state,prompt,old))=sqlx::query_as::<_,(Uuid,String,SqlJson<Value>,Vec<u8>)>("SELECT id,state,prompt,request_hash FROM understanding_challenges WHERE user_id=$1 AND idempotency_key=$2").bind(user).bind(req.idempotency_key).fetch_optional(&mut *tx).await?{if old!=request_hash{return Err(UnderstandingError::Conflict("같은 멱등키에 다른 이해 과제를 사용할 수 없습니다"));}tx.commit().await?;return Ok((StatusCode::OK,Json(json!({"id":id,"state":state,"prompt":prompt.0}))));}
-    let source:Option<(Uuid,Vec<u8>,Vec<u8>,Vec<u8>,String,String,Vec<u8>,Vec<u8>,String,SqlJson<Value>)>=sqlx::query_as("SELECT r.id,r.artifact_hash,r.semantic_hash,r.stdout_hash,r.stdout,r.check_suite_id,r.check_suite_hash,r.template_digest,t.track_kind,r.artifact FROM workspace_runs r JOIN workspace_templates t ON(t.id,t.revision,t.template_digest)=(r.template_id,r.template_revision,r.template_digest) WHERE r.workspace_id=$1 AND r.user_id=$2 AND r.status='succeeded' AND r.deterministic_checks_passed AND r.runner_receipt_hash IS NOT NULL ORDER BY r.completed_at DESC LIMIT 1").bind(req.workspace_id).bind(user).fetch_optional(&mut *tx).await?;
+    let source:Option<(Uuid,Vec<u8>,Vec<u8>,Vec<u8>,String,String,Vec<u8>,Vec<u8>,String,SqlJson<Value>,Option<Vec<u8>>,Option<Vec<u8>>)>=sqlx::query_as("SELECT r.id,r.artifact_hash,r.semantic_hash,r.stdout_hash,r.stdout,r.check_suite_id,r.check_suite_hash,r.template_digest,t.track_kind,r.artifact,r.runner_receipt_hash,r.runner_receipt_mac FROM workspace_runs r JOIN workspace_templates t ON(t.id,t.revision,t.template_digest)=(r.template_id,r.template_revision,r.template_digest) WHERE r.workspace_id=$1 AND r.user_id=$2 AND r.status='succeeded' AND r.deterministic_checks_passed ORDER BY r.completed_at DESC LIMIT 1").bind(req.workspace_id).bind(user).fetch_optional(&mut *tx).await?;
     let (
         run,
         hash,
@@ -127,9 +142,16 @@ pub async fn create(
         template_digest,
         track,
         artifact,
+        receipt_hash,
+        receipt_mac,
     ) = source.ok_or(UnderstandingError::Conflict(
         "작업자가 검증한 성공 실행이 먼저 필요합니다",
     ))?;
+    if !signed_receipt_valid(&state, receipt_hash.as_ref(), receipt_mac.as_ref()) {
+        return Err(UnderstandingError::Conflict(
+            "서명된 작업자 실행 영수증이 필요합니다",
+        ));
+    }
     let paths = artifact
         .0
         .as_array()
@@ -154,6 +176,54 @@ pub async fn create(
         Json(json!({"id":id,"state":"pending","prompt":prompt})),
     ))
 }
+
+pub async fn commit_predictions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<CommitPredictionsRequest>,
+) -> Result<(StatusCode, Json<Value>), UnderstandingError> {
+    let user = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
+    if req.modification_prediction.trim().is_empty() || req.transfer_prediction.trim().is_empty() {
+        return Err(UnderstandingError::Invalid(
+            "변형·전이 결과 예측을 모두 작성해 주세요",
+        ));
+    }
+    let request_hash=Sha256::digest(serde_json::to_vec(&json!({"challenge_id":id,"modification_prediction":req.modification_prediction.trim(),"transfer_prediction":req.transfer_prediction.trim()})).map_err(|_|UnderstandingError::Invalid("예측을 처리할 수 없습니다"))?).to_vec();
+    let mut tx = state.pool().begin().await?;
+    let row:Option<(Option<Uuid>,Option<Vec<u8>>,String)>=sqlx::query_as("SELECT prediction_idempotency_key,prediction_request_hash,state FROM understanding_challenges WHERE id=$1 AND user_id=$2 FOR UPDATE").bind(id).bind(user).fetch_optional(&mut *tx).await?;
+    let (old_key, old_hash, state_name) = row.ok_or(UnderstandingError::NotFound)?;
+    if let Some(old_key) = old_key {
+        if old_key != req.idempotency_key || old_hash.as_ref() != Some(&request_hash) {
+            return Err(UnderstandingError::Conflict(
+                "이미 다른 예측을 확정했습니다",
+            ));
+        }
+        tx.commit().await?;
+        return Ok((
+            StatusCode::OK,
+            Json(json!({"id":id,"predictions_committed":true})),
+        ));
+    }
+    if state_name != "pending"
+        || sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM workspace_runs WHERE challenge_id=$1)",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?
+    {
+        return Err(UnderstandingError::Conflict(
+            "검증 실행 전에만 예측을 확정할 수 있습니다",
+        ));
+    }
+    sqlx::query("UPDATE understanding_challenges SET modification_prediction=$3,transfer_prediction=$4,predictions_committed_at=now(),prediction_idempotency_key=$5,prediction_request_hash=$6 WHERE id=$1 AND user_id=$2").bind(id).bind(user).bind(req.modification_prediction.trim()).bind(req.transfer_prediction.trim()).bind(req.idempotency_key).bind(request_hash).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({"id":id,"predictions_committed":true})),
+    ))
+}
 pub async fn submit(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -161,18 +231,14 @@ pub async fn submit(
     Json(req): Json<SubmitChallengeRequest>,
 ) -> Result<Json<Value>, UnderstandingError> {
     let user = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
-    if req.explanation.trim().len() < 20
-        || req.prediction.trim().is_empty()
-        || req.modification.trim().len() < 5
-        || req.transfer_answer.trim().is_empty()
-    {
+    if req.explanation.trim().len() < 20 || req.modification.trim().len() < 5 {
         return Err(UnderstandingError::Invalid(
             "설명·예측·변형·전이 답변을 모두 작성해 주세요",
         ));
     }
     let mut tx = state.pool().begin().await?;
-    let request_hash=Sha256::digest(serde_json::to_vec(&json!({"challenge_id":id,"explanation":req.explanation,"prediction":req.prediction,"modification":req.modification,"transfer_answer":req.transfer_answer,"modification_run_id":req.modification_run_id,"transfer_run_id":req.transfer_run_id})).map_err(|_|UnderstandingError::Invalid("이해 응답을 처리할 수 없습니다"))?).to_vec();
-    let row:Option<(Uuid,Vec<u8>,Vec<u8>,Vec<u8>,Vec<u8>,Vec<u8>,SqlJson<Vec<String>>,String)>=sqlx::query_as("SELECT workspace_id,artifact_hash,source_semantic_hash,source_stdout_hash,check_suite_hash,source_template_digest,expected_concepts,state FROM understanding_challenges WHERE id=$1 AND user_id=$2 FOR UPDATE").bind(id).bind(user).fetch_optional(&mut *tx).await?;
+    let request_hash=Sha256::digest(serde_json::to_vec(&json!({"challenge_id":id,"explanation":req.explanation,"modification":req.modification,"modification_run_id":req.modification_run_id,"transfer_run_id":req.transfer_run_id})).map_err(|_|UnderstandingError::Invalid("이해 응답을 처리할 수 없습니다"))?).to_vec();
+    let row:Option<(Uuid,Vec<u8>,Vec<u8>,Vec<u8>,Vec<u8>,Vec<u8>,SqlJson<Vec<String>>,String,Option<String>,Option<String>,SqlJson<Value>)>=sqlx::query_as("SELECT c.workspace_id,c.artifact_hash,c.source_semantic_hash,c.source_stdout_hash,c.check_suite_hash,c.source_template_digest,c.expected_concepts,c.state,c.modification_prediction,c.transfer_prediction,r.artifact FROM understanding_challenges c JOIN workspace_runs r ON r.id=c.source_run_id WHERE c.id=$1 AND c.user_id=$2 FOR UPDATE OF c").bind(id).bind(user).fetch_optional(&mut *tx).await?;
     let (
         row_ws,
         source,
@@ -181,8 +247,17 @@ pub async fn submit(
         source_suite,
         source_template,
         source_paths,
-        state,
+        challenge_state,
+        modification_prediction,
+        transfer_prediction,
+        source_artifact,
     ) = row.ok_or(UnderstandingError::NotFound)?;
+    let modification_prediction = modification_prediction.ok_or(UnderstandingError::Conflict(
+        "실행 전 예측 확정이 필요합니다",
+    ))?;
+    let transfer_prediction = transfer_prediction.ok_or(UnderstandingError::Conflict(
+        "실행 전 예측 확정이 필요합니다",
+    ))?;
     if let Some((existing,old_challenge,old_hash)) = sqlx::query_as::<_, (String,Uuid,Vec<u8>)>(
         "SELECT state,challenge_id,request_hash FROM understanding_receipts WHERE user_id=$1 AND idempotency_key=$2",
     )
@@ -197,10 +272,10 @@ pub async fn submit(
             json!({"state":existing,"evidence_labels":["EXPLAINED","INDEPENDENTLY_MODIFIED","TRANSFER_VERIFIED"],"assistance_disclosure":"결정론적 숨은 검사로 검증됨"}),
         ));
     }
-    if state != "pending" {
+    if challenge_state != "pending" {
         return Err(UnderstandingError::Conflict("이미 완료된 이해 검증입니다"));
     }
-    let runs:Vec<(Uuid,Uuid,Vec<u8>,Vec<u8>,Vec<u8>,String,String,Option<Uuid>,bool,Option<Vec<u8>>,Vec<u8>,Vec<u8>)>=sqlx::query_as("SELECT id,workspace_id,artifact_hash,semantic_hash,stdout_hash,stdout,validation_kind,challenge_id,deterministic_checks_passed,runner_receipt_hash,check_suite_hash,template_digest FROM workspace_runs WHERE user_id=$1 AND id=ANY($2) AND status='succeeded'").bind(user).bind(vec![req.modification_run_id,req.transfer_run_id]).fetch_all(&mut *tx).await?;
+    let runs:Vec<(Uuid,Uuid,Vec<u8>,Vec<u8>,Vec<u8>,String,String,Option<Uuid>,bool,Option<Vec<u8>>,Vec<u8>,Vec<u8>,Option<Vec<u8>>,SqlJson<Value>)>=sqlx::query_as("SELECT id,workspace_id,artifact_hash,semantic_hash,stdout_hash,stdout,validation_kind,challenge_id,deterministic_checks_passed,runner_receipt_hash,check_suite_hash,template_digest,runner_receipt_mac,artifact FROM workspace_runs WHERE user_id=$1 AND id=ANY($2) AND status='succeeded'").bind(user).bind(vec![req.modification_run_id,req.transfer_run_id]).fetch_all(&mut *tx).await?;
     if runs.len() != 2 {
         return Err(UnderstandingError::Invalid(
             "작업자가 검증한 변형·전이 실행이 필요합니다",
@@ -221,6 +296,8 @@ pub async fn submit(
         && transfer.8
         && modification.9.is_some()
         && transfer.9.is_some()
+        && signed_receipt_valid(&state, modification.9.as_ref(), modification.12.as_ref())
+        && signed_receipt_valid(&state, transfer.9.as_ref(), transfer.12.as_ref())
         && modification.10 == source_suite
         && transfer.10 != source_suite
         && modification.11 == source_template
@@ -235,12 +312,12 @@ pub async fn submit(
             "과제에 결합된 의미 변경과 다른 템플릿 전이 검증 영수증이 필요합니다",
         ));
     }
-    if req.prediction.trim() != modification.5.trim() {
+    if modification_prediction.trim() != modification.5.trim() {
         return Err(UnderstandingError::Invalid(
             "변경 결과 예측이 검증 실행 출력과 다릅니다",
         ));
     }
-    if req.transfer_answer.trim() != transfer.5.trim() {
+    if transfer_prediction.trim() != transfer.5.trim() {
         return Err(UnderstandingError::Invalid(
             "전이 결과 답변이 검증 실행 출력과 다릅니다",
         ));
@@ -254,10 +331,35 @@ pub async fn submit(
             "설명에 서버가 확인한 소스 파일 흐름이 빠졌습니다",
         ));
     }
+    let source_files = source_artifact.0.as_array().cloned().unwrap_or_default();
+    let changed_paths = modification
+        .13
+        .0
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|file| {
+            let path = file["path"].as_str()?;
+            let content = file["content"].as_str()?;
+            let changed = !source_files
+                .iter()
+                .any(|source| source["path"] == path && source["content"] == content);
+            changed.then_some(path)
+        })
+        .collect::<Vec<_>>();
+    if changed_paths.is_empty()
+        || !changed_paths
+            .iter()
+            .any(|path| req.modification.contains(path))
+    {
+        return Err(UnderstandingError::Invalid(
+            "독립 변형 설명에 서버가 확인한 변경 파일을 포함해야 합니다",
+        ));
+    }
     let mh = modification.2.clone();
     let th = transfer.2.clone();
     let result = "transfer_verified";
-    let receipt_value = json!({"challenge":id,"source":source,"explanation":req.explanation,"prediction":req.prediction,"modification":req.modification,"transfer_answer":req.transfer_answer,"modification_run":req.modification_run_id,"transfer_run":req.transfer_run_id,"state":result});
+    let receipt_value = json!({"challenge":id,"source":source,"explanation":req.explanation,"modification_prediction":modification_prediction,"modification":req.modification,"transfer_prediction":transfer_prediction,"modification_run":req.modification_run_id,"transfer_run":req.transfer_run_id,"state":result});
     let receipt_hash = Sha256::digest(
         serde_json::to_vec(&receipt_value)
             .map_err(|_| UnderstandingError::Invalid("영수증을 처리할 수 없습니다"))?,

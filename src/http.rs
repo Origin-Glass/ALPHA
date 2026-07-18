@@ -295,6 +295,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(crate::understanding::submit),
         )
         .route(
+            "/api/v1/understanding/challenges/{id}/predictions",
+            axum::routing::post(crate::understanding::commit_predictions),
+        )
+        .route(
             "/api/v1/portfolio",
             get(crate::portfolio::list).post(crate::portfolio::create),
         )

@@ -148,6 +148,24 @@ impl DockerSandbox {
         }
     }
 
+    pub async fn immutable_image_id(&self) -> Result<String, SandboxError> {
+        let output = Command::new(&self.docker_binary)
+            .args(["image", "inspect", "--format", "{{.Id}}", &self.image])
+            .output()
+            .await
+            .map_err(|_| SandboxError::DockerUnavailable)?;
+        let id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if output.status.success()
+            && id.strip_prefix("sha256:").is_some_and(|digest| {
+                digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        {
+            Ok(id)
+        } else {
+            Err(SandboxError::DockerUnavailable)
+        }
+    }
+
     pub fn image_reference(&self) -> &str {
         &self.image
     }

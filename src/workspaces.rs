@@ -55,6 +55,12 @@ pub fn validate_files(files: &[WorkspaceFileInput]) -> Result<(), &'static str> 
             || file.path.is_empty()
             || file.path.len() > MAX_PATH_BYTES
             || file.path.contains('\0')
+            || file.path.contains("//")
+            || file.path.ends_with('/')
+            || file.path.contains('\\')
+            || !file.path.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-')
+            })
             || path.is_absolute()
             || path
                 .components()
@@ -125,6 +131,36 @@ fn hash_json(value: &Value) -> Result<Vec<u8>, WorkspaceError> {
             .map_err(|_| WorkspaceError::Invalid("입력을 처리할 수 없습니다"))?,
     )
     .to_vec())
+}
+pub fn sign_receipt(secret: &[u8], receipt_hash: &[u8]) -> Vec<u8> {
+    let mut key = [0_u8; 64];
+    if secret.len() > key.len() {
+        key[..32].copy_from_slice(&Sha256::digest(secret));
+    } else {
+        key[..secret.len()].copy_from_slice(secret);
+    }
+    let mut inner = [0x36_u8; 64];
+    let mut outer = [0x5c_u8; 64];
+    for index in 0..64 {
+        inner[index] ^= key[index];
+        outer[index] ^= key[index];
+    }
+    let inner_hash = Sha256::new()
+        .chain_update(inner)
+        .chain_update(receipt_hash)
+        .finalize();
+    Sha256::new()
+        .chain_update(outer)
+        .chain_update(inner_hash)
+        .finalize()
+        .to_vec()
+}
+pub fn verify_receipt(secret: &[u8], receipt_hash: &[u8], signature: &[u8]) -> bool {
+    use subtle::ConstantTimeEq;
+    sign_receipt(secret, receipt_hash)
+        .as_slice()
+        .ct_eq(signature)
+        .into()
 }
 fn files_json(files: &[WorkspaceFileInput]) -> Value {
     let mut files = files.to_vec();
@@ -308,7 +344,7 @@ pub async fn save(
     )?;
     let mut tx = state.pool().begin().await?;
     let version: Option<i32> = sqlx::query_scalar(
-        "SELECT version FROM project_workspaces WHERE id=$1 AND user_id=$2 FOR UPDATE",
+        "SELECT version FROM project_workspaces WHERE id=$1 AND user_id=$2 AND status='active' AND expires_at>now() FOR UPDATE",
     )
     .bind(id)
     .bind(user)
@@ -358,21 +394,41 @@ pub async fn create_run(
         ));
     }
     let mut tx = state.pool().begin().await?;
-    let template:Option<(i32,Uuid,i32,Vec<u8>,String,SqlJson<Value>,String,Vec<u8>)>=sqlx::query_as("SELECT w.version,w.template_id,w.template_revision,w.template_digest,t.image_reference,t.run_command,t.check_suite_id,t.check_suite_hash FROM project_workspaces w JOIN workspace_templates t ON(t.id,t.revision,t.template_digest)=(w.template_id,w.template_revision,w.template_digest) WHERE w.id=$1 AND w.user_id=$2 FOR UPDATE OF w").bind(id).bind(user).fetch_optional(&mut *tx).await?;
-    let (version, tid, trev, tdigest, image, command, suite, suite_hash) =
-        template.ok_or(WorkspaceError::NotFound)?;
+    let template:Option<(i32,Uuid,i32,Vec<u8>,String,SqlJson<Value>,String,Vec<u8>,bool,String)>=sqlx::query_as("SELECT w.version,w.template_id,w.template_revision,w.template_digest,t.image_reference,t.run_command,t.check_suite_id,t.check_suite_hash,t.supports_tests,t.runtime_status FROM project_workspaces w JOIN workspace_templates t ON(t.id,t.revision,t.template_digest)=(w.template_id,w.template_revision,w.template_digest) WHERE w.id=$1 AND w.user_id=$2 AND w.status='active' AND w.expires_at>now() FOR UPDATE OF w").bind(id).bind(user).fetch_optional(&mut *tx).await?;
+    let (
+        version,
+        tid,
+        trev,
+        tdigest,
+        image,
+        command,
+        suite,
+        suite_hash,
+        supports_tests,
+        runtime_status,
+    ) = template.ok_or(WorkspaceError::NotFound)?;
+    if runtime_status != "verified" {
+        return Err(WorkspaceError::Conflict(
+            "이 템플릿 런타임은 아직 검증되지 않아 실행할 수 없습니다",
+        ));
+    }
     let request_hash = hash_json(
         &json!({"workspace_id":id,"expected_version":req.expected_version,"validation_kind":req.validation_kind,"challenge_id":req.challenge_id}),
     )?;
     if let Some(challenge) = req.challenge_id {
-        let source: (Uuid,Vec<u8>,Vec<u8>) = sqlx::query_as(
-            "SELECT workspace_id,source_template_digest,check_suite_hash FROM understanding_challenges WHERE id=$1 AND user_id=$2",
+        let source: (Uuid,Vec<u8>,Vec<u8>,Option<time::OffsetDateTime>) = sqlx::query_as(
+            "SELECT workspace_id,source_template_digest,check_suite_hash,predictions_committed_at FROM understanding_challenges WHERE id=$1 AND user_id=$2",
         )
         .bind(challenge)
         .bind(user)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(WorkspaceError::Invalid("소유한 이해 과제가 아닙니다"))?;
+        if source.3.is_none() {
+            return Err(WorkspaceError::Conflict(
+                "변형·전이 실행 전에 결과 예측을 먼저 확정해야 합니다",
+            ));
+        }
         if (req.validation_kind == "modification"
             && (source.0 != id || source.1 != tdigest || source.2 != suite_hash))
             || (req.validation_kind == "transfer"
@@ -414,7 +470,7 @@ pub async fn create_run(
     let ah = hash_json(&artifact)?;
     let semantic_hash = semantic_file_hash(&files);
     let run = Uuid::now_v7();
-    sqlx::query("INSERT INTO workspace_runs(id,workspace_id,user_id,workspace_version,template_id,template_revision,template_digest,image_reference,artifact,artifact_hash,semantic_hash,validation_kind,challenge_id,check_suite_id,check_suite_hash,command,idempotency_key,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)").bind(run).bind(id).bind(user).bind(version).bind(tid).bind(trev).bind(tdigest).bind(image).bind(SqlJson(artifact)).bind(ah).bind(semantic_hash).bind(req.validation_kind).bind(req.challenge_id).bind(suite).bind(suite_hash).bind(command).bind(req.idempotency_key).bind(request_hash).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO workspace_runs(id,workspace_id,user_id,workspace_version,template_id,template_revision,template_digest,image_reference,artifact,artifact_hash,semantic_hash,validation_kind,challenge_id,check_suite_id,check_suite_hash,supports_tests_snapshot,command,idempotency_key,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)").bind(run).bind(id).bind(user).bind(version).bind(tid).bind(trev).bind(tdigest).bind(image).bind(SqlJson(artifact)).bind(ah).bind(semantic_hash).bind(req.validation_kind).bind(req.challenge_id).bind(suite).bind(suite_hash).bind(supports_tests).bind(command).bind(req.idempotency_key).bind(request_hash).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok((
         StatusCode::CREATED,
@@ -427,10 +483,10 @@ pub async fn run_detail(
     AxumPath(id): AxumPath<Uuid>,
 ) -> Result<Json<Value>, WorkspaceError> {
     let user = crate::auth::authenticated_user_id(&state, &headers).await?;
-    let r:Option<(Uuid,String,Option<i32>,Option<String>,Option<String>,bool)>=sqlx::query_as("SELECT id,status,exit_code,stdout,stderr,output_truncated FROM workspace_runs WHERE id=$1 AND user_id=$2").bind(id).bind(user).fetch_optional(state.pool()).await?;
+    let r:Option<(Uuid,String,Option<i32>,Option<String>,Option<String>,bool,bool)>=sqlx::query_as("SELECT id,status,exit_code,stdout,stderr,output_truncated,cancel_requested_at IS NOT NULL FROM workspace_runs WHERE id=$1 AND user_id=$2").bind(id).bind(user).fetch_optional(state.pool()).await?;
     let r = r.ok_or(WorkspaceError::NotFound)?;
     Ok(Json(
-        json!({"id":r.0,"status":r.1,"exit_code":r.2,"stdout":r.3,"stderr":r.4,"output_truncated":r.5}),
+        json!({"id":r.0,"status":r.1,"exit_code":r.2,"stdout":r.3,"stderr":r.4,"output_truncated":r.5,"cancel_requested":r.6}),
     ))
 }
 pub async fn cancel_run(
@@ -456,11 +512,11 @@ pub struct LeasedWorkspaceRun {
 pub async fn lease_next(
     pool: &sqlx::PgPool,
     worker: &str,
-    image: &str,
+    execution_image_digest: &str,
 ) -> Result<Option<LeasedWorkspaceRun>, sqlx::Error> {
     let mut tx = pool.begin().await?;
     sqlx::query("UPDATE workspace_runs SET status='expired',lease_token=NULL,leased_by=NULL,lease_expires_at=NULL,completed_at=now(),stderr='최대 재시도 횟수를 초과했습니다' WHERE status IN('leased','running') AND lease_expires_at<now() AND attempt>=3").execute(&mut *tx).await?;
-    let row:Option<(Uuid,String,SqlJson<Value>,SqlJson<Value>)>=sqlx::query_as("WITH candidate AS(SELECT id FROM workspace_runs WHERE image_reference=$2 AND (status='queued' OR(status IN('leased','running') AND lease_expires_at<now() AND attempt<3)) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE workspace_runs r SET status='leased',attempt=attempt+1,lease_token=gen_random_uuid(),leased_by=$1,lease_expires_at=now()+interval '30 seconds' FROM candidate WHERE r.id=candidate.id RETURNING r.id,r.image_reference,r.artifact,r.command").bind(worker).bind(image).fetch_optional(&mut *tx).await?;
+    let row:Option<(Uuid,String,SqlJson<Value>,SqlJson<Value>)>=sqlx::query_as("WITH candidate AS(SELECT r.id FROM workspace_runs r JOIN project_workspaces w ON(w.id,w.user_id)=(r.workspace_id,r.user_id) WHERE w.status='active' AND w.expires_at>now() AND (r.status='queued' OR(r.status IN('leased','running') AND r.lease_expires_at<now() AND r.attempt<3)) ORDER BY r.created_at FOR UPDATE OF r SKIP LOCKED LIMIT 1) UPDATE workspace_runs r SET status='leased',attempt=attempt+1,lease_token=gen_random_uuid(),leased_by=$1,lease_expires_at=now()+interval '30 seconds',execution_image_digest=$2 FROM candidate WHERE r.id=candidate.id RETURNING r.id,r.image_reference,r.artifact,r.command").bind(worker).bind(execution_image_digest).fetch_optional(&mut *tx).await?;
     let Some(row) = row else {
         tx.commit().await?;
         return Ok(None);
@@ -490,17 +546,19 @@ pub async fn complete_run(
     id: Uuid,
     token: Uuid,
     out: &crate::sandbox::WorkspaceOutcome,
+    receipt_secret: &[u8],
 ) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    let row:Option<(Vec<u8>,Vec<u8>,String,Option<Uuid>,Vec<u8>,String,SqlJson<Value>,String,Vec<u8>)>=sqlx::query_as("SELECT r.artifact_hash,r.semantic_hash,r.validation_kind,r.challenge_id,r.template_digest,r.image_reference,r.command,r.check_suite_id,r.check_suite_hash FROM workspace_runs r JOIN project_workspaces w ON(w.id,w.user_id)=(r.workspace_id,r.user_id) WHERE r.id=$1 AND r.lease_token=$2 AND r.status='running' AND r.lease_expires_at>now() AND r.cancel_requested_at IS NULL AND w.status='active' AND w.expires_at>now() FOR UPDATE OF r").bind(id).bind(token).fetch_optional(&mut *tx).await?;
+    let row:Option<(Vec<u8>,Vec<u8>,String,Option<Uuid>,Vec<u8>,String,SqlJson<Value>,String,Vec<u8>,String)>=sqlx::query_as("SELECT r.artifact_hash,r.semantic_hash,r.validation_kind,r.challenge_id,r.template_digest,r.image_reference,r.command,r.check_suite_id,r.check_suite_hash,r.execution_image_digest FROM workspace_runs r JOIN project_workspaces w ON(w.id,w.user_id)=(r.workspace_id,r.user_id) WHERE r.id=$1 AND r.lease_token=$2 AND r.status='running' AND r.lease_expires_at>now() AND r.cancel_requested_at IS NULL AND w.status='active' AND w.expires_at>now() FOR UPDATE OF r").bind(id).bind(token).fetch_optional(&mut *tx).await?;
     let Some(row) = row else {
         tx.rollback().await?;
         return Ok(false);
     };
     let stdout_hash = Sha256::digest(out.stdout.as_bytes()).to_vec();
     let passed = out.status == "succeeded" && out.exit_code == Some(0) && !out.output_truncated;
-    let receipt=Sha256::digest(serde_json::to_vec(&json!({"run":id,"lease_token":token,"artifact_hash":row.0,"semantic_hash":row.1,"validation_kind":row.2,"challenge_id":row.3,"template_digest":row.4,"image_reference":row.5,"command":row.6.0,"check_suite_id":row.7,"check_suite_hash":row.8,"status":out.status,"exit_code":out.exit_code,"stdout_hash":stdout_hash,"output_truncated":out.output_truncated,"checks_passed":passed})).unwrap_or_default()).to_vec();
-    sqlx::query("UPDATE workspace_runs SET status=$3,lease_token=NULL,leased_by=NULL,lease_expires_at=NULL,exit_code=$4,stdout=$5,stderr=$6,output_truncated=$7,stdout_hash=$8,deterministic_checks_passed=$9,runner_receipt_hash=$10,completed_at=now() WHERE id=$1 AND lease_token=$2").bind(id).bind(token).bind(out.status).bind(out.exit_code).bind(&out.stdout).bind(&out.stderr).bind(out.output_truncated).bind(stdout_hash).bind(passed).bind(receipt).execute(&mut *tx).await?;
+    let receipt=Sha256::digest(serde_json::to_vec(&json!({"run":id,"lease_token":token,"artifact_hash":row.0,"semantic_hash":row.1,"validation_kind":row.2,"challenge_id":row.3,"template_digest":row.4,"declared_image_reference":row.5,"command":row.6.0,"check_suite_id":row.7,"check_suite_hash":row.8,"execution_image_digest":row.9,"status":out.status,"exit_code":out.exit_code,"stdout_hash":stdout_hash,"output_truncated":out.output_truncated,"checks_passed":passed})).unwrap_or_default()).to_vec();
+    let receipt_mac = sign_receipt(receipt_secret, &receipt);
+    sqlx::query("UPDATE workspace_runs SET status=$3,lease_token=NULL,leased_by=NULL,lease_expires_at=NULL,exit_code=$4,stdout=$5,stderr=$6,output_truncated=$7,stdout_hash=$8,deterministic_checks_passed=$9,runner_receipt_hash=$10,runner_receipt_mac=$11,completed_at=now() WHERE id=$1 AND lease_token=$2").bind(id).bind(token).bind(out.status).bind(out.exit_code).bind(&out.stdout).bind(&out.stderr).bind(out.output_truncated).bind(stdout_hash).bind(passed).bind(receipt).bind(receipt_mac).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(true)
 }
@@ -581,9 +639,9 @@ pub async fn checkpoint(
     let request_hash =
         hash_json(&json!({"action":"checkpoint","workspace_id":id,"name":req.name.trim()}))?;
     let mut tx = state.pool().begin().await?;
-    if let Some((existing,old,version,name))=sqlx::query_as::<_,(Uuid,Vec<u8>,i32,String)>("SELECT id,request_hash,version,name FROM workspace_checkpoints WHERE user_id=$1 AND idempotency_key=$2").bind(user).bind(req.idempotency_key).fetch_optional(&mut *tx).await?{if old!=request_hash{return Err(WorkspaceError::Conflict("같은 멱등키에 다른 체크포인트를 사용할 수 없습니다"));}tx.commit().await?;return Ok((StatusCode::OK,Json(json!({"id":existing,"version":version,"name":name}))));}
-    let version:Option<i32>=sqlx::query_scalar("SELECT version FROM project_workspaces WHERE id=$1 AND user_id=$2 AND status='active' FOR UPDATE").bind(id).bind(user).fetch_optional(&mut *tx).await?;
+    let version:Option<i32>=sqlx::query_scalar("SELECT version FROM project_workspaces WHERE id=$1 AND user_id=$2 AND status='active' AND expires_at>now() FOR UPDATE").bind(id).bind(user).fetch_optional(&mut *tx).await?;
     let version = version.ok_or(WorkspaceError::NotFound)?;
+    if let Some((existing,old,version,name))=sqlx::query_as::<_,(Uuid,Vec<u8>,i32,String)>("SELECT id,request_hash,version,name FROM workspace_checkpoints WHERE user_id=$1 AND idempotency_key=$2").bind(user).bind(req.idempotency_key).fetch_optional(&mut *tx).await?{if old!=request_hash{return Err(WorkspaceError::Conflict("같은 멱등키에 다른 체크포인트를 사용할 수 없습니다"));}tx.commit().await?;return Ok((StatusCode::OK,Json(json!({"id":existing,"version":version,"name":name}))));}
     let checkpoint = Uuid::now_v7();
     sqlx::query("INSERT INTO workspace_checkpoints(id,workspace_id,user_id,version,name,idempotency_key,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(checkpoint).bind(id).bind(user).bind(version).bind(req.name.trim()).bind(req.idempotency_key).bind(request_hash).execute(&mut *tx).await?;
     tx.commit().await?;
@@ -603,7 +661,7 @@ pub async fn reset(
     let request_hash = hash_json(
         &json!({"action":"reset","workspace_id":id,"version":req.version,"expected_version":req.expected_version}),
     )?;
-    let current:Option<i32>=sqlx::query_scalar("SELECT version FROM project_workspaces WHERE id=$1 AND user_id=$2 AND status='active' FOR UPDATE").bind(id).bind(user).fetch_optional(&mut *tx).await?;
+    let current:Option<i32>=sqlx::query_scalar("SELECT version FROM project_workspaces WHERE id=$1 AND user_id=$2 AND status='active' AND expires_at>now() FOR UPDATE").bind(id).bind(user).fetch_optional(&mut *tx).await?;
     let current = current.ok_or(WorkspaceError::NotFound)?;
     if let Some((old,result,old_workspace))=sqlx::query_as::<_,(Vec<u8>,i32,Uuid)>("SELECT request_hash,resulting_version,workspace_id FROM workspace_mutations WHERE user_id=$1 AND idempotency_key=$2").bind(user).bind(req.idempotency_key).fetch_optional(&mut *tx).await?{
         if old_workspace!=id||old!=request_hash{return Err(WorkspaceError::Conflict("같은 멱등키에 다른 초기화를 사용할 수 없습니다"));}

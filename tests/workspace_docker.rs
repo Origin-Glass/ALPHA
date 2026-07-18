@@ -28,6 +28,8 @@ async fn multi_file_workspace_enforces_real_isolation_limits_and_cleanup() {
     assert!(image.contains("@sha256:"));
     let sandbox = DockerSandbox::new("docker".into(), image).unwrap();
     sandbox.verify().await.unwrap();
+    let image_id = sandbox.immutable_image_id().await.unwrap();
+    assert!(image_id.starts_with("sha256:") && image_id.len() == 71);
     let run = Uuid::now_v7();
     let files = vec![
         file(

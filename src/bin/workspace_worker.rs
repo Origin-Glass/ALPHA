@@ -17,8 +17,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
     let database_url = env::var("DATABASE_URL")?;
     let image = env::var("WORKSPACE_IMAGE")?;
-    if !immutable_image_reference(&image) {
+    let app_env = env::var("APP_ENV").unwrap_or_else(|_| "development".into());
+    if app_env == "production" && !immutable_image_reference(&image) {
         return Err("WORKSPACE_IMAGE는 sha256 digest로 고정해야 합니다".into());
+    }
+    let receipt_secret = env::var("WORKSPACE_RECEIPT_SECRET")?;
+    if receipt_secret.len() < 32 {
+        return Err("WORKSPACE_RECEIPT_SECRET은 32바이트 이상이어야 합니다".into());
     }
     let worker = env::var("WORKSPACE_WORKER_ID")
         .unwrap_or_else(|_| format!("workspace-worker-{}", std::process::id()));
@@ -27,11 +32,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db::migrate(&pool).await?;
     let sandbox = DockerSandbox::new(docker, image.clone())?;
     sandbox.verify().await?;
+    let execution_image_digest = sandbox.immutable_image_id().await?;
     let mut shutdown = tokio::spawn(alpha::shutdown::signal());
     info!(%worker,%image,"작업공간 작업자 시작");
     loop {
         let _ = workspaces::expire(&pool).await?;
-        if let Some(job) = workspaces::lease_next(&pool, &worker, &image).await? {
+        if let Some(job) = workspaces::lease_next(&pool, &worker, &execution_image_digest).await? {
             if !workspaces::mark_running(&pool, job.id, job.lease_token).await? {
                 continue;
             }
@@ -42,7 +48,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             match outcome {
                 Some(Ok(out)) => {
-                    if !workspaces::complete_run(&pool, job.id, job.lease_token, &out).await? {
+                    if !workspaces::complete_run(
+                        &pool,
+                        job.id,
+                        job.lease_token,
+                        &out,
+                        receipt_secret.as_bytes(),
+                    )
+                    .await?
+                    {
                         warn!(run_id=%job.id,"임대 만료 또는 취소로 결과 폐기")
                     }
                 }
