@@ -119,6 +119,8 @@ async fn require_instructor(
         SELECT COALESCE(organization_membership.role IN ('OWNER', 'ADMIN'), false)
                    AS can_invite_instructor
         FROM classes class
+        JOIN organizations organization
+          ON organization.id = class.organization_id AND organization.status = 'active'
         LEFT JOIN organization_memberships organization_membership
           ON organization_membership.organization_id = class.organization_id
          AND organization_membership.user_id = $2
@@ -267,7 +269,15 @@ pub async fn create_class(
         return Err(ClassError::InvalidInput("학급 이름을 확인해 주세요"));
     }
     let manager: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM organization_memberships WHERE organization_id = $1 AND user_id = $2 AND role IN ('OWNER', 'ADMIN', 'INSTRUCTOR'))",
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM organization_memberships membership
+            JOIN organizations organization
+              ON organization.id = membership.organization_id AND organization.status = 'active'
+            WHERE membership.organization_id = $1 AND membership.user_id = $2
+              AND membership.role IN ('OWNER', 'ADMIN', 'INSTRUCTOR')
+        )
+        "#,
     )
     .bind(organization_id)
     .bind(user_id)
@@ -409,7 +419,12 @@ pub async fn accept_invitation(
     .await?;
     let (invitation_id, class_id, class_role) = invitation.ok_or(ClassError::InviteInvalid)?;
     let organization_id: Uuid = sqlx::query_scalar(
-        "SELECT organization_id FROM classes WHERE id = $1 AND status = 'active'",
+        r#"
+        SELECT class.organization_id FROM classes class
+        JOIN organizations organization
+          ON organization.id = class.organization_id AND organization.status = 'active'
+        WHERE class.id = $1 AND class.status = 'active'
+        "#,
     )
     .bind(class_id)
     .fetch_optional(&mut *transaction)
@@ -624,7 +639,8 @@ async fn class_view(pool: &PgPool, class_id: Uuid, user_id: Uuid) -> Result<Clas
                     THEN 'INSTRUCTOR' ELSE 'LEARNER' END AS viewer_role,
                (SELECT COUNT(*) FROM class_memberships member WHERE member.class_id = class.id AND member.role = 'LEARNER') AS learner_count
         FROM classes class
-        JOIN organizations organization ON organization.id = class.organization_id
+        JOIN organizations organization
+          ON organization.id = class.organization_id AND organization.status = 'active'
         LEFT JOIN class_memberships class_membership
           ON class_membership.class_id = class.id AND class_membership.user_id = $2
         LEFT JOIN organization_memberships organization_membership
@@ -897,6 +913,9 @@ pub async fn reward_completed_assignments(
         r#"
         SELECT assignment.id
         FROM class_assignments assignment
+        JOIN classes class ON class.id = assignment.class_id AND class.status = 'active'
+        JOIN organizations organization
+          ON organization.id = class.organization_id AND organization.status = 'active'
         JOIN class_memberships member ON member.class_id = assignment.class_id
          AND member.user_id = $1 AND member.role = 'LEARNER'
         WHERE assignment.status = 'active'

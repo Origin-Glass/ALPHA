@@ -4,6 +4,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
@@ -22,6 +23,7 @@ pub enum ContestError {
     RegistrationRequired,
     RoleForbidden,
     NotEnded,
+    Randomness,
     Database(sqlx::Error),
 }
 
@@ -55,6 +57,14 @@ impl IntoResponse for ContestError {
                 "contest_not_ended",
                 "대회 종료 후에만 레이팅을 확정할 수 있습니다",
             ),
+            Self::Randomness => {
+                tracing::error!("안전한 대회 초대 토큰 생성 실패");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    "요청을 처리하지 못했습니다",
+                )
+            }
             Self::Database(error) => {
                 tracing::error!(%error, "대회 데이터베이스 처리 실패");
                 (
@@ -267,6 +277,12 @@ pub struct JoinRequest {
     join_code: Option<String>,
 }
 
+fn private_join_token() -> Result<String, ContestError> {
+    let mut bytes = [0_u8; 24];
+    getrandom::fill(&mut bytes).map_err(|_| ContestError::Randomness)?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
 pub async fn join(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -275,11 +291,12 @@ pub async fn join(
 ) -> Result<StatusCode, ContestError> {
     let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
     require_terms(&state, user_id).await?;
+    let mut transaction = state.pool().begin().await?;
     let contest: (Uuid, String, Option<Uuid>, Option<Vec<u8>>, OffsetDateTime) = sqlx::query_as(
-        "SELECT id, visibility, organization_id, join_code_hash, ends_at FROM contests WHERE slug = $1 AND status = 'published'",
+        "SELECT id, visibility, organization_id, join_code_hash, ends_at FROM contests WHERE slug = $1 AND status = 'published' FOR UPDATE",
     )
     .bind(slug)
-    .fetch_optional(state.pool())
+    .fetch_optional(&mut *transaction)
     .await?
     .ok_or(ContestError::NotFound)?;
     if OffsetDateTime::now_utc() >= contest.4 {
@@ -289,28 +306,118 @@ pub async fn join(
     }
     match contest.1.as_str() {
         "private" => {
-            let supplied = request
-                .join_code
-                .filter(|code| (4..=64).contains(&code.len()))
-                .ok_or(ContestError::RegistrationRequired)?;
-            let digest = Sha256::digest(supplied.as_bytes());
-            if !bool::from(
-                contest
-                    .3
-                    .as_deref()
-                    .ok_or(ContestError::RegistrationRequired)?
-                    .ct_eq(&digest),
-            ) {
+            let locked: bool = sqlx::query_scalar(
+                r#"
+                SELECT COALESCE((
+                    SELECT locked_until > now() FROM contest_join_global_failures
+                    WHERE contest_id = $1
+                ), false) OR COALESCE((
+                    SELECT locked_until > now() FROM contest_join_user_failures
+                    WHERE contest_id = $1 AND user_id = $2
+                ), false)
+                "#,
+            )
+            .bind(contest.0)
+            .bind(user_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+            if locked {
                 return Err(ContestError::RegistrationRequired);
             }
+            let supplied = request.join_code.as_deref().filter(|code| {
+                code.len() == 32
+                    && code
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            });
+            let matches = supplied.is_some_and(|code| {
+                bool::from(
+                    contest
+                        .3
+                        .as_deref()
+                        .unwrap_or_default()
+                        .ct_eq(&Sha256::digest(code.as_bytes())),
+                )
+            });
+            if !matches {
+                sqlx::query(
+                    r#"
+                    INSERT INTO contest_join_user_failures
+                        (contest_id, user_id, failures, window_started_at, locked_until)
+                    VALUES ($1, $2, 1, now(), NULL)
+                    ON CONFLICT (contest_id, user_id) DO UPDATE SET
+                        failures = CASE
+                            WHEN contest_join_user_failures.window_started_at <= now() - interval '10 minutes' THEN 1
+                            ELSE LEAST(contest_join_user_failures.failures + 1, 5)
+                        END,
+                        window_started_at = CASE
+                            WHEN contest_join_user_failures.window_started_at <= now() - interval '10 minutes' THEN now()
+                            ELSE contest_join_user_failures.window_started_at
+                        END,
+                        locked_until = CASE
+                            WHEN contest_join_user_failures.locked_until > now() THEN contest_join_user_failures.locked_until
+                            WHEN contest_join_user_failures.window_started_at > now() - interval '10 minutes'
+                                 AND contest_join_user_failures.failures + 1 >= 5
+                            THEN now() + interval '15 minutes'
+                            ELSE NULL
+                        END
+                    "#,
+                )
+                .bind(contest.0)
+                .bind(user_id)
+                .execute(&mut *transaction)
+                .await?;
+                sqlx::query(
+                    r#"
+                    INSERT INTO contest_join_global_failures
+                        (contest_id, failures, window_started_at, locked_until)
+                    VALUES ($1, 1, now(), NULL)
+                    ON CONFLICT (contest_id) DO UPDATE SET
+                        failures = CASE
+                            WHEN contest_join_global_failures.window_started_at <= now() - interval '10 minutes' THEN 1
+                            ELSE LEAST(contest_join_global_failures.failures + 1, 60)
+                        END,
+                        window_started_at = CASE
+                            WHEN contest_join_global_failures.window_started_at <= now() - interval '10 minutes' THEN now()
+                            ELSE contest_join_global_failures.window_started_at
+                        END,
+                        locked_until = CASE
+                            WHEN contest_join_global_failures.locked_until > now() THEN contest_join_global_failures.locked_until
+                            WHEN contest_join_global_failures.window_started_at > now() - interval '10 minutes'
+                                 AND contest_join_global_failures.failures + 1 >= 60
+                            THEN now() + interval '15 minutes'
+                            ELSE NULL
+                        END
+                    "#,
+                )
+                .bind(contest.0)
+                .execute(&mut *transaction)
+                .await?;
+                transaction.commit().await?;
+                return Err(ContestError::RegistrationRequired);
+            }
+            sqlx::query(
+                "DELETE FROM contest_join_user_failures WHERE contest_id = $1 AND user_id = $2",
+            )
+            .bind(contest.0)
+            .bind(user_id)
+            .execute(&mut *transaction)
+            .await?;
         }
         "organization" => {
             let member: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM organization_memberships WHERE organization_id = $1 AND user_id = $2)",
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM organization_memberships membership
+                    JOIN organizations organization
+                      ON organization.id = membership.organization_id AND organization.status = 'active'
+                    WHERE membership.organization_id = $1 AND membership.user_id = $2
+                )
+                "#,
             )
             .bind(contest.2)
             .bind(user_id)
-            .fetch_one(state.pool())
+            .fetch_one(&mut *transaction)
             .await?;
             if !member {
                 return Err(ContestError::RegistrationRequired);
@@ -318,17 +425,24 @@ pub async fn join(
         }
         _ => {}
     }
-    sqlx::query(
+    let registered = sqlx::query(
         r#"
         INSERT INTO contest_registrations (contest_id, user_id)
         VALUES ($1, $2)
-        ON CONFLICT (contest_id, user_id) DO UPDATE SET status = 'active'
+        ON CONFLICT (contest_id, user_id) DO UPDATE
+        SET status = CASE WHEN contest_registrations.status = 'withdrawn'
+                          THEN 'active' ELSE contest_registrations.status END
+        WHERE contest_registrations.status IN ('active', 'withdrawn')
         "#,
     )
     .bind(contest.0)
     .bind(user_id)
-    .execute(state.pool())
+    .execute(&mut *transaction)
     .await?;
+    if registered.rows_affected() != 1 {
+        return Err(ContestError::RegistrationRequired);
+    }
+    transaction.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -547,17 +661,17 @@ pub async fn create(
         || request
             .freezes_at
             .is_some_and(|freeze| freeze <= request.starts_at || freeze >= request.ends_at)
-        || (request.visibility == "private"
-            && request
-                .join_code
-                .as_ref()
-                .is_none_or(|code| !(4..=64).contains(&code.len())))
+        || request.join_code.is_some()
         || (request.visibility == "organization") != request.organization_id.is_some()
     {
         return Err(ContestError::InvalidInput("대회 설정을 확인해 주세요"));
     }
-    let join_code_hash = request
-        .join_code
+    let join_code = if request.visibility == "private" {
+        Some(private_join_token()?)
+    } else {
+        None
+    };
+    let join_code_hash = join_code
         .as_ref()
         .map(|code| Sha256::digest(code.as_bytes()).to_vec());
     let mut transaction = state.pool().begin().await?;
@@ -612,7 +726,11 @@ pub async fn create(
     transaction.commit().await?;
     Ok((
         StatusCode::CREATED,
-        Json(serde_json::json!({"id": contest_id, "slug": request.slug})),
+        Json(serde_json::json!({
+            "id": contest_id,
+            "slug": request.slug,
+            "join_code": join_code
+        })),
     ))
 }
 
