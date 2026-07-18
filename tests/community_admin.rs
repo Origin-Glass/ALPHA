@@ -292,7 +292,7 @@ async fn reported_content_is_hidden_only_by_audited_moderation(pool: PgPool) {
 fn problem_payload(statement: &str, sample_output: &str, hidden_output: &str) -> Value {
     json!({
         "title": "개정 재현성 문제", "statement": statement,
-        "difficulty": 3, "learning_axis": "algorithmic_reasoning", "status": "published",
+        "difficulty": 3, "learning_axis": "algorithmic_reasoning", "status": "draft",
         "time_limit_ms": 1000, "memory_limit_mb": 128,
         "checker_kind": "whitespace", "float_tolerance": null,
         "tags": [{"tag": "implementation", "label": "구현"}],
@@ -301,6 +301,16 @@ fn problem_payload(statement: &str, sample_output: &str, hidden_output: &str) ->
             {"input": "2\n", "expected_output": hidden_output, "visibility": "hidden", "score_weight": 1, "group_key": "main"}
         ]
     })
+}
+
+async fn publish_current_revision(pool: &PgPool, slug: &str) {
+    sqlx::query(
+        "UPDATE problems SET status = 'published', published_at = now() WHERE slug = $1 AND current_revision_id IS NOT NULL",
+    )
+    .bind(slug)
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -329,6 +339,7 @@ async fn queued_submission_keeps_its_revision_tests_after_problem_update(pool: P
         .await
         .unwrap();
     assert_eq!(created.status(), StatusCode::CREATED);
+    publish_current_revision(&pool, "revision-stability").await;
 
     let submission = app
         .clone()
@@ -369,6 +380,7 @@ async fn queued_submission_keeps_its_revision_tests_after_problem_update(pool: P
         .await
         .unwrap();
     assert_eq!(revised.status(), StatusCode::OK);
+    publish_current_revision(&pool, "revision-stability").await;
     let old_tests = load_test_cases(&pool, job.problem_revision_id, "formal")
         .await
         .unwrap();
