@@ -184,7 +184,16 @@ jobs:
           ALPHA_JUDGE_WORKER_IMAGE: registry.example/alpha-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
           JUDGE_IMAGE: registry.example/alpha-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
           ALPHA_JUDGE_WORKSPACE: /srv/alpha/judge-work
-        run: docker compose -f compose.production.yaml config --quiet
+        run: |
+          docker compose -f compose.production.yaml config --quiet
+          if grep '^FROM ' Dockerfile | grep -Ev '(@sha256:[0-9a-f]{64}([[:space:]]|$)|^FROM runtime AS worker$)'; then
+            echo "Dockerfile 기반 이미지가 digest로 고정되지 않았습니다." >&2
+            exit 1
+          fi
+          if docker compose -f compose.production.yaml config --images | grep -Ev '@sha256:[0-9a-f]{64}$'; then
+            echo "운영 Compose 이미지가 digest로 고정되지 않았습니다." >&2
+            exit 1
+          fi
       - name: OpenAPI 라우트 일치
         run: ruby ops/check-openapi.rb
       - name: main 대상 개발 문서 차단
