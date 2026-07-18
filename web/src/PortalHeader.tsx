@@ -14,6 +14,8 @@ function PortalHeader() {
         <a href="/community">커뮤니티</a>
         <a href="/problems">문제 탐색</a>
         <a href="/governance">게시 검토</a>
+        <a href="/content-studio">AI 제작실</a>
+        <a href="/provider-controls">AI 제공자</a>
         <a href="/policies">정책·개인정보</a>
       </nav>
     </header>
