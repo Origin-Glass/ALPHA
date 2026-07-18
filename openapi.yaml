@@ -1,0 +1,715 @@
+openapi: 3.1.0
+info:
+  title: ALPHA API
+  version: 1.0.0
+  description: 한국어 우선 온라인 저지·소프트웨어 학습 플랫폼의 운영 API 계약
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: /
+
+security:
+  - sessionCookie: []
+
+x-security:
+  public: &public []
+  write: &write
+    - sessionCookie: []
+      csrfHeader: []
+
+x-parameters:
+  provider: &provider
+    name: provider
+    in: path
+    required: true
+    schema: { type: string, enum: [google, github] }
+  slug: &slug
+    name: slug
+    in: path
+    required: true
+    schema: { type: string }
+  level: &level
+    name: level
+    in: path
+    required: true
+    schema: { type: integer, minimum: 1, maximum: 9 }
+  handle: &handle
+    name: handle
+    in: path
+    required: true
+    schema: { type: string }
+  post_id: &post_id
+    name: post_id
+    in: path
+    required: true
+    schema: { type: string, format: uuid }
+  answer_id: &answer_id
+    name: answer_id
+    in: path
+    required: true
+    schema: { type: string, format: uuid }
+  report_id: &report_id
+    name: report_id
+    in: path
+    required: true
+    schema: { type: string, format: uuid }
+  external_problem_id: &external_problem_id
+    name: external_problem_id
+    in: path
+    required: true
+    schema: { type: string }
+  organization_id: &organization_id
+    name: organization_id
+    in: path
+    required: true
+    schema: { type: string, format: uuid }
+  class_id: &class_id
+    name: class_id
+    in: path
+    required: true
+    schema: { type: string, format: uuid }
+  submission_id: &submission_id
+    name: submission_id
+    in: path
+    required: true
+    schema: { type: string, format: uuid }
+
+x-responses:
+  ok: &ok
+    "200":
+      description: 성공
+      content:
+        application/json:
+          schema: {}
+    "400": { $ref: "#/components/responses/BadRequest" }
+    "401": { $ref: "#/components/responses/Unauthorized" }
+    "403": { $ref: "#/components/responses/Forbidden" }
+    "404": { $ref: "#/components/responses/NotFound" }
+    "429": { $ref: "#/components/responses/RateLimited" }
+  write_result: &write_result
+    "200":
+      description: 성공
+      content:
+        application/json:
+          schema: {}
+    "201":
+      description: 생성됨
+      content:
+        application/json:
+          schema: {}
+    "204": { description: "성공, 응답 본문 없음" }
+    "400": { $ref: "#/components/responses/BadRequest" }
+    "401": { $ref: "#/components/responses/Unauthorized" }
+    "403": { $ref: "#/components/responses/Forbidden" }
+    "404": { $ref: "#/components/responses/NotFound" }
+    "409": { $ref: "#/components/responses/Conflict" }
+    "429": { $ref: "#/components/responses/RateLimited" }
+
+paths:
+  /health/live:
+    get:
+      operationId: healthLive
+      security: *public
+      responses: *ok
+  /health/ready:
+    get:
+      operationId: healthReady
+      security: *public
+      responses:
+        "200": { description: 데이터베이스 포함 준비 완료 }
+        "503": { description: 준비되지 않음 }
+  /metrics:
+    get:
+      operationId: metrics
+      security: *public
+      responses:
+        "200":
+          description: Prometheus 텍스트 지표
+          content:
+            text/plain:
+              schema: { type: string }
+        "503": { description: 지표 생성 실패 }
+
+  /api/v1/auth/providers:
+    get:
+      operationId: authProviders
+      security: *public
+      responses: *ok
+  /api/v1/auth/test-session:
+    post:
+      operationId: createTestSession
+      security: *public
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TestSessionRequest" }
+      responses: *write_result
+  /api/v1/auth/me:
+    get:
+      operationId: authMe
+      responses: *ok
+  /api/v1/auth/terms:
+    post:
+      operationId: acceptTerms
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TermsRequest" }
+      responses: *write_result
+  /api/v1/auth/{provider}/start:
+    parameters: [*provider]
+    get:
+      operationId: oauthStart
+      security: *public
+      responses:
+        "302": { description: OAuth 제공자로 이동 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/v1/auth/{provider}/callback:
+    parameters: [*provider]
+    get:
+      operationId: oauthCallback
+      security: *public
+      responses:
+        "302": { description: 검증 완료 후 서비스로 이동 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      security: *write
+      responses: *write_result
+
+  /api/v1/onboarding:
+    get:
+      operationId: onboardingQuestions
+      security: *public
+      responses: *ok
+  /api/v1/onboarding/complete:
+    post:
+      operationId: completeOnboarding
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OnboardingRequest" }
+      responses: *write_result
+  /api/v1/learning/path:
+    get:
+      operationId: learningPath
+      responses: *ok
+
+  /api/v1/activities:
+    get:
+      operationId: listActivities
+      responses: *ok
+  /api/v1/activities/{slug}:
+    parameters: [*slug]
+    get:
+      operationId: activityDetail
+      responses: *ok
+  /api/v1/activities/{slug}/start:
+    parameters: [*slug]
+    post:
+      operationId: startActivity
+      security: *write
+      responses: *write_result
+  /api/v1/activities/{slug}/attempts:
+    parameters: [*slug]
+    post:
+      operationId: attemptActivity
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/activities/{slug}/assistance/{level}:
+    parameters: [*slug, *level]
+    post:
+      operationId: requestAssistance
+      security: *write
+      responses: *write_result
+  /api/v1/assistance/status:
+    get:
+      operationId: assistanceStatus
+      security: *public
+      responses: *ok
+  /api/v1/tracks/{slug}:
+    parameters: [*slug]
+    get:
+      operationId: trackDetail
+      security: *public
+      responses: *ok
+
+  /api/v1/progression/dashboard:
+    get:
+      operationId: progressionDashboard
+      responses: *ok
+  /api/v1/profile:
+    put:
+      operationId: updateProfile
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/profiles/{handle}:
+    parameters: [*handle]
+    get:
+      operationId: publicProfile
+      security: *public
+      responses: *ok
+  /api/v1/rankings:
+    get:
+      operationId: rankings
+      security: *public
+      responses: *ok
+
+  /api/v1/community:
+    get:
+      operationId: listCommunityPosts
+      security: *public
+      responses: *ok
+    post:
+      operationId: createCommunityPost
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/community/{post_id}:
+    parameters: [*post_id]
+    get:
+      operationId: communityPostDetail
+      security: *public
+      responses: *ok
+  /api/v1/community/{post_id}/answers:
+    parameters: [*post_id]
+    post:
+      operationId: createCommunityAnswer
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/community/{post_id}/answers/{answer_id}/accept:
+    parameters: [*post_id, *answer_id]
+    post:
+      operationId: acceptCommunityAnswer
+      security: *write
+      responses: *write_result
+  /api/v1/community/reports:
+    post:
+      operationId: reportCommunityContent
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+
+  /api/v1/contests:
+    get:
+      operationId: listContests
+      security: *public
+      responses: *ok
+  /api/v1/contests/{slug}:
+    parameters: [*slug]
+    get:
+      operationId: contestDetail
+      security: *public
+      responses: *ok
+  /api/v1/contests/{slug}/join:
+    parameters: [*slug]
+    post:
+      operationId: joinContest
+      security: *write
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/contests/{slug}/scoreboard:
+    parameters: [*slug]
+    get:
+      operationId: contestScoreboard
+      security: *public
+      responses: *ok
+
+  /api/v1/admin/contests:
+    post:
+      operationId: adminCreateContest
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/admin/contests/{slug}/finalize:
+    parameters: [*slug]
+    post:
+      operationId: adminFinalizeContest
+      security: *write
+      responses: *write_result
+  /api/v1/admin/metadata/solved-ac/{external_problem_id}/refresh:
+    parameters: [*external_problem_id]
+    post:
+      operationId: adminRefreshSolvedAc
+      security: *write
+      responses: *write_result
+  /api/v1/admin/problems:
+    post:
+      operationId: adminCreateProblem
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/admin/problems/{slug}/revisions:
+    parameters: [*slug]
+    post:
+      operationId: adminReviseProblem
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/admin/problems/{slug}/rejudge:
+    parameters: [*slug]
+    post:
+      operationId: adminRejudgeProblem
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/admin/notices:
+    post:
+      operationId: adminCreateNotice
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/admin/community/reports:
+    get:
+      operationId: adminCommunityReports
+      responses: *ok
+  /api/v1/admin/community/reports/{report_id}/resolve:
+    parameters: [*report_id]
+    post:
+      operationId: adminResolveReport
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/admin/judge/workers:
+    get:
+      operationId: adminJudgeWorkers
+      responses: *ok
+  /api/v1/admin/audit:
+    get:
+      operationId: adminAuditLog
+      responses: *ok
+
+  /api/v1/payments/checkout:
+    post:
+      operationId: createCheckout
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+
+  /api/v1/organizations:
+    post:
+      operationId: createOrganization
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/organizations/{organization_id}/classes:
+    parameters: [*organization_id]
+    post:
+      operationId: createClass
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/classes:
+    get:
+      operationId: listClasses
+      responses: *ok
+  /api/v1/classes/{class_id}:
+    parameters: [*class_id]
+    get:
+      operationId: classDetail
+      responses: *ok
+  /api/v1/classes/{class_id}/invitations:
+    parameters: [*class_id]
+    post:
+      operationId: createClassInvitation
+      security: *write
+      responses: *write_result
+  /api/v1/class-invitations/accept:
+    post:
+      operationId: acceptClassInvitation
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/classes/{class_id}/assignments:
+    parameters: [*class_id]
+    post:
+      operationId: createClassAssignment
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenericObject" }
+      responses: *write_result
+  /api/v1/classes/{class_id}/instructor-dashboard:
+    parameters: [*class_id]
+    get:
+      operationId: classInstructorDashboard
+      responses: *ok
+  /api/v1/classes/{class_id}/export.csv:
+    parameters: [*class_id]
+    get:
+      operationId: exportClassCsv
+      responses:
+        "200":
+          description: CSV 내보내기
+          content:
+            text/csv:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/problems:
+    get:
+      operationId: listProblems
+      security: *public
+      responses: *ok
+  /api/v1/problems/{slug}:
+    parameters: [*slug]
+    get:
+      operationId: problemDetail
+      security: *public
+      responses: *ok
+  /api/v1/problems/{slug}/draft:
+    parameters: [*slug]
+    get:
+      operationId: getDraft
+      responses: *ok
+    put:
+      operationId: saveDraft
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DraftRequest" }
+      responses: *write_result
+
+  /api/v1/submissions:
+    get:
+      operationId: listSubmissions
+      responses: *ok
+    post:
+      operationId: createSubmission
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubmissionRequest" }
+      responses: *write_result
+  /api/v1/runs:
+    post:
+      operationId: createRun
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RunRequest" }
+      responses: *write_result
+  /api/v1/submissions/{submission_id}:
+    parameters: [*submission_id]
+    get:
+      operationId: submissionDetail
+      responses: *ok
+  /api/v1/submissions/{submission_id}/cancel:
+    parameters: [*submission_id]
+    post:
+      operationId: cancelSubmission
+      security: *write
+      responses: *write_result
+  /api/v1/submissions/{submission_id}/events:
+    parameters: [*submission_id]
+    get:
+      operationId: submissionEvents
+      responses:
+        "200":
+          description: 판정 상태 SSE
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: alpha_session
+    csrfHeader:
+      type: apiKey
+      in: header
+      name: x-csrf-token
+
+  responses:
+    BadRequest:
+      description: 요청 검증 실패
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: 유효한 세션 필요
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: CSRF 또는 권한 검증 실패
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: 리소스를 찾을 수 없음
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: 현재 상태와 충돌
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: 요청 제한 초과
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+    GenericObject:
+      type: object
+      additionalProperties: true
+    TestSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [handle]
+      properties:
+        handle:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9-]{1,16}[a-z0-9]$"
+    TermsRequest:
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        version: { type: string, const: "2026-07-18" }
+    OnboardingRequest:
+      type: object
+      additionalProperties: false
+      required: [answers]
+      properties:
+        answers:
+          type: array
+          items:
+            type: object
+            required: [question_key, selected_option]
+            properties:
+              question_key: { type: string }
+              selected_option: { type: integer, minimum: 0 }
+    DraftRequest:
+      type: object
+      additionalProperties: false
+      required: [language, source]
+      properties:
+        language: { $ref: "#/components/schemas/Language" }
+        source: { type: string, minLength: 0, maxLength: 100000 }
+    SubmissionRequest:
+      type: object
+      additionalProperties: false
+      required: [problem_slug, language, source, idempotency_key]
+      properties:
+        problem_slug: { type: string }
+        language: { $ref: "#/components/schemas/Language" }
+        source: { type: string, minLength: 1, maxLength: 100000 }
+        idempotency_key: { type: string, format: uuid }
+        contest_slug: { type: string }
+    RunRequest:
+      type: object
+      additionalProperties: false
+      required: [problem_slug, language, source, idempotency_key, mode]
+      properties:
+        problem_slug: { type: string }
+        language: { $ref: "#/components/schemas/Language" }
+        source: { type: string, minLength: 1, maxLength: 100000 }
+        idempotency_key: { type: string, format: uuid }
+        mode: { type: string, enum: [sample, custom] }
+        custom_input: { type: string }
+    Language:
+      type: string
+      enum: [cpp20, python3, java21]

@@ -89,7 +89,7 @@ function LoginPage() {
             <div><strong>개발 검증 모드</strong><span>운영에서는 자동으로 차단됩니다</span></div>
             <label htmlFor="test-handle">개발용 테스트 식별자</label>
             <div className="test-login__controls">
-              <input id="test-handle" value={handle} onChange={(event) => setHandle(event.target.value)} required pattern="[a-z0-9][a-z0-9-]{1,16}[a-z0-9]" />
+              <input id="test-handle" value={handle} onChange={(event) => setHandle(event.target.value)} required pattern="[a-z0-9](?:[a-z0-9]|-){1,16}[a-z0-9]" />
               <button type="submit" disabled={submitting}>{submitting ? '로그인 중…' : '검증 계정 시작'}</button>
             </div>
           </form>

@@ -57,7 +57,10 @@ function SessionControl() {
     const response = await fetch('/api/v1/auth/logout', {
       method: 'POST', credentials: 'include', headers: { 'x-csrf-token': csrf },
     });
-    if (response.ok) window.location.assign('/');
+    if (response.ok) {
+      await response.text();
+      window.location.assign('/');
+    }
   };
 
   return (

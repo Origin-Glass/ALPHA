@@ -16,6 +16,7 @@ pub struct Settings {
     pub github_client_id: String,
     pub github_client_secret: String,
     pub solved_ac_enabled: bool,
+    pub trust_proxy_headers: bool,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -54,6 +55,7 @@ impl Settings {
         let payments_enabled = value("PAYMENTS_ENABLED") == "true";
         let payment_provider = value("PAYMENT_PROVIDER");
         let solved_ac_enabled = value("SOLVED_AC_ENABLED") == "true";
+        let trust_proxy_headers = value("TRUST_PROXY_HEADERS") == "true";
 
         if app_env == "production" && test_identity_enabled {
             return Err(ConfigError::ProductionTestIdentity);
@@ -105,6 +107,7 @@ impl Settings {
             github_client_id,
             github_client_secret,
             solved_ac_enabled,
+            trust_proxy_headers,
         })
     }
 }

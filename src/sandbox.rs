@@ -59,6 +59,7 @@ pub struct DockerSandbox {
 enum ContainerResult {
     Exited {
         success: bool,
+        exit_code: Option<i32>,
         stdout: Vec<u8>,
         stderr: Vec<u8>,
         oom_killed: bool,
@@ -73,6 +74,15 @@ struct ExecutionLimits {
     timeout: Duration,
     stdout_bytes: usize,
     stderr_bytes: usize,
+}
+
+fn exhausted_memory(exit_code: Option<i32>, oom_killed: bool, stderr: &[u8]) -> bool {
+    let stderr = String::from_utf8_lossy(stderr);
+    oom_killed
+        || exit_code == Some(137)
+        || ["std::bad_alloc", "MemoryError", "OutOfMemoryError"]
+            .iter()
+            .any(|marker| stderr.contains(marker))
 }
 
 async fn read_limited<R: AsyncRead + Unpin>(
@@ -246,6 +256,7 @@ impl DockerSandbox {
                     } else {
                         ContainerResult::Exited {
                             success: status.success(),
+                            exit_code: status.code(),
                             stdout: stdout.0,
                             stderr: stderr.0,
                             oom_killed: self.oom_killed(name).await,
@@ -370,8 +381,11 @@ impl DockerSandbox {
                     run_output: None,
                 },
                 ContainerResult::Exited {
-                    oom_killed: true, ..
-                } => JudgeOutcome {
+                    exit_code,
+                    oom_killed,
+                    ref stderr,
+                    ..
+                } if exhausted_memory(exit_code, oom_killed, stderr) => JudgeOutcome {
                     verdict: Verdict::MemoryLimitExceeded,
                     score: 0,
                     compile_output: None,
@@ -456,8 +470,11 @@ impl DockerSandbox {
                     });
                 }
                 ContainerResult::Exited {
-                    oom_killed: true, ..
-                } => {
+                    exit_code,
+                    oom_killed,
+                    ref stderr,
+                    ..
+                } if exhausted_memory(exit_code, oom_killed, stderr) => {
                     return Ok(JudgeOutcome {
                         verdict: Verdict::MemoryLimitExceeded,
                         score: 0,
@@ -564,5 +581,23 @@ fn language_commands(
             ))
         }
         _ => Err(SandboxError::InvalidConfiguration),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exhausted_memory;
+
+    #[test]
+    fn recognizes_memory_exhaustion_across_container_runtimes() {
+        assert!(exhausted_memory(Some(137), false, b""));
+        assert!(exhausted_memory(
+            Some(134),
+            false,
+            b"terminate called after throwing std::bad_alloc"
+        ));
+        assert!(exhausted_memory(Some(1), false, b"MemoryError"));
+        assert!(exhausted_memory(Some(1), false, b"OutOfMemoryError"));
+        assert!(!exhausted_memory(Some(1), false, b"segmentation fault"));
     }
 }

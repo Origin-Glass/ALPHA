@@ -169,10 +169,11 @@ async fn oauth_state_is_hashed_and_can_only_be_consumed_once(pool: PgPool) {
             .unwrap();
     assert!(!raw_state_was_stored);
 
-    let first = consume_oauth_transaction(&pool, "google", &state)
+    let secret = "0123456789abcdef0123456789abcdef";
+    let first = consume_oauth_transaction(&pool, "google", &state, secret)
         .await
         .unwrap();
-    let replay = consume_oauth_transaction(&pool, "google", &state)
+    let replay = consume_oauth_transaction(&pool, "google", &state, secret)
         .await
         .unwrap();
     assert_eq!(first.unwrap().redirect_after, "/learn");

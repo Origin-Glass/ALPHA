@@ -1,7 +1,20 @@
-use axum::{Json, Router, http::StatusCode, routing::get};
+use axum::{
+    Json, Router,
+    body::Body,
+    extract::State,
+    http::{Request, StatusCode, header},
+    middleware,
+    response::{IntoResponse, Response},
+    routing::get,
+};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::sync::Arc;
+use tower_http::{
+    request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
+    trace::{DefaultOnResponse, TraceLayer},
+};
+use tracing::Level;
 
 use crate::config::Settings;
 
@@ -11,6 +24,7 @@ pub struct AppState {
     settings: Arc<Settings>,
     http_client: reqwest::Client,
     ai_provider: Arc<dyn crate::activities::AiAssistanceProvider>,
+    runtime: Arc<crate::observability::RuntimeMetrics>,
 }
 
 impl AppState {
@@ -21,10 +35,11 @@ impl AppState {
             http_client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(10))
-                .user_agent("Origin-Glass-ALPHA/0.1")
+                .user_agent("Origin-Glass-ALPHA/1.0")
                 .build()
                 .expect("고정 HTTP 클라이언트 설정은 유효하다"),
             ai_provider: crate::activities::default_ai_provider(),
+            runtime: Arc::new(crate::observability::RuntimeMetrics::default()),
         }
     }
 
@@ -49,12 +64,18 @@ impl AppState {
     pub fn ai_provider(&self) -> &dyn crate::activities::AiAssistanceProvider {
         self.ai_provider.as_ref()
     }
+
+    pub fn runtime(&self) -> &crate::observability::RuntimeMetrics {
+        &self.runtime
+    }
 }
 
 pub fn router(state: AppState) -> Router {
+    let middleware_state = state.clone();
     Router::new()
         .route("/health/live", get(liveness))
         .route("/health/ready", get(readiness))
+        .route("/metrics", get(metrics))
         .route(
             "/api/v1/auth/test-session",
             axum::routing::post(crate::auth::test_session),
@@ -244,6 +265,29 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(crate::submissions::rejudge_problem),
         )
         .with_state(state)
+        .layer(middleware::from_fn_with_state(
+            middleware_state,
+            crate::observability::track_and_limit,
+        ))
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<Body>| {
+                    let request_id = request
+                        .extensions()
+                        .get::<RequestId>()
+                        .and_then(|id| id.header_value().to_str().ok())
+                        .unwrap_or("unknown");
+                    tracing::info_span!(
+                        "http_request",
+                        %request_id,
+                        method = %request.method(),
+                        uri = %request.uri()
+                    )
+                })
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
 }
 
 async fn liveness() -> Json<Value> {
@@ -269,4 +313,70 @@ async fn readiness(
             )
         }
     }
+}
+
+async fn metrics(State(state): State<AppState>) -> Response {
+    let jobs = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT COUNT(*) FILTER (WHERE status = 'ready'),
+               COUNT(*) FILTER (WHERE status = 'leased'),
+               COUNT(*) FILTER (WHERE status = 'dead')
+        FROM judge_jobs
+        "#,
+    )
+    .fetch_one(state.pool())
+    .await;
+    let workers = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT COUNT(*) FILTER (WHERE last_heartbeat_at >= now() - interval '30 seconds'),
+               COUNT(*) FILTER (WHERE last_heartbeat_at < now() - interval '30 seconds')
+        FROM judge_workers
+        "#,
+    )
+    .fetch_one(state.pool())
+    .await;
+    let (jobs, workers) = match (jobs, workers) {
+        (Ok(jobs), Ok(workers)) => (jobs, workers),
+        (Err(error), _) | (_, Err(error)) => {
+            tracing::warn!(%error, "운영 지표 조회 실패");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                "alpha_metrics_up 0\n",
+            )
+                .into_response();
+        }
+    };
+    let body = format!(
+        concat!(
+            "# TYPE alpha_http_requests_total counter\n",
+            "alpha_http_requests_total {}\n",
+            "# TYPE alpha_http_server_errors_total counter\n",
+            "alpha_http_server_errors_total {}\n",
+            "# TYPE alpha_judge_jobs gauge\n",
+            "alpha_judge_jobs{{status=\"ready\"}} {}\n",
+            "alpha_judge_jobs{{status=\"leased\"}} {}\n",
+            "alpha_judge_jobs{{status=\"dead\"}} {}\n",
+            "# TYPE alpha_judge_workers gauge\n",
+            "alpha_judge_workers{{health=\"healthy\"}} {}\n",
+            "alpha_judge_workers{{health=\"stale\"}} {}\n",
+            "alpha_metrics_up 1\n"
+        ),
+        state.runtime().request_count(),
+        state.runtime().server_error_count(),
+        jobs.0,
+        jobs.1,
+        jobs.2,
+        workers.0,
+        workers.1,
+    );
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
 }

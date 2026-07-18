@@ -48,16 +48,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(10))
-        .user_agent("Origin-Glass-ALPHA/0.1 metadata-worker")
+        .user_agent("Origin-Glass-ALPHA/1.0 metadata-worker")
         .build()?;
     let mut interval = tokio::time::interval(Duration::from_secs(interval_seconds));
 
     if !enabled {
         info!("solved.ac 메타데이터 작업자는 비활성화 상태입니다");
-        tokio::signal::ctrl_c().await?;
+        alpha::shutdown::signal().await;
         return Ok(());
     }
 
+    let mut shutdown = tokio::spawn(alpha::shutdown::signal());
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -66,8 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(error) => warn!(%error, "외부 문제 메타데이터 대상 조회 실패"),
                 }
             }
-            signal = tokio::signal::ctrl_c() => {
-                signal?;
+            _ = &mut shutdown => {
                 info!("메타데이터 작업자 종료");
                 break;
             }
