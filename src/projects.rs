@@ -142,7 +142,13 @@ pub async fn create_idea(
         .bind(user)
         .fetch_one(&mut *tx)
         .await?;
-    if let Some(row) = idea_by_key(&mut tx, user, request.idempotency_key).await? {
+    let canonical = json!({"title":request.title.trim(),"motivation":request.motivation.trim(),"target_user":request.target_user.trim(),
+        "intended_outcome":request.intended_outcome.trim(),"core_feature":request.core_feature.trim(),"technology":request.technology,
+        "weekly_minutes":request.weekly_minutes,"assistance_policy":request.assistance_policy,"requested_features":request.requested_features});
+    if let Some(existing) = sqlx::query_scalar::<_, SqlJson<Value>>("SELECT jsonb_build_object('title',title,'motivation',motivation,'target_user',target_user,'intended_outcome',intended_outcome,'core_feature',core_feature,'technology',technology,'weekly_minutes',weekly_minutes,'assistance_policy',assistance_policy,'requested_features',requested_features) FROM project_ideas WHERE user_id=$1 AND idempotency_key=$2")
+        .bind(user).bind(request.idempotency_key).fetch_optional(&mut *tx).await? {
+        if existing.0 != canonical { return Err(ProjectError::Conflict("같은 멱등키에 다른 아이디어를 사용할 수 없습니다")); }
+        let row = idea_by_key(&mut tx, user, request.idempotency_key).await?.ok_or(ProjectError::NotFound)?;
         tx.commit().await?;
         return Ok((StatusCode::OK, Json(row)));
     }
@@ -212,8 +218,8 @@ pub async fn create(
         .bind(user)
         .fetch_one(&mut *tx)
         .await?;
-    if let Some(id) = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM learner_projects WHERE user_id=$1 AND (idempotency_key=$2 OR idea_id=$3)",
+    if let Some((id, idea_id, key)) = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
+        "SELECT id,idea_id,idempotency_key FROM learner_projects WHERE user_id=$1 AND (idempotency_key=$2 OR idea_id=$3)",
     )
     .bind(user)
     .bind(request.idempotency_key)
@@ -221,6 +227,9 @@ pub async fn create(
     .fetch_optional(&mut *tx)
     .await?
     {
+        if key == request.idempotency_key && idea_id != request.idea_id {
+            return Err(ProjectError::Conflict("같은 멱등키에 다른 아이디어를 사용할 수 없습니다"));
+        }
         let result = project_detail(&mut tx, user, id).await?;
         tx.commit().await?;
         return Ok((StatusCode::OK, Json(result)));

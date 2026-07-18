@@ -299,7 +299,7 @@ async fn disabled_ai_still_completes_plan_idea_project_and_help(pool: PgPool) {
                 "/api/v1/projects/{}/assistance",
                 project["id"].as_str().unwrap()
             ),
-            json!({"milestone_id":project["milestones"][0]["id"],"skill":"rust"}),
+            json!({"milestone_id":project["milestones"][0]["id"],"skill":"rust","idempotency_key":Uuid::now_v7()}),
         )
         .await,
     )

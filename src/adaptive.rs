@@ -23,6 +23,7 @@ pub struct EvidenceRequest {
 pub struct HelpRequest {
     milestone_id: Uuid,
     skill: String,
+    idempotency_key: Uuid,
 }
 
 fn skill_ok(skill: &str) -> bool {
@@ -55,8 +56,18 @@ pub async fn evidence(
     let (policy, _) =
         crate::projects::owned_project(state.pool(), user, project, request.milestone_id).await?;
     let mut tx = state.pool().begin().await?;
-    if let Some((previous,resulting))=sqlx::query_as::<_,(Option<i16>,Option<i16>)>("SELECT previous_level,resulting_level FROM project_learning_events WHERE user_id=$1 AND idempotency_key=$2")
-        .bind(user).bind(request.idempotency_key).fetch_optional(&mut *tx).await? { tx.commit().await?; return Ok(Json(json!({"previous_level":previous,"level":resulting,"rule_version":"project-learning-v1"}))); }
+    if let Some((milestone, skill, successful, previous, resulting, metadata)) = sqlx::query_as::<
+        _,
+        (Option<Uuid>, Option<String>, Option<bool>, Option<i16>, Option<i16>, sqlx::types::Json<Value>),
+    >("SELECT milestone_id,skill,successful,previous_level,resulting_level,metadata FROM project_learning_events WHERE user_id=$1 AND idempotency_key=$2")
+        .bind(user).bind(request.idempotency_key).fetch_optional(&mut *tx).await? {
+        if milestone != Some(request.milestone_id) || skill.as_deref() != Some(&request.skill)
+            || successful != Some(request.successful) || metadata.0["kind"] != request.kind {
+            return Err(ProjectError::Conflict("같은 멱등키에 다른 도움 근거를 사용할 수 없습니다"));
+        }
+        tx.commit().await?;
+        return Ok(Json(json!({"previous_level":previous,"level":resulting,"rule_version":"project-learning-v1"})));
+    }
     sqlx::query("INSERT INTO project_assistance_states (project_id,milestone_id,skill,level) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING")
         .bind(project).bind(request.milestone_id).bind(&request.skill).bind(initial_level(&policy)).execute(&mut *tx).await?;
     let (previous,failures):(i16,i16)=sqlx::query_as("SELECT level,consecutive_failures FROM project_assistance_states WHERE project_id=$1 AND milestone_id=$2 AND skill=$3 FOR UPDATE")
@@ -90,19 +101,32 @@ pub async fn help(
     }
     let (policy, _) =
         crate::projects::owned_project(state.pool(), user, project, request.milestone_id).await?;
+    if let Some((milestone, skill, level)) = sqlx::query_as::<_, (Option<Uuid>, Option<String>, Option<i16>)>(
+        "SELECT milestone_id,skill,resulting_level FROM project_learning_events WHERE user_id=$1 AND idempotency_key=$2",
+    ).bind(user).bind(request.idempotency_key).fetch_optional(state.pool()).await? {
+        if milestone != Some(request.milestone_id) || skill.as_deref() != Some(&request.skill) {
+            return Err(ProjectError::Conflict("같은 멱등키에 다른 도움 요청을 사용할 수 없습니다"));
+        }
+        let level = level.ok_or(ProjectError::Conflict("도움 요청 기록이 올바르지 않습니다"))?;
+        return Ok(Json(json!({"level":level,"content":help_content(level),"provider_used":false,"rule_version":"project-learning-v1"})));
+    }
     let level:Option<i16>=sqlx::query_scalar("SELECT level FROM project_assistance_states WHERE project_id=$1 AND milestone_id=$2 AND skill=$3")
         .bind(project).bind(request.milestone_id).bind(&request.skill).fetch_optional(state.pool()).await?;
     let level = level.unwrap_or(initial_level(&policy));
-    let content = match level {
+    let content = help_content(level);
+    sqlx::query("INSERT INTO project_learning_events (id,user_id,project_id,milestone_id,event_kind,skill,resulting_level,idempotency_key,metadata) VALUES ($1,$2,$3,$4,'assistance_requested',$5,$6,$7,$8)")
+        .bind(Uuid::now_v7()).bind(user).bind(project).bind(request.milestone_id).bind(&request.skill).bind(level).bind(request.idempotency_key).bind(json!({"provider_used":false})).execute(state.pool()).await?;
+    Ok(Json(
+        json!({"level":level,"content":content,"provider_used":false,"rule_version":"project-learning-v1"}),
+    ))
+}
+
+fn help_content(level: i16) -> &'static str {
+    match level {
         1 => "요구사항과 테스트를 확인하고 독립적으로 구현하세요.",
         2 => "승인된 공식 문서와 간단한 치트 시트를 확인하세요.",
         3 => "공식 문서에서 API 이름, 버전, 오류 계약을 먼저 찾으세요.",
         4 => "어떤 입력과 실패 조건부터 검증하면 좋을까요?",
         _ => "목표를 작은 단계로 나누고 다음 한 단계만 구현하세요.",
-    };
-    sqlx::query("INSERT INTO project_learning_events (id,user_id,project_id,milestone_id,event_kind,skill,resulting_level,metadata) VALUES ($1,$2,$3,$4,'assistance_requested',$5,$6,$7)")
-        .bind(Uuid::now_v7()).bind(user).bind(project).bind(request.milestone_id).bind(&request.skill).bind(level).bind(json!({"provider_used":false})).execute(state.pool()).await?;
-    Ok(Json(
-        json!({"level":level,"content":content,"provider_used":false,"rule_version":"project-learning-v1"}),
-    ))
+    }
 }

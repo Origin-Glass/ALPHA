@@ -1384,8 +1384,8 @@ components:
     AssistanceRequest:
       type: object
       additionalProperties: false
-      required: [milestone_id, skill]
-      properties: { milestone_id: { type: string, format: uuid }, skill: { type: string, pattern: "^[a-z0-9+#.-]{1,32}$" } }
+      required: [milestone_id, skill, idempotency_key]
+      properties: { milestone_id: { type: string, format: uuid }, skill: { type: string, pattern: "^[a-z0-9+#.-]{1,32}$" }, idempotency_key: { type: string, format: uuid } }
     Error:
       type: object
       additionalProperties: false

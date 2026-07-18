@@ -21,6 +21,7 @@ pub enum LearningPlanError {
     Auth(AuthError),
     Invalid(&'static str),
     NotFound,
+    Conflict,
     Database(sqlx::Error),
 }
 impl From<AuthError> for LearningPlanError {
@@ -42,6 +43,11 @@ impl IntoResponse for LearningPlanError {
                 StatusCode::NOT_FOUND,
                 "recommendation_not_found",
                 "추천을 찾을 수 없습니다",
+            ),
+            Self::Conflict => (
+                StatusCode::CONFLICT,
+                "idempotency_conflict",
+                "같은 멱등키에 다른 요청을 사용할 수 없습니다",
             ),
             Self::Database(e) => {
                 tracing::error!(%e, "학습 계획 처리 실패");
@@ -141,6 +147,12 @@ pub async fn create(
     Json(request): Json<PlanRequest>,
 ) -> Result<(StatusCode, Json<PlanResponse>), LearningPlanError> {
     let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
+    const REQUIRED_AXES: [&str; 4] = [
+        "algorithmic_reasoning",
+        "code_literacy",
+        "docs_learning",
+        "independent_coding",
+    ];
     if request.rule_version != RULE_VERSION
         || request.target_outcome.trim().is_empty()
         || request.target_outcome.chars().count() > 300
@@ -155,6 +167,9 @@ pub async fn create(
         || !bounded(&request.interests, 10, 80)
         || !bounded(&request.goals, 10, 120)
         || request.diagnostic_scores.len() != 4
+        || REQUIRED_AXES
+            .iter()
+            .any(|axis| !request.diagnostic_scores.contains_key(*axis))
         || request
             .diagnostic_scores
             .values()
@@ -164,12 +179,27 @@ pub async fn create(
             "학습 계획 입력 범위와 형식을 확인해 주세요",
         ));
     }
+    let canonical = json!({"rule_version":request.rule_version,"target_outcome":request.target_outcome,"weekly_minutes":request.weekly_minutes,
+        "preferred_language":request.preferred_language,"path_mode":request.path_mode,"interests":request.interests,"goals":request.goals,"diagnostic_scores":request.diagnostic_scores});
     let mut tx = state.pool().begin().await?;
     sqlx::query("SELECT id FROM users WHERE id=$1 FOR UPDATE")
         .bind(user_id)
         .fetch_one(&mut *tx)
         .await?;
-    if let Some(row) = fetch_by_key(&mut tx, user_id, request.idempotency_key).await? {
+    if let Some(existing) = sqlx::query_scalar::<_, SqlJson<Value>>(
+        "SELECT input FROM learning_plan_revisions WHERE user_id=$1 AND idempotency_key=$2",
+    )
+    .bind(user_id)
+    .bind(request.idempotency_key)
+    .fetch_optional(&mut *tx)
+    .await?
+    {
+        if existing.0 != canonical {
+            return Err(LearningPlanError::Conflict);
+        }
+        let row = fetch_by_key(&mut tx, user_id, request.idempotency_key)
+            .await?
+            .ok_or(LearningPlanError::NotFound)?;
         tx.commit().await?;
         return Ok((StatusCode::OK, Json(row.into())));
     }
@@ -216,8 +246,6 @@ pub async fn create(
         {"kind":"code_reading","title":"비슷한 구현 읽고 경계 찾기","estimated_minutes":30,"reason_code":format!("mastery_gap:{weakest}")},
         {"kind":"reflection","title":"선택과 검증 근거 기록","estimated_minutes":30,"reason_code":"auditable_learning"}
     ]);
-    let canonical = json!({"rule_version":request.rule_version,"target_outcome":request.target_outcome,"weekly_minutes":request.weekly_minutes,
-        "preferred_language":request.preferred_language,"path_mode":request.path_mode,"interests":request.interests,"goals":request.goals,"diagnostic_scores":request.diagnostic_scores});
     let input_bytes = serde_json::to_vec(&canonical)
         .map_err(|_| LearningPlanError::Invalid("학습 계획 입력을 처리할 수 없습니다"))?;
     let input_hash = Sha256::digest(&input_bytes).to_vec();
