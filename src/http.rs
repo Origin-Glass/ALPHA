@@ -89,6 +89,23 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/auth/terms",
             axum::routing::post(crate::auth::accept_terms),
         )
+        .route("/api/v1/policies", get(crate::auth::policies))
+        .route(
+            "/api/v1/policies/consents",
+            axum::routing::post(crate::auth::accept_policy),
+        )
+        .route(
+            "/api/v1/data-requests",
+            axum::routing::post(crate::governance::create_data_request),
+        )
+        .route(
+            "/api/v1/data-requests/{id}",
+            get(crate::governance::data_request),
+        )
+        .route(
+            "/api/v1/data-requests/{id}/cancel",
+            axum::routing::post(crate::governance::cancel_data_request),
+        )
         .route(
             "/api/v1/auth/{provider}/start",
             get(crate::auth::oauth_start),

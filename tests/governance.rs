@@ -106,6 +106,19 @@ async fn publication_requires_usable_rights_and_two_non_author_reviewers(pool: P
     grant(&pool, &author, "CONTENT_CREATOR").await;
     grant(&pool, &content_reviewer, "CONTENT_REVIEWER").await;
     grant(&pool, &rights_reviewer, "RIGHTS_REVIEWER").await;
+    for session in [&author, &content_reviewer, &rights_reviewer] {
+        assert_eq!(
+            post(
+                &app,
+                session,
+                "/api/v1/policies/consents",
+                json!({"version": "2026-07-18"})
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+    }
 
     assert_eq!(
         post(&app, &author, "/api/v1/admin/problems", draft_payload())
@@ -232,4 +245,112 @@ async fn publication_requires_usable_rights_and_two_non_author_reviewers(pool: P
     .await
     .unwrap();
     assert_eq!(published_and_audited, ("published".to_owned(), true));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn required_policy_consent_and_data_requests_are_user_scoped(pool: PgPool) {
+    let settings = Settings::from_pairs(HashMap::from([
+        ("APP_ENV", "test"),
+        ("DATABASE_URL", "postgres://test"),
+        ("TEST_IDENTITY_ENABLED", "true"),
+    ]))
+    .unwrap();
+    let app = router(AppState::new(pool.clone(), settings));
+    let owner = login(&app, "data-owner").await;
+    let other = login(&app, "data-other").await;
+    grant(&pool, &owner, "CONTENT_CREATOR").await;
+
+    let mut payload = draft_payload();
+    payload["slug"] = json!("policy-gated-problem");
+    assert_eq!(
+        post(&app, &owner, "/api/v1/admin/problems", payload)
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        post(
+            &app,
+            &owner,
+            "/api/v1/governance/problems/policy-gated-problem/rights",
+            json!({
+                "basis": "original", "evidence": "원본 제작 이력",
+                "commercial_use_allowed": true, "redistribution_allowed": true
+            })
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    for session in [&owner, &other] {
+        assert_eq!(
+            post(
+                &app,
+                session,
+                "/api/v1/policies/consents",
+                json!({"version": "2026-07-18"})
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        post(
+            &app,
+            &owner,
+            "/api/v1/governance/problems/policy-gated-problem/rights",
+            json!({
+                "basis": "original", "evidence": "원본 제작 이력",
+                "commercial_use_allowed": true, "redistribution_allowed": true
+            })
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+
+    let created = post(
+        &app,
+        &owner,
+        "/api/v1/data-requests",
+        json!({"kind": "export"}),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: Value =
+        serde_json::from_slice(&to_bytes(created.into_body(), 16_384).await.unwrap()).unwrap();
+    let request_id = created["id"].as_str().unwrap();
+
+    let foreign_read = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/data-requests/{request_id}"))
+                .header(header::COOKIE, &other.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(foreign_read.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        post(
+            &app,
+            &other,
+            &format!("/api/v1/data-requests/{request_id}/cancel"),
+            json!({})
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let stored_version: String =
+        sqlx::query_scalar("SELECT policy_version FROM policy_consents WHERE user_id = $1")
+            .bind(owner.user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored_version, "2026-07-18");
 }

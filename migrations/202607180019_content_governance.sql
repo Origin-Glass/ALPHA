@@ -57,3 +57,36 @@ CREATE TABLE content_governance (
 );
 
 CREATE INDEX content_governance_problem_idx ON content_governance (problem_id, updated_at DESC);
+
+CREATE TABLE policy_versions (
+    version text PRIMARY KEY,
+    title_ko text NOT NULL,
+    required boolean NOT NULL DEFAULT true,
+    published_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO policy_versions (version, title_ko) VALUES
+    ('2026-07-18', '이용약관 및 개인정보 처리방침');
+
+CREATE TABLE policy_consents (
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    policy_version text NOT NULL REFERENCES policy_versions(version),
+    consented_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, policy_version)
+);
+
+INSERT INTO policy_consents (user_id, policy_version, consented_at)
+SELECT id, terms_accepted_version, terms_accepted_at
+FROM users
+WHERE terms_accepted_version = '2026-07-18';
+
+CREATE TABLE data_requests (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind text NOT NULL CHECK (kind IN ('export', 'delete')),
+    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'cancelled')),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX data_requests_user_time_idx ON data_requests (user_id, created_at DESC);

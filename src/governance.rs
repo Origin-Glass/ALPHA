@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -112,6 +113,7 @@ pub async fn record_rights(
     Json(request): Json<RightsRequest>,
 ) -> Result<Json<Value>, GovernanceError> {
     let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
+    crate::auth::require_current_policy(&state, user_id).await?;
     require_capability(&state, user_id, "content.create").await?;
     if !matches!(
         request.basis.as_str(),
@@ -167,6 +169,7 @@ async fn review(
     rights: bool,
 ) -> Result<Json<Value>, GovernanceError> {
     let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
+    crate::auth::require_current_policy(&state, user_id).await?;
     require_capability(
         &state,
         user_id,
@@ -249,6 +252,7 @@ pub async fn publish(
     Path(slug): Path<String>,
 ) -> Result<Json<Value>, GovernanceError> {
     let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
+    crate::auth::require_current_policy(&state, user_id).await?;
     require_capability(&state, user_id, "content.publish").await?;
     let mut transaction = state.pool().begin().await?;
     let row: Option<(
@@ -298,4 +302,84 @@ pub async fn publish(
         .bind(user_id).bind(problem_id.to_string()).bind(revision_id.to_string()).execute(&mut *transaction).await?;
     transaction.commit().await?;
     Ok(Json(serde_json::json!({"status": "published"})))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataRequestInput {
+    kind: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct DataRequestView {
+    id: Uuid,
+    kind: String,
+    status: String,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: time::OffsetDateTime,
+}
+
+pub async fn create_data_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<DataRequestInput>,
+) -> Result<(StatusCode, Json<Value>), GovernanceError> {
+    let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
+    crate::auth::require_current_policy(&state, user_id).await?;
+    if !matches!(request.kind.as_str(), "export" | "delete") {
+        return Err(GovernanceError::InvalidInput("요청 종류를 확인해 주세요"));
+    }
+    let mut transaction = state.pool().begin().await?;
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO data_requests (user_id, kind) VALUES ($1, $2) RETURNING id",
+    )
+    .bind(user_id)
+    .bind(&request.kind)
+    .fetch_one(&mut *transaction)
+    .await?;
+    sqlx::query("INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, 'data_request.created', 'data_request', $2, jsonb_build_object('kind', $3::text))")
+        .bind(user_id).bind(id.to_string()).bind(&request.kind).execute(&mut *transaction).await?;
+    transaction.commit().await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({"id": id, "status": "pending"})),
+    ))
+}
+
+pub async fn data_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<DataRequestView>, GovernanceError> {
+    let user_id = crate::auth::authenticated_user_id(&state, &headers).await?;
+    crate::auth::require_current_policy(&state, user_id).await?;
+    let item = sqlx::query_as(
+        "SELECT id, kind, status, created_at FROM data_requests WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(state.pool())
+    .await?
+    .ok_or(GovernanceError::NotFound)?;
+    Ok(Json(item))
+}
+
+pub async fn cancel_data_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, GovernanceError> {
+    let user_id = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
+    crate::auth::require_current_policy(&state, user_id).await?;
+    let mut transaction = state.pool().begin().await?;
+    let updated = sqlx::query(
+        "UPDATE data_requests SET status = 'cancelled', updated_at = now() WHERE id = $1 AND user_id = $2 AND status = 'pending'",
+    ).bind(id).bind(user_id).execute(&mut *transaction).await?;
+    if updated.rows_affected() != 1 {
+        return Err(GovernanceError::NotFound);
+    }
+    sqlx::query("INSERT INTO audit_events (actor_user_id, action, target_type, target_id) VALUES ($1, 'data_request.cancelled', 'data_request', $2)")
+        .bind(user_id).bind(id.to_string()).execute(&mut *transaction).await?;
+    transaction.commit().await?;
+    Ok(Json(serde_json::json!({"status": "cancelled"})))
 }

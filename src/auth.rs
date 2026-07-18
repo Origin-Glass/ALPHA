@@ -6,6 +6,7 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use subtle::ConstantTimeEq;
@@ -50,6 +51,7 @@ pub enum AuthError {
     InvalidInput(&'static str),
     Unauthorized,
     Forbidden,
+    PolicyRequired,
     TestIdentityDisabled,
     ProviderUnavailable,
     UnsupportedProvider,
@@ -73,6 +75,11 @@ impl IntoResponse for AuthError {
                 StatusCode::FORBIDDEN,
                 "csrf_rejected",
                 "요청 검증에 실패했습니다",
+            ),
+            Self::PolicyRequired => (
+                StatusCode::FORBIDDEN,
+                "policy_consent_required",
+                "필수 정책의 최신 버전에 동의해 주세요",
             ),
             Self::TestIdentityDisabled => (
                 StatusCode::NOT_FOUND,
@@ -915,6 +922,13 @@ pub async fn accept_terms(
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
+        "INSERT INTO policy_consents (user_id, policy_version) VALUES ($1, $2) ON CONFLICT (user_id, policy_version) DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(&request.version)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
         "INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, 'terms.accepted', 'user', $2, jsonb_build_object('version', $3::text))",
     )
     .bind(user_id)
@@ -925,6 +939,85 @@ pub async fn accept_terms(
     transaction.commit().await?;
 
     Ok(Json(user_view(&state, user_id).await?))
+}
+
+pub async fn require_current_policy(state: &AppState, user_id: Uuid) -> Result<(), AuthError> {
+    let current: bool = sqlx::query_scalar(
+        r#"SELECT NOT EXISTS (
+               SELECT 1 FROM policy_versions version
+               WHERE version.required AND NOT EXISTS (
+                   SELECT 1 FROM policy_consents consent
+                   WHERE consent.user_id = $1 AND consent.policy_version = version.version
+               )
+           )"#,
+    )
+    .bind(user_id)
+    .fetch_one(state.pool())
+    .await?;
+    if !current {
+        return Err(AuthError::PolicyRequired);
+    }
+    Ok(())
+}
+
+pub async fn accept_policy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<TermsRequest>,
+) -> Result<Json<Value>, AuthError> {
+    let user_id = authenticated_user_id_with_csrf(&state, &headers).await?;
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM policy_versions WHERE version = $1 AND required)",
+    )
+    .bind(&request.version)
+    .fetch_one(state.pool())
+    .await?;
+    if !exists {
+        return Err(AuthError::InvalidInput("지원하지 않는 정책 버전입니다"));
+    }
+    let mut transaction = state.pool().begin().await?;
+    sqlx::query(
+        "INSERT INTO policy_consents (user_id, policy_version) VALUES ($1, $2) ON CONFLICT (user_id, policy_version) DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(&request.version)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, 'policy.consented', 'user', $2, jsonb_build_object('version', $3::text))",
+    )
+    .bind(user_id)
+    .bind(user_id.to_string())
+    .bind(&request.version)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Json(
+        serde_json::json!({"version": request.version, "consented": true}),
+    ))
+}
+
+pub async fn policies(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AuthError> {
+    let user_id = authenticated_user_id(&state, &headers).await?;
+    let versions: Vec<(String, String, bool, bool)> = sqlx::query_as(
+        r#"SELECT version.version, version.title_ko, version.required,
+                  consent.user_id IS NOT NULL
+           FROM policy_versions version
+           LEFT JOIN policy_consents consent
+             ON consent.policy_version = version.version AND consent.user_id = $1
+           ORDER BY version.published_at DESC"#,
+    )
+    .bind(user_id)
+    .fetch_all(state.pool())
+    .await?;
+    Ok(Json(
+        serde_json::json!({"items": versions.into_iter().map(|(version, title, required, consented)| serde_json::json!({
+        "version": version, "title": title, "required": required, "consented": consented
+    })).collect::<Vec<_>>()}),
+    ))
 }
 
 pub async fn logout(
