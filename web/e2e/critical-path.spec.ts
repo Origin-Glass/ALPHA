@@ -55,8 +55,12 @@ test('로그인부터 Docker 정답 판정과 로그아웃까지 이어진다', 
   await expect(page).toHaveURL(/\/terms$/);
 
   await page.getByRole('checkbox', { name: /이용약관과 개인정보 처리방침/ }).check();
+  const onboardingLoaded = page.waitForResponse((response) => (
+    response.url().endsWith('/api/v1/onboarding') && response.ok()
+  ));
   await page.getByRole('button', { name: '동의하고 진단 시작' }).click();
   await expect(page).toHaveURL(/\/onboarding$/);
+  await onboardingLoaded;
 
   await page.goto('/solve/alpha-pair-sum');
   await expect(page.getByRole('heading', { name: '두 수의 합' })).toBeVisible();
