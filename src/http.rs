@@ -233,6 +233,22 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/learning/recommendations/{key}/reject",
             axum::routing::post(crate::learning_plans::reject),
         )
+        .route(
+            "/api/v1/projects/ideas",
+            axum::routing::post(crate::projects::create_idea),
+        )
+        .route(
+            "/api/v1/projects",
+            axum::routing::post(crate::projects::create),
+        )
+        .route(
+            "/api/v1/projects/{id}/assistance/evidence",
+            axum::routing::post(crate::adaptive::evidence),
+        )
+        .route(
+            "/api/v1/projects/{id}/assistance",
+            axum::routing::post(crate::adaptive::help),
+        )
         .route("/api/v1/activities", get(crate::activities::list))
         .route("/api/v1/activities/{slug}", get(crate::activities::detail))
         .route(

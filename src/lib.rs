@@ -1,4 +1,5 @@
 pub mod activities;
+pub mod adaptive;
 pub mod admin;
 pub mod auth;
 pub mod classes;
@@ -18,6 +19,7 @@ pub mod observability;
 pub mod onboarding;
 pub mod payments;
 pub mod problems;
+pub mod projects;
 pub mod sandbox;
 pub mod shutdown;
 pub mod submissions;
