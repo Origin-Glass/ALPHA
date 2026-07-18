@@ -112,7 +112,11 @@ fn plan_request(key: Uuid) -> Value {
         "target_outcome":"한국어 학습 기록 웹 앱 완성", "weekly_minutes":180,
         "preferred_language":"typescript", "path_mode":"structured",
         "interests":["웹", "학습 기록"], "goals":["독립 구현", "디버깅"],
-        "diagnostic_scores":{"algorithmic_reasoning":50,"code_literacy":25,"docs_learning":75,"independent_coding":25}
+        "diagnostic_scores":{"algorithmic_reasoning":50,"code_literacy":25,"docs_learning":75,"independent_coding":25},
+        "deadline":"2026-12-31", "preferred_framework":"react", "desired_project":"한국어 학습 기록 앱",
+        "required_curriculum":["code-reading","debugging"], "instructor_constraints":[],
+        "assessment_checkpoints":["first-visible-result","transfer"], "assistance_policy":"documentation_navigator",
+        "privacy":"private", "origin":"learner", "template_id":null, "locked_requirements":[]
     })
 }
 
@@ -135,10 +139,20 @@ async fn confirm(app: &axum::Router, user: &Session, idea: &Value) {
 
 async fn activity_attempt(pool: &PgPool, user: Uuid, passed: bool, class: Option<&str>) -> Uuid {
     let activity: Uuid =
-        sqlx::query_scalar("SELECT id FROM learning_activities ORDER BY id LIMIT 1")
+        sqlx::query_scalar("SELECT id FROM learning_activities ORDER BY slug LIMIT 1")
             .fetch_one(pool)
             .await
             .unwrap();
+    activity_attempt_for(pool, user, activity, passed, class).await
+}
+
+async fn activity_attempt_for(
+    pool: &PgPool,
+    user: Uuid,
+    activity: Uuid,
+    passed: bool,
+    class: Option<&str>,
+) -> Uuid {
     sqlx::query_scalar("INSERT INTO activity_attempts (user_id,activity_id,response,score,passed,max_assistance_level,mastery_class,elapsed_seconds) VALUES ($1,$2,'{}',$3,$4,$5,$6,60) RETURNING id")
         .bind(user).bind(activity).bind(if passed{100_i16}else{0_i16}).bind(passed).bind(if class==Some("independent"){0_i16}else{1_i16}).bind(class).fetch_one(pool).await.unwrap()
 }
@@ -196,6 +210,21 @@ async fn same_input_and_rule_produce_same_auditable_plan(pool: PgPool) {
     assert_eq!(first["provider_used"], false);
     assert_eq!(first["items"][0]["estimated_minutes"], 60);
     assert!(first["revision"].as_i64().unwrap() < second["revision"].as_i64().unwrap());
+    let mut invalid_origin = plan_request(Uuid::now_v7());
+    invalid_origin["template_id"] = json!(Uuid::now_v7());
+    assert_eq!(
+        post(&app, &user, "/api/v1/learning/plans", invalid_origin)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let mut assigned = plan_request(Uuid::now_v7());
+    assigned["origin"] = json!("template_assignment");
+    assigned["template_id"] = json!(Uuid::now_v7());
+    assigned["locked_requirements"] = json!(["필수 코드 읽기"]);
+    let assigned = json_body(post(&app, &user, "/api/v1/learning/plans", assigned).await).await;
+    assert_eq!(assigned["origin"], "template_assignment");
+    assert_eq!(assigned["locked_requirements"], json!(["필수 코드 읽기"]));
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -556,6 +585,12 @@ async fn plan_history_restore_and_import_metadata_fail_closed(pool: PgPool) {
     assert_eq!(restored["id"], json_body(right).await["id"]);
     assert_eq!(restored["restored_from_id"], first["id"]);
     assert_eq!(restored["plan_hash"], first["plan_hash"]);
+    assert_eq!(restored["deadline"], first["deadline"]);
+    assert_eq!(
+        restored["required_curriculum"],
+        first["required_curriculum"]
+    );
+    assert_eq!(restored["assistance_policy"], first["assistance_policy"]);
     let history = json_body(get(&app, &user, "/api/v1/learning/plans").await).await;
     assert_eq!(history["revisions"].as_array().unwrap().len(), 3);
     let mut imported = idea_request(Uuid::now_v7(), vec!["기록"], "independent");
@@ -569,13 +604,192 @@ async fn plan_history_restore_and_import_metadata_fail_closed(pool: PgPool) {
     let mut valid = idea_request(Uuid::now_v7(), vec!["기록"], "independent");
     valid["source_kind"] = json!("imported");
     valid["repository_url"] = json!("https://github.com/example/owned");
-    valid["repository_revision"] = json!("abcdef1234567");
-    valid["ownership_basis"] = json!("learner_owned_repository");
+    valid["repository_revision"] = json!("abcdef1234567890abcdef1234567890abcdef12");
+    valid["ownership_basis"] = json!("learner_owned");
     valid["license_identifier"] = json!("MIT");
+    for (field, value) in [
+        (
+            "repository_url",
+            json!("https://github.com/example/owned?ref=main"),
+        ),
+        ("repository_revision", json!("abcdef1234567")),
+        ("ownership_basis", json!("claimed")),
+        ("license_identifier", json!("not a license")),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["idempotency_key"] = json!(Uuid::now_v7());
+        invalid[field] = value;
+        assert_eq!(
+            post(&app, &user, "/api/v1/projects/ideas", invalid)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
     assert_eq!(
         post(&app, &user, "/api/v1/projects/ideas", valid)
             .await
             .status(),
         StatusCode::CREATED
     );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn confirmation_and_evidence_are_bound_to_server_requirements(pool: PgPool) {
+    let app = app(pool.clone());
+    let user = session(&app).await;
+    let idea = json_body(
+        post(
+            &app,
+            &user,
+            "/api/v1/projects/ideas",
+            idea_request(
+                Uuid::now_v7(),
+                vec!["기록", "목록"],
+                "documentation_navigator",
+            ),
+        )
+        .await,
+    )
+    .await;
+    let confirm_uri = format!(
+        "/api/v1/projects/ideas/{}/confirm",
+        idea["id"].as_str().unwrap()
+    );
+    assert_eq!(
+        post(
+            &app,
+            &user,
+            &confirm_uri,
+            json!({"scoped_features":["목록"],"milestones":idea["milestones"],"idempotency_key":Uuid::now_v7()})
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let mut unknown = idea["milestones"].clone();
+    unknown[0]["hidden_answer"] = json!("bypass");
+    assert_eq!(
+        post(
+            &app,
+            &user,
+            &confirm_uri,
+            json!({"scoped_features":idea["features"],"milestones":unknown,"idempotency_key":Uuid::now_v7()})
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut changed = idea["milestones"].clone();
+    changed[0]["title"] = json!("서버가 제안하지 않은 결과");
+    assert_eq!(
+        post(
+            &app,
+            &user,
+            &confirm_uri,
+            json!({"scoped_features":idea["features"],"milestones":changed,"idempotency_key":Uuid::now_v7()})
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    confirm(&app, &user, &idea).await;
+    let project = json_body(
+        post(
+            &app,
+            &user,
+            "/api/v1/projects",
+            json!({"idea_id":idea["id"],"idempotency_key":Uuid::now_v7()}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        project["milestones"][0]["required_activity_slug"],
+        idea["milestones"][0]["required_activity_slug"]
+    );
+    let unrelated_activity: Uuid =
+        sqlx::query_scalar("SELECT id FROM learning_activities ORDER BY slug OFFSET 1 LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let receipt = activity_attempt_for(
+        &pool,
+        user.user_id,
+        unrelated_activity,
+        true,
+        Some("independent"),
+    )
+    .await;
+    assert_eq!(
+        post(
+            &app,
+            &user,
+            &format!(
+                "/api/v1/projects/{}/assistance/evidence",
+                project["id"].as_str().unwrap()
+            ),
+            json!({"milestone_id":project["milestones"][0]["id"],"skill":"typescript","kind":"mastery","successful":true,"source_attempt_id":receipt,"idempotency_key":Uuid::now_v7()})
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn concurrent_idea_restore_creates_one_owned_lineage_revision(pool: PgPool) {
+    let app = app(pool.clone());
+    let user = session(&app).await;
+    let original = json_body(
+        post(
+            &app,
+            &user,
+            "/api/v1/projects/ideas",
+            idea_request(Uuid::now_v7(), vec!["기록"], "independent"),
+        )
+        .await,
+    )
+    .await;
+    let key = Uuid::now_v7();
+    let uri = format!(
+        "/api/v1/projects/ideas/{}/restore",
+        original["id"].as_str().unwrap()
+    );
+    let (left, right) = tokio::join!(
+        post(&app, &user, &uri, json!({"idempotency_key":key})),
+        post(&app, &user, &uri, json!({"idempotency_key":key}))
+    );
+    assert!(matches!(
+        left.status(),
+        StatusCode::CREATED | StatusCode::OK
+    ));
+    assert!(matches!(
+        right.status(),
+        StatusCode::CREATED | StatusCode::OK
+    ));
+    let left = json_body(left).await;
+    let right = json_body(right).await;
+    assert_eq!(left["id"], right["id"]);
+    assert_eq!(left["revision"], 2);
+    assert_eq!(left["lineage_id"], original["lineage_id"]);
+    assert_eq!(left["restored_from_id"], original["id"]);
+    assert_eq!(left["supersedes_id"], original["id"]);
+    assert_eq!(left["confirmation_required"], true);
+    let history = json_body(get(&app, &user, "/api/v1/projects/ideas").await).await;
+    assert_eq!(history["ideas"].as_array().unwrap().len(), 2);
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM project_ideas WHERE user_id=$1 AND lineage_id=$2")
+            .bind(user.user_id)
+            .bind(
+                original["lineage_id"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<Uuid>()
+                    .unwrap(),
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 2);
 }

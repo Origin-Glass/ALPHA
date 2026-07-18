@@ -246,6 +246,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(crate::projects::confirm_idea),
         )
         .route(
+            "/api/v1/projects/ideas/{id}/restore",
+            axum::routing::post(crate::projects::restore_idea),
+        )
+        .route(
             "/api/v1/projects",
             axum::routing::post(crate::projects::create),
         )

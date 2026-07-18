@@ -78,6 +78,17 @@ pub struct PlanRequest {
     interests: Vec<String>,
     goals: Vec<String>,
     diagnostic_scores: BTreeMap<String, i32>,
+    deadline: String,
+    preferred_framework: String,
+    desired_project: String,
+    required_curriculum: Vec<String>,
+    instructor_constraints: Vec<String>,
+    assessment_checkpoints: Vec<String>,
+    assistance_policy: String,
+    privacy: String,
+    origin: String,
+    template_id: Option<Uuid>,
+    locked_requirements: Vec<String>,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -95,6 +106,17 @@ pub struct PlanResponse {
     plan_hash: String,
     provider_used: bool,
     restored_from_id: Option<Uuid>,
+    deadline: String,
+    preferred_framework: String,
+    desired_project: String,
+    required_curriculum: SqlJson<Value>,
+    instructor_constraints: SqlJson<Value>,
+    assessment_checkpoints: SqlJson<Value>,
+    assistance_policy: String,
+    privacy: String,
+    origin: String,
+    template_id: Option<Uuid>,
+    locked_requirements: SqlJson<Value>,
 }
 
 #[derive(FromRow)]
@@ -112,6 +134,17 @@ struct PlanRow {
     plan_hash: Vec<u8>,
     provider_used: bool,
     restored_from_id: Option<Uuid>,
+    deadline: String,
+    preferred_framework: String,
+    desired_project: String,
+    required_curriculum: SqlJson<Value>,
+    instructor_constraints: SqlJson<Value>,
+    assessment_checkpoints: SqlJson<Value>,
+    assistance_policy: String,
+    privacy: String,
+    origin: String,
+    template_id: Option<Uuid>,
+    locked_requirements: SqlJson<Value>,
 }
 #[derive(FromRow)]
 struct RestoreRow {
@@ -128,6 +161,17 @@ struct RestoreRow {
     reason_codes: SqlJson<Value>,
     items: SqlJson<Value>,
     provider_used: bool,
+    deadline: String,
+    preferred_framework: String,
+    desired_project: String,
+    required_curriculum: SqlJson<Value>,
+    instructor_constraints: SqlJson<Value>,
+    assessment_checkpoints: SqlJson<Value>,
+    assistance_policy: String,
+    privacy: String,
+    origin: String,
+    template_id: Option<Uuid>,
+    locked_requirements: SqlJson<Value>,
 }
 impl From<PlanRow> for PlanResponse {
     fn from(r: PlanRow) -> Self {
@@ -145,6 +189,17 @@ impl From<PlanRow> for PlanResponse {
             plan_hash: hex(&r.plan_hash),
             provider_used: r.provider_used,
             restored_from_id: r.restored_from_id,
+            deadline: r.deadline,
+            preferred_framework: r.preferred_framework,
+            desired_project: r.desired_project,
+            required_curriculum: r.required_curriculum,
+            instructor_constraints: r.instructor_constraints,
+            assessment_checkpoints: r.assessment_checkpoints,
+            assistance_policy: r.assistance_policy,
+            privacy: r.privacy,
+            origin: r.origin,
+            template_id: r.template_id,
+            locked_requirements: r.locked_requirements,
         }
     }
 }
@@ -158,6 +213,21 @@ fn bounded(values: &[String], max: usize, each: usize) -> bool {
         && values
             .iter()
             .all(|v| !v.trim().is_empty() && v.chars().count() <= each)
+}
+fn text_bound(value: &str, max: usize) -> bool {
+    !value.trim().is_empty() && value.chars().count() <= max
+}
+fn valid_date(value: &str) -> bool {
+    let mut parts = value.split('-');
+    let parsed = (
+        parts.next().and_then(|v| v.parse::<i32>().ok()),
+        parts.next().and_then(|v| v.parse::<u8>().ok()),
+        parts.next().and_then(|v| v.parse::<u8>().ok()),
+    );
+    matches!(parsed, (Some(year), Some(month), Some(day))
+        if value.len() == 10
+            && parts.next().is_none()
+            && time::Month::try_from(month).ok().and_then(|month| time::Date::from_calendar_date(year, month, day).ok()).is_some())
 }
 
 pub async fn create(
@@ -193,13 +263,50 @@ pub async fn create(
             .diagnostic_scores
             .values()
             .any(|v| !(0..=100).contains(v))
+        || !valid_date(&request.deadline)
+        || !text_bound(&request.preferred_framework, 64)
+        || !text_bound(&request.desired_project, 200)
+        || !bounded(&request.required_curriculum, 12, 120)
+        || request.instructor_constraints.len() > 10
+        || request
+            .instructor_constraints
+            .iter()
+            .any(|v| !text_bound(v, 200))
+        || !bounded(&request.assessment_checkpoints, 12, 160)
+        || !matches!(
+            request.assistance_policy.as_str(),
+            "guided_ai"
+                | "socratic_ai"
+                | "documentation_navigator"
+                | "curated_documentation"
+                | "cheat_sheet_only"
+                | "independent"
+                | "transfer_challenge"
+        )
+        || !matches!(
+            request.privacy.as_str(),
+            "private" | "instructors" | "classroom"
+        )
+        || !matches!(request.origin.as_str(), "learner" | "template_assignment")
+        || request.locked_requirements.len() > 12
+        || request
+            .locked_requirements
+            .iter()
+            .any(|v| !text_bound(v, 160))
+        || (request.origin == "learner"
+            && (request.template_id.is_some() || !request.locked_requirements.is_empty()))
+        || (request.origin == "template_assignment"
+            && (request.template_id.is_none() || request.locked_requirements.is_empty()))
     {
         return Err(LearningPlanError::Invalid(
             "학습 계획 입력 범위와 형식을 확인해 주세요",
         ));
     }
     let canonical = json!({"rule_version":request.rule_version,"target_outcome":request.target_outcome,"weekly_minutes":request.weekly_minutes,
-        "preferred_language":request.preferred_language,"path_mode":request.path_mode,"interests":request.interests,"goals":request.goals,"diagnostic_scores":request.diagnostic_scores});
+        "preferred_language":request.preferred_language,"path_mode":request.path_mode,"interests":request.interests,"goals":request.goals,"diagnostic_scores":request.diagnostic_scores,
+        "deadline":request.deadline,"preferred_framework":request.preferred_framework,"desired_project":request.desired_project,"required_curriculum":request.required_curriculum,
+        "instructor_constraints":request.instructor_constraints,"assessment_checkpoints":request.assessment_checkpoints,"assistance_policy":request.assistance_policy,"privacy":request.privacy,
+        "origin":request.origin,"template_id":request.template_id,"locked_requirements":request.locked_requirements});
     let mut tx = state.pool().begin().await?;
     sqlx::query("SELECT id FROM users WHERE id=$1 FOR UPDATE")
         .bind(user_id)
@@ -282,9 +389,10 @@ pub async fn create(
     .fetch_one(&mut *tx)
     .await?;
     let id = Uuid::now_v7();
-    sqlx::query("INSERT INTO learning_plan_revisions (id,user_id,revision,rule_version,idempotency_key,input,input_hash,plan_hash,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,supersedes_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)")
+    sqlx::query("INSERT INTO learning_plan_revisions (id,user_id,revision,rule_version,idempotency_key,input,input_hash,plan_hash,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,supersedes_id,deadline,preferred_framework,desired_project,required_curriculum,instructor_constraints,assessment_checkpoints,assistance_policy,privacy,origin,template_id,locked_requirements) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::date,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)")
         .bind(id).bind(user_id).bind(revision).bind(RULE_VERSION).bind(request.idempotency_key).bind(canonical).bind(input_hash).bind(&plan_hash)
-        .bind(request.target_outcome.trim()).bind(request.weekly_minutes).bind(&request.preferred_language).bind(&request.path_mode).bind(recommendation).bind(reason_codes).bind(items).bind(previous).execute(&mut *tx).await?;
+        .bind(request.target_outcome.trim()).bind(request.weekly_minutes).bind(&request.preferred_language).bind(&request.path_mode).bind(recommendation).bind(reason_codes).bind(items).bind(previous)
+        .bind(&request.deadline).bind(&request.preferred_framework).bind(&request.desired_project).bind(SqlJson(json!(request.required_curriculum))).bind(SqlJson(json!(request.instructor_constraints))).bind(SqlJson(json!(request.assessment_checkpoints))).bind(&request.assistance_policy).bind(&request.privacy).bind(&request.origin).bind(request.template_id).bind(SqlJson(json!(request.locked_requirements))).execute(&mut *tx).await?;
     let row = fetch_by_key(&mut tx, user_id, request.idempotency_key)
         .await?
         .ok_or(LearningPlanError::NotFound)?;
@@ -297,7 +405,7 @@ async fn fetch_by_key(
     user: Uuid,
     key: Uuid,
 ) -> Result<Option<PlanRow>, sqlx::Error> {
-    sqlx::query_as("SELECT id,revision,rule_version,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,plan_hash,provider_used,restored_from_id FROM learning_plan_revisions WHERE user_id=$1 AND idempotency_key=$2")
+    sqlx::query_as("SELECT id,revision,rule_version,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,plan_hash,provider_used,restored_from_id,deadline::text AS deadline,preferred_framework,desired_project,required_curriculum,instructor_constraints,assessment_checkpoints,assistance_policy,privacy,origin,template_id,locked_requirements FROM learning_plan_revisions WHERE user_id=$1 AND idempotency_key=$2")
         .bind(user).bind(key).fetch_optional(&mut **tx).await
 }
 
@@ -306,7 +414,7 @@ pub async fn history(
     headers: HeaderMap,
 ) -> Result<Json<Value>, LearningPlanError> {
     let user = crate::auth::authenticated_user_id(&state, &headers).await?;
-    let rows:Vec<PlanRow>=sqlx::query_as("SELECT id,revision,rule_version,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,plan_hash,provider_used,restored_from_id FROM learning_plan_revisions WHERE user_id=$1 ORDER BY revision DESC")
+    let rows:Vec<PlanRow>=sqlx::query_as("SELECT id,revision,rule_version,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,plan_hash,provider_used,restored_from_id,deadline::text AS deadline,preferred_framework,desired_project,required_curriculum,instructor_constraints,assessment_checkpoints,assistance_policy,privacy,origin,template_id,locked_requirements FROM learning_plan_revisions WHERE user_id=$1 ORDER BY revision DESC")
         .bind(user).fetch_all(state.pool()).await?;
     Ok(Json(
         json!({"revisions":rows.into_iter().map(PlanResponse::from).collect::<Vec<_>>()}),
@@ -349,7 +457,7 @@ pub async fn restore(
         tx.commit().await?;
         return Ok((StatusCode::OK, Json(row.into())));
     }
-    let source:RestoreRow=sqlx::query_as("SELECT id,rule_version,input,input_hash,plan_hash,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,provider_used FROM learning_plan_revisions WHERE user_id=$1 AND revision=$2")
+    let source:RestoreRow=sqlx::query_as("SELECT id,rule_version,input,input_hash,plan_hash,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,provider_used,deadline::text AS deadline,preferred_framework,desired_project,required_curriculum,instructor_constraints,assessment_checkpoints,assistance_policy,privacy,origin,template_id,locked_requirements FROM learning_plan_revisions WHERE user_id=$1 AND revision=$2")
         .bind(user).bind(revision).fetch_optional(&mut *tx).await?.ok_or(LearningPlanError::NotFound)?;
     let latest: Option<Uuid> = sqlx::query_scalar(
         "SELECT id FROM learning_plan_revisions WHERE user_id=$1 ORDER BY revision DESC LIMIT 1",
@@ -364,8 +472,9 @@ pub async fn restore(
     .fetch_one(&mut *tx)
     .await?;
     let id = Uuid::now_v7();
-    sqlx::query("INSERT INTO learning_plan_revisions (id,user_id,revision,rule_version,idempotency_key,input,input_hash,plan_hash,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,provider_used,supersedes_id,restored_from_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)")
-        .bind(id).bind(user).bind(next).bind(source.rule_version).bind(request.idempotency_key).bind(source.input).bind(source.input_hash).bind(source.plan_hash).bind(source.target_outcome).bind(source.weekly_minutes).bind(source.preferred_language).bind(source.path_mode).bind(source.recommendation_key).bind(source.reason_codes).bind(source.items).bind(source.provider_used).bind(latest).bind(source.id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO learning_plan_revisions (id,user_id,revision,rule_version,idempotency_key,input,input_hash,plan_hash,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,provider_used,supersedes_id,restored_from_id,deadline,preferred_framework,desired_project,required_curriculum,instructor_constraints,assessment_checkpoints,assistance_policy,privacy,origin,template_id,locked_requirements) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::date,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)")
+        .bind(id).bind(user).bind(next).bind(source.rule_version).bind(request.idempotency_key).bind(source.input).bind(source.input_hash).bind(source.plan_hash).bind(source.target_outcome).bind(source.weekly_minutes).bind(source.preferred_language).bind(source.path_mode).bind(source.recommendation_key).bind(source.reason_codes).bind(source.items).bind(source.provider_used).bind(latest).bind(source.id)
+        .bind(source.deadline).bind(source.preferred_framework).bind(source.desired_project).bind(source.required_curriculum).bind(source.instructor_constraints).bind(source.assessment_checkpoints).bind(source.assistance_policy).bind(source.privacy).bind(source.origin).bind(source.template_id).bind(source.locked_requirements).execute(&mut *tx).await?;
     let row = fetch_by_key(&mut tx, user, request.idempotency_key)
         .await?
         .ok_or(LearningPlanError::NotFound)?;
