@@ -118,6 +118,24 @@ pub fn router(state: AppState) -> Router {
             get(crate::gamification::profile),
         )
         .route("/api/v1/rankings", get(crate::gamification::rankings))
+        .route("/api/v1/contests", get(crate::contests::list))
+        .route("/api/v1/contests/{slug}", get(crate::contests::detail))
+        .route(
+            "/api/v1/contests/{slug}/join",
+            axum::routing::post(crate::contests::join),
+        )
+        .route(
+            "/api/v1/contests/{slug}/scoreboard",
+            get(crate::contests::scoreboard),
+        )
+        .route(
+            "/api/v1/admin/contests",
+            axum::routing::post(crate::contests::create),
+        )
+        .route(
+            "/api/v1/admin/contests/{slug}/finalize",
+            axum::routing::post(crate::contests::finalize),
+        )
         .route(
             "/api/v1/admin/metadata/solved-ac/{external_problem_id}/refresh",
             axum::routing::post(crate::metadata::admin_refresh),

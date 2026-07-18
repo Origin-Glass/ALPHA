@@ -41,6 +41,7 @@ const terminal = new Set(['ACCEPTED', 'WRONG_ANSWER', 'PARTIAL_ACCEPTED', 'TIME_
 const csrfToken = () => document.cookie.split(';').map((cookie) => cookie.trim()).find((cookie) => cookie.startsWith('alpha_csrf='))?.slice('alpha_csrf='.length) ?? '';
 
 function SolvePage({ slug }: { slug: string }) {
+  const contestSlug = new URLSearchParams(window.location.search).get('contest');
   const [problem, setProblem] = useState<Problem | null>(null);
   const [language, setLanguage] = useState('python3');
   const [source, setSource] = useState(templates.python3);
@@ -118,7 +119,7 @@ function SolvePage({ slug }: { slug: string }) {
         headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken() },
         body: JSON.stringify({
           problem_slug: slug, language, source, idempotency_key: crypto.randomUUID(),
-          ...(mode === 'formal' ? {} : { mode, ...(mode === 'custom' ? { custom_input: customInput } : {}) }),
+          ...(mode === 'formal' ? (contestSlug ? { contest_slug: contestSlug } : {}) : { mode, ...(mode === 'custom' ? { custom_input: customInput } : {}) }),
         }),
       });
       const body = await response.json();
@@ -133,7 +134,7 @@ function SolvePage({ slug }: { slug: string }) {
     <div className="solve-page">
       <header className="solve-header">
         <a className="brand" href="/">ALPHA<span>.</span></a>
-        <a href={`/problems/${slug}`}>문제 상세</a>
+        <a href={contestSlug ? `/contests/${contestSlug}` : `/problems/${slug}`}>{contestSlug ? '대회로 돌아가기' : '문제 상세'}</a>
         <span>{problem?.title ?? '풀이 환경'}</span>
         <span className="save-state">{saveState}</span>
       </header>
