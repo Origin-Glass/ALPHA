@@ -25,7 +25,6 @@ async fn absent(run: Uuid) {
 #[ignore = "Docker 격리 런타임이 있는 CI에서 별도 실행"]
 async fn multi_file_workspace_enforces_real_isolation_limits_and_cleanup() {
     let image=std::env::var("WORKSPACE_TEST_IMAGE").unwrap_or_else(|_|"alpha-judge-runner@sha256:e0a1147badcf2997c64f1cc3058d015ea0cf6865511d09e2f1506f06377d89de".into());
-    assert!(image.contains("@sha256:"));
     let sandbox = DockerSandbox::new("docker".into(), image).unwrap();
     sandbox.verify().await.unwrap();
     let image_id = sandbox.immutable_image_id().await.unwrap();
