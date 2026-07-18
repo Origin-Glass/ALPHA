@@ -153,7 +153,7 @@ jobs:
           npm audit --audit-level=high
       - name: 변경 의존성 검토
         if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@v5
       - name: 비밀 스캔
         run: >-
           docker run --rm --volume "$PWD:/repo"
