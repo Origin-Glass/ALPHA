@@ -1036,19 +1036,15 @@ pub async fn policies(
     headers: HeaderMap,
 ) -> Result<Json<Value>, AuthError> {
     let user_id = authenticated_user_id(&state, &headers).await?;
-    let versions: Vec<(
-        String,
-        String,
-        String,
-        bool,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<Value>,
-    )> = sqlx::query_as(
-        r#"SELECT version.version, version.title_ko, version.body_ko, version.required,
-                  consent.consented_at::text, consent.policy_title_ko,
-                  consent.policy_body_ko, consent.choices
+    let versions: Vec<PolicyVersionRow> = sqlx::query_as(
+        r#"SELECT version.version,
+                  version.title_ko AS title,
+                  version.body_ko AS body,
+                  version.required,
+                  consent.consented_at::text AS consented_at,
+                  consent.policy_title_ko AS consent_title,
+                  consent.policy_body_ko AS consent_body,
+                  consent.choices
            FROM policy_versions version
            LEFT JOIN policy_consents consent
              ON consent.policy_version = version.version AND consent.user_id = $1
@@ -1058,7 +1054,7 @@ pub async fn policies(
     .fetch_all(state.pool())
     .await?;
     Ok(Json(
-        serde_json::json!({"items": versions.into_iter().map(|(version, title, body, required, consented_at, consent_title, consent_body, choices)| {
+        serde_json::json!({"items": versions.into_iter().map(|PolicyVersionRow { version, title, body, required, consented_at, consent_title, consent_body, choices }| {
             let consented = consented_at.is_some();
             let consent = consented_at.map(|consented_at| serde_json::json!({
                 "consented_at": consented_at,
@@ -1072,6 +1068,18 @@ pub async fn policies(
             })
         }).collect::<Vec<_>>() }),
     ))
+}
+
+#[derive(FromRow)]
+struct PolicyVersionRow {
+    version: String,
+    title: String,
+    body: String,
+    required: bool,
+    consented_at: Option<String>,
+    consent_title: Option<String>,
+    consent_body: Option<String>,
+    choices: Option<Value>,
 }
 
 pub async fn logout(

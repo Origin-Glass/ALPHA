@@ -271,19 +271,14 @@ pub async fn publish(
     crate::auth::require_current_policy(&state, user_id).await?;
     require_capability(&state, user_id, "content.publish").await?;
     let mut transaction = state.pool().begin().await?;
-    let row: Option<(
-        Uuid,
-        Uuid,
-        Option<bool>,
-        Option<bool>,
-        Option<Uuid>,
-        Option<Uuid>,
-        Option<Uuid>,
-    )> = sqlx::query_as(
-        r#"SELECT problem.id, problem.current_revision_id,
-                  governance.commercial_use_allowed, governance.redistribution_allowed,
-                  governance.content_reviewed_by, governance.rights_reviewed_by,
-                  revision.authored_by
+    let row: Option<PublicationRow> = sqlx::query_as(
+        r#"SELECT problem.id AS problem_id,
+                  problem.current_revision_id AS revision_id,
+                  governance.commercial_use_allowed AS commercial,
+                  governance.redistribution_allowed AS redistribution,
+                  governance.content_reviewed_by AS content_reviewer,
+                  governance.rights_reviewed_by AS rights_reviewer,
+                  revision.authored_by AS revision_author
            FROM problems problem
            JOIN problem_revisions revision ON revision.id = problem.current_revision_id
            LEFT JOIN content_governance governance
@@ -294,7 +289,7 @@ pub async fn publish(
     .bind(&slug)
     .fetch_optional(&mut *transaction)
     .await?;
-    let Some((
+    let Some(PublicationRow {
         problem_id,
         revision_id,
         commercial,
@@ -302,7 +297,7 @@ pub async fn publish(
         content_reviewer,
         rights_reviewer,
         revision_author,
-    )) = row
+    }) = row
     else {
         return Err(GovernanceError::Conflict("게시 요건을 충족하지 못했습니다"));
     };
@@ -324,6 +319,17 @@ pub async fn publish(
         .bind(user_id).bind(problem_id.to_string()).bind(revision_id.to_string()).execute(&mut *transaction).await?;
     transaction.commit().await?;
     Ok(Json(serde_json::json!({"status": "published"})))
+}
+
+#[derive(sqlx::FromRow)]
+struct PublicationRow {
+    problem_id: Uuid,
+    revision_id: Uuid,
+    commercial: Option<bool>,
+    redistribution: Option<bool>,
+    content_reviewer: Option<Uuid>,
+    rights_reviewer: Option<Uuid>,
+    revision_author: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
