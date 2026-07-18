@@ -5,6 +5,8 @@ function PortalHeader() {
       <nav aria-label="학습 메뉴">
         <a href="/onboarding">역량 진단</a>
         <a href="/learn">나의 경로</a>
+        <a href="/learning-plan">계획 만들기</a>
+        <a href="/projects/ideas">프로젝트 시작</a>
         <a href="/activities">읽기·디버깅</a>
         <a href="/tracks/docs-builder">문서 트랙</a>
         <a href="/dashboard">성장</a>

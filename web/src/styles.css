@@ -263,6 +263,13 @@ footer strong { color: var(--ink); font-style: italic; }
 .score-grid strong { font-size: 1.8rem; }
 .result-action { min-height: 52px; padding: 0 24px; display: inline-flex; align-items: center; border-radius: 16px; font-weight: 800; text-decoration: none; }
 .path-panel { width: min(900px, 100%); }
+.project-learning-panel { max-width: 900px; }
+.project-form { display: grid; gap: 1rem; margin: 2rem 0; padding: 1.5rem; background: #fff; border: 1px solid #d9dfdc; border-radius: 1rem; }
+.project-form label { display: grid; gap: .45rem; font-weight: 700; }
+.project-form input, .project-form textarea { width: 100%; box-sizing: border-box; border: 1px solid #aeb9b3; border-radius: .55rem; padding: .8rem; font: inherit; }
+.project-result { margin-top: 2rem; padding: 1.5rem; border-left: .3rem solid #00a86b; background: #f3faf7; }
+.project-result li { display: flex; justify-content: space-between; gap: 1rem; padding: .55rem 0; }
+.project-result button, .unit-card button { border: 1px solid #166b4b; border-radius: .5rem; background: #fff; color: #0c563c; padding: .65rem .9rem; font: inherit; font-weight: 700; cursor: pointer; }
 .path-panel > .path-description { margin-left: 0; }
 .unit-list { margin: 52px 0 0; padding: 0; display: grid; gap: 15px; list-style: none; }
 .unit-card { padding: 24px; display: grid; grid-template-columns: 54px 1fr auto; gap: 18px; align-items: center; border: 1px solid var(--line); border-radius: 22px; background: rgba(255,255,255,.6); box-shadow: 9px 9px 20px rgba(116,132,153,.13), -7px -7px 18px rgba(255,255,255,.76); }

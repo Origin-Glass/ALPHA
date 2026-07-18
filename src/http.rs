@@ -225,6 +225,43 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/learning/path",
             get(crate::onboarding::learning_path),
         )
+        .route(
+            "/api/v1/learning/plans",
+            get(crate::learning_plans::history).post(crate::learning_plans::create),
+        )
+        .route(
+            "/api/v1/learning/plans/{revision}/restore",
+            axum::routing::post(crate::learning_plans::restore),
+        )
+        .route(
+            "/api/v1/learning/recommendations/{key}/reject",
+            axum::routing::post(crate::learning_plans::reject),
+        )
+        .route(
+            "/api/v1/projects/ideas",
+            get(crate::projects::idea_history).post(crate::projects::create_idea),
+        )
+        .route(
+            "/api/v1/projects/ideas/{id}/confirm",
+            axum::routing::post(crate::projects::confirm_idea),
+        )
+        .route(
+            "/api/v1/projects/ideas/{id}/restore",
+            axum::routing::post(crate::projects::restore_idea),
+        )
+        .route(
+            "/api/v1/projects",
+            axum::routing::post(crate::projects::create),
+        )
+        .route("/api/v1/projects/{id}", get(crate::projects::detail))
+        .route(
+            "/api/v1/projects/{id}/assistance/evidence",
+            axum::routing::post(crate::adaptive::evidence),
+        )
+        .route(
+            "/api/v1/projects/{id}/assistance",
+            axum::routing::post(crate::adaptive::help),
+        )
         .route("/api/v1/activities", get(crate::activities::list))
         .route("/api/v1/activities/{slug}", get(crate::activities::detail))
         .route(

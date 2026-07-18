@@ -57,6 +57,7 @@ function LearningPathPage() {
             <p className="eyebrow">개인 학습 경로</p>
             <h1>{path.track.title}</h1>
             <p className="path-description">{path.track.description}</p>
+            <div className="hero-actions"><a className="primary-action" href="/learning-plan">개인 계획 다시 만들기</a><a className="secondary-action" href="/projects/ideas">프로젝트로 시작하기</a></div>
             <ol className="unit-list">
               {path.units.map((unit) => (
                 <li className={unit.available ? 'unit-card' : 'unit-card locked'} key={unit.slug}>

@@ -151,6 +151,14 @@ pub struct UnitView {
 pub struct LearningPathResponse {
     track: TrackView,
     units: Vec<UnitView>,
+    project_learning: ProjectLearningEntry,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectLearningEntry {
+    plan_builder_path: &'static str,
+    project_ideation_path: &'static str,
+    deterministic_fallback: bool,
 }
 
 async fn active_questions(state: &AppState) -> Result<Vec<QuestionRow>, OnboardingError> {
@@ -364,5 +372,13 @@ pub async fn learning_path(
     .fetch_all(state.pool())
     .await?;
 
-    Ok(Json(LearningPathResponse { track, units }))
+    Ok(Json(LearningPathResponse {
+        track,
+        units,
+        project_learning: ProjectLearningEntry {
+            plan_builder_path: "/learning-plan",
+            project_ideation_path: "/projects/ideas",
+            deterministic_fallback: true,
+        },
+    }))
 }
