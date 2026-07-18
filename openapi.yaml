@@ -295,7 +295,8 @@ paths:
   /api/v1/content/providers:
     get:
       operationId: listContentProviders
-      responses: *ok
+      responses:
+        "200": { $ref: "#/components/responses/ContentProviderList" }
     post:
       operationId: createContentProvider
       security: *write
@@ -304,11 +305,40 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/ContentProviderRequest" }
-      responses: *write_result
+      responses:
+        "201": { $ref: "#/components/responses/ContentMutation" }
+  /api/v1/content/providers/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      operationId: updateContentProvider
+      security: *write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled, supports_stream, supports_tools, fallback_provider_id]
+              properties:
+                enabled: { type: boolean }
+                supports_stream: { type: boolean, const: false }
+                supports_tools: { type: boolean, const: false }
+                fallback_provider_id:
+                  oneOf:
+                    - { type: string, format: uuid }
+                    - { type: "null" }
+      responses:
+        "200": { $ref: "#/components/responses/ContentMutation" }
   /api/v1/content/jobs:
     get:
       operationId: listContentGenerationJobs
-      responses: *ok
+      responses:
+        "200": { $ref: "#/components/responses/ContentJobList" }
     post:
       operationId: createContentGenerationJob
       security: *write
@@ -317,11 +347,55 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/ContentGenerationJobRequest" }
-      responses: *write_result
+      responses:
+        "201": { $ref: "#/components/responses/ContentMutation" }
+  /api/v1/content/jobs/compare:
+    get:
+      operationId: compareContentGenerationJobs
+      parameters:
+        - { name: left, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: right, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/ContentJobComparison" }
+  /api/v1/content/jobs/{id}:
+    parameters: [*id]
+    get:
+      operationId: contentGenerationJobDetail
+      responses:
+        "200": { $ref: "#/components/responses/ContentJobDetail" }
+  /api/v1/content/jobs/{id}/cancel:
+    parameters: [*id]
+    post:
+      operationId: cancelContentGenerationJob
+      security: *write
+      requestBody: { $ref: "#/components/requestBodies/ContentJobAction" }
+      responses: { "200": { $ref: "#/components/responses/ContentMutation" } }
+  /api/v1/content/jobs/{id}/retry:
+    parameters: [*id]
+    post:
+      operationId: retryContentGenerationJob
+      security: *write
+      requestBody: { $ref: "#/components/requestBodies/ContentJobAction" }
+      responses: { "200": { $ref: "#/components/responses/ContentMutation" } }
+  /api/v1/content/jobs/{id}/clone:
+    parameters: [*id]
+    post:
+      operationId: cloneContentGenerationJob
+      security: *write
+      requestBody: { $ref: "#/components/requestBodies/ContentJobAction" }
+      responses: { "200": { $ref: "#/components/responses/ContentMutation" } }
+  /api/v1/content/jobs/{id}/archive:
+    parameters: [*id]
+    post:
+      operationId: archiveContentGenerationJob
+      security: *write
+      requestBody: { $ref: "#/components/requestBodies/ContentJobAction" }
+      responses: { "200": { $ref: "#/components/responses/ContentMutation" } }
   /api/v1/content/budget:
     get:
       operationId: getContentBudget
-      responses: *ok
+      responses:
+        "200": { $ref: "#/components/responses/ContentBudget" }
     post:
       operationId: updateContentBudget
       security: *write
@@ -335,7 +409,8 @@ paths:
               required: [limit_microunits]
               properties:
                 limit_microunits: { type: integer, minimum: 0, maximum: 1000000000000 }
-      responses: *write_result
+      responses:
+        "200": { $ref: "#/components/responses/ContentMutation" }
   /api/v1/learning/path:
     get:
       operationId: learningPath
@@ -871,6 +946,36 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    ContentProviderList:
+      description: 제공자 목록
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentProviderListResponse" } } }
+    ContentJobList:
+      description: 소유자 작업 목록
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentJobListResponse" } } }
+    ContentJobDetail:
+      description: 작업·시도·불변 산출물·감사 상세
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentJobDetailResponse" } } }
+    ContentJobComparison:
+      description: 두 작업의 최신 산출물 비교
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentJobComparisonResponse" } } }
+    ContentBudget:
+      description: 콘텐츠 생성 예산
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentBudgetResponse" } } }
+    ContentMutation:
+      description: 콘텐츠 작업 변경 결과
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentMutationResponse" } } }
+
+  requestBodies:
+    ContentJobAction:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [idempotency_key]
+            properties:
+              idempotency_key: { type: string, format: uuid }
 
   schemas:
     Error:
@@ -886,6 +991,92 @@ components:
     GenericObject:
       type: object
       additionalProperties: true
+    ContentMutationResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string }
+        enabled: { type: boolean }
+        archived: { type: boolean }
+        idempotent_replay: { type: boolean }
+        limit_microunits: { type: integer }
+    ContentProviderListResponse:
+      type: object
+      additionalProperties: false
+      required: [providers]
+      properties:
+        providers:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, name, kind, protocol, model, cost_per_generation_microunits, credential_available, enabled, health_status, supports_stream, supports_tools]
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+              kind: { type: string, enum: [external, local] }
+              protocol: { type: string, enum: [openai_compatible, anthropic] }
+              model: { type: string }
+              cost_per_generation_microunits: { type: integer, minimum: 1 }
+              credential_available: { type: boolean }
+              enabled: { type: boolean }
+              health_status: { type: string, enum: [unverified, healthy, unhealthy] }
+              last_health_at: { oneOf: [{ type: string, format: date-time }, { type: "null" }] }
+              supports_stream: { type: boolean, const: false }
+              supports_tools: { type: boolean, const: false }
+              fallback_provider_id: { oneOf: [{ type: string, format: uuid }, { type: "null" }] }
+    ContentJobSummary:
+      type: object
+      additionalProperties: false
+      required: [id, provider, content_type, status, attempts, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        provider: { type: string }
+        content_type: { type: string }
+        status: { type: string }
+        attempts: { type: integer }
+        last_error_code: { oneOf: [{ type: string }, { type: "null" }] }
+        created_at: { type: string, format: date-time }
+    ContentJobListResponse:
+      type: object
+      additionalProperties: false
+      required: [jobs]
+      properties:
+        jobs: { type: array, items: { $ref: "#/components/schemas/ContentJobSummary" } }
+    ContentJobDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [job, attempts, artifacts, audit]
+      properties:
+        job: { type: object, additionalProperties: true }
+        attempts: { type: array, items: { type: object, additionalProperties: true } }
+        artifacts: { type: array, items: { type: object, additionalProperties: true } }
+        audit: { type: array, items: { type: object, additionalProperties: true } }
+    ContentJobComparisonResponse:
+      type: object
+      additionalProperties: false
+      required: [jobs]
+      properties:
+        jobs:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, artifact]
+            properties:
+              id: { type: string, format: uuid }
+              artifact: { type: object, additionalProperties: true }
+    ContentBudgetResponse:
+      type: object
+      additionalProperties: false
+      required: [limit_microunits]
+      properties:
+        limit_microunits: { type: integer, minimum: 0 }
+        reserved_microunits: { type: integer, minimum: 0 }
+        spent_microunits: { type: integer, minimum: 0 }
     TestSessionRequest:
       type: object
       additionalProperties: false
@@ -1035,6 +1226,9 @@ components:
             - { type: string, enum: [CONTENT_AI_CUSTOM_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY] }
             - { type: "null" }
         enabled: { type: boolean }
+        supports_stream: { type: boolean, const: false }
+        supports_tools: { type: boolean, const: false }
+        fallback_provider_id: { type: "null" }
     ContentGenerationJobRequest:
       type: object
       additionalProperties: false

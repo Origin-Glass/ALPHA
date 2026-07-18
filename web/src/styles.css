@@ -730,6 +730,9 @@ footer strong { color: var(--ink); font-style: italic; }
 .factory-jobs article div { display: flex; justify-content: space-between; gap: 15px; }
 .factory-jobs span, .factory-jobs small, .factory-grid section > p { color: var(--muted); font-size: .7rem; }
 .factory-message { margin-top: 20px; }
+.factory-detail { margin-top: 18px; padding: 24px; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.65); }
+.factory-detail pre { max-height: 360px; overflow: auto; padding: 14px; border-radius: 12px; background: #e9eef4; font-size: .72rem; white-space: pre-wrap; }
+.factory-detail article { margin-top: 12px; display: grid; gap: 6px; }
 
 a:focus-visible { outline: 3px solid rgba(77,148,255,.42); outline-offset: 4px; }
 

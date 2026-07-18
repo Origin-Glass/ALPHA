@@ -41,9 +41,15 @@ CREATE TABLE content_provider_configs (
         'CONTENT_AI_CUSTOM_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'
     )),
     enabled boolean NOT NULL DEFAULT false,
+    health_status text NOT NULL DEFAULT 'unverified' CHECK (health_status IN ('unverified', 'healthy', 'unhealthy')),
+    last_health_at timestamptz,
+    supports_stream boolean NOT NULL DEFAULT false,
+    supports_tools boolean NOT NULL DEFAULT false,
+    fallback_provider_id uuid REFERENCES content_provider_configs(id),
     created_by uuid NOT NULL REFERENCES users(id),
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
+    archived_at timestamptz,
     CHECK ((kind = 'external') = (credential_env_var IS NOT NULL)),
     CHECK (
         (kind = 'local' AND protocol = 'openai_compatible' AND credential_env_var IS NULL)
@@ -68,6 +74,7 @@ CREATE TABLE content_generation_jobs (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     created_by uuid NOT NULL REFERENCES users(id),
     provider_id uuid NOT NULL REFERENCES content_provider_configs(id),
+    fallback_provider_id_snapshot uuid REFERENCES content_provider_configs(id),
     content_type text NOT NULL CHECK (content_type IN (
         'algorithm_problem', 'code_reading', 'debugging', 'documentation_lesson', 'implementation_task'
     )),
@@ -78,6 +85,7 @@ CREATE TABLE content_generation_jobs (
         'completed', 'failed', 'cancelled'
     )),
     estimated_cost_microunits bigint NOT NULL CHECK (estimated_cost_microunits BETWEEN 1 AND 20000000000),
+    attempt_cost_microunits bigint NOT NULL CHECK (attempt_cost_microunits BETWEEN 1 AND 20000000000),
     reserved_cost_microunits bigint NOT NULL DEFAULT 0 CHECK (reserved_cost_microunits >= 0),
     settled boolean NOT NULL DEFAULT false,
     attempt_count smallint NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
@@ -89,9 +97,18 @@ CREATE TABLE content_generation_jobs (
     available_at timestamptz NOT NULL DEFAULT now(),
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
+    archived_at timestamptz,
+    cloned_from_job_id uuid REFERENCES content_generation_jobs(id),
+    clone_idempotency_key uuid,
+    cancel_idempotency_key uuid,
+    archive_idempotency_key uuid,
     CHECK ((status = 'leased') = (lease_owner IS NOT NULL AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)),
-    CHECK (reserved_cost_microunits IN (0, estimated_cost_microunits))
+    CHECK (reserved_cost_microunits IN (0, estimated_cost_microunits)),
+    CHECK (estimated_cost_microunits = attempt_cost_microunits * max_attempts)
 );
+CREATE UNIQUE INDEX content_jobs_clone_idempotency_idx
+    ON content_generation_jobs (created_by, cloned_from_job_id, clone_idempotency_key)
+    WHERE clone_idempotency_key IS NOT NULL;
 CREATE INDEX content_jobs_ready_idx ON content_generation_jobs (available_at, created_at)
     WHERE status = 'queued';
 CREATE INDEX content_jobs_lease_idx ON content_generation_jobs (lease_expires_at)
@@ -99,12 +116,12 @@ CREATE INDEX content_jobs_lease_idx ON content_generation_jobs (lease_expires_at
 
 CREATE TABLE content_generation_attempts (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    job_id uuid NOT NULL REFERENCES content_generation_jobs(id) ON DELETE CASCADE,
+    job_id uuid NOT NULL REFERENCES content_generation_jobs(id),
     attempt_number smallint NOT NULL CHECK (attempt_number > 0),
     provider_snapshot jsonb NOT NULL,
     request_hash bytea NOT NULL CHECK (octet_length(request_hash) = 32),
     response_hash bytea CHECK (response_hash IS NULL OR octet_length(response_hash) = 32),
-    status text NOT NULL CHECK (status IN ('running', 'retryable_failure', 'failed', 'completed')),
+    status text NOT NULL CHECK (status IN ('running', 'retryable_failure', 'failed', 'completed', 'cancelled')),
     error_code text,
     started_at timestamptz NOT NULL DEFAULT now(),
     completed_at timestamptz,
@@ -113,11 +130,20 @@ CREATE TABLE content_generation_attempts (
 
 CREATE TABLE content_artifacts (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    job_id uuid NOT NULL REFERENCES content_generation_jobs(id) ON DELETE CASCADE,
-    attempt_id uuid NOT NULL REFERENCES content_generation_attempts(id) ON DELETE CASCADE,
+    job_id uuid NOT NULL REFERENCES content_generation_jobs(id),
+    attempt_id uuid NOT NULL REFERENCES content_generation_attempts(id),
     artifact_kind text NOT NULL CHECK (artifact_kind IN ('candidate', 'provider_response', 'error_receipt')),
     payload jsonb NOT NULL,
     content_hash bytea NOT NULL CHECK (octet_length(content_hash) = 32),
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (attempt_id, artifact_kind, content_hash)
 );
+
+CREATE FUNCTION reject_content_artifact_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'content artifacts are append-only';
+END;
+$$;
+CREATE TRIGGER content_artifacts_immutable
+BEFORE UPDATE OR DELETE ON content_artifacts
+FOR EACH ROW EXECUTE FUNCTION reject_content_artifact_mutation();

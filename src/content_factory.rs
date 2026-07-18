@@ -2,7 +2,7 @@ use std::net::IpAddr;
 
 use axum::{
     Json,
-    extract::State,
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -14,6 +14,10 @@ use uuid::Uuid;
 
 use crate::{auth::AuthError, http::AppState};
 
+pub const CONTENT_PROMPT_TEMPLATE_VERSION: &str = "content-v1";
+pub const CONTENT_PROMPT_TEMPLATE: &str =
+    "다음 명세에 맞는 한국어 교육 콘텐츠를 JSON으로 생성하세요: ";
+
 type ProviderRow = (
     Uuid,
     String,
@@ -23,6 +27,36 @@ type ProviderRow = (
     i64,
     Option<String>,
     bool,
+    String,
+    Option<time::OffsetDateTime>,
+    bool,
+    bool,
+    Option<Uuid>,
+);
+type JobProviderPricing = (
+    bool,
+    String,
+    Option<String>,
+    i64,
+    Option<Uuid>,
+    Option<bool>,
+    Option<i64>,
+    Option<String>,
+);
+type CloneSource = (
+    Uuid,
+    Option<Uuid>,
+    String,
+    Value,
+    Vec<u8>,
+    String,
+    i64,
+    i64,
+    bool,
+    Option<String>,
+    String,
+    Option<bool>,
+    Option<String>,
 );
 type JobRow = (
     Uuid,
@@ -35,6 +69,7 @@ type JobRow = (
 );
 type LeaseCandidate = (
     Uuid,
+    Uuid,
     i16,
     String,
     String,
@@ -43,6 +78,7 @@ type LeaseCandidate = (
     Option<String>,
     Value,
     Vec<u8>,
+    i64,
     i64,
 );
 
@@ -292,6 +328,12 @@ pub struct ProviderRequest {
     cost_per_generation_microunits: i64,
     credential_env_var: Option<String>,
     enabled: bool,
+    #[serde(default)]
+    supports_stream: bool,
+    #[serde(default)]
+    supports_tools: bool,
+    #[serde(default)]
+    fallback_provider_id: Option<Uuid>,
 }
 
 pub async fn create_provider(
@@ -323,6 +365,9 @@ pub async fn create_provider(
             && request.credential_env_var.as_deref() != Some("ANTHROPIC_API_KEY"))
         || (request.protocol == "openai_compatible"
             && request.credential_env_var.as_deref() == Some("ANTHROPIC_API_KEY"))
+        || request.fallback_provider_id.is_some()
+        || request.supports_stream
+        || request.supports_tools
     {
         return Err(ContentFactoryError::InvalidInput(
             "제공자 설정을 확인해 주세요",
@@ -332,8 +377,8 @@ pub async fn create_provider(
     let id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO content_provider_configs
            (name, kind, protocol, base_url, model, cost_per_generation_microunits,
-            credential_env_var, enabled, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id"#,
+            credential_env_var, enabled, supports_stream, supports_tools, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id"#,
     )
     .bind(&request.name)
     .bind(&request.kind)
@@ -343,6 +388,8 @@ pub async fn create_provider(
     .bind(request.cost_per_generation_microunits)
     .bind(&request.credential_env_var)
     .bind(request.enabled)
+    .bind(request.supports_stream)
+    .bind(request.supports_tools)
     .bind(user_id)
     .fetch_one(&mut *transaction)
     .await?;
@@ -359,13 +406,14 @@ pub async fn list_providers(
     authorize_read(&state, &headers, "content.generate").await?;
     let providers: Vec<ProviderRow> = sqlx::query_as(
         r#"SELECT id, name, kind, protocol, model, cost_per_generation_microunits,
-                      credential_env_var, enabled
+                      credential_env_var, enabled, health_status, last_health_at,
+                      supports_stream, supports_tools, fallback_provider_id
                FROM content_provider_configs ORDER BY name"#,
     )
     .fetch_all(state.pool())
     .await?;
     Ok(Json(serde_json::json!({
-        "providers": providers.into_iter().map(|(id, name, kind, protocol, model, cost, credential_env_var, enabled)| serde_json::json!({
+        "providers": providers.into_iter().map(|(id, name, kind, protocol, model, cost, credential_env_var, enabled, health_status, last_health_at, supports_stream, supports_tools, fallback_provider_id)| serde_json::json!({
             "id": id,
             "name": name,
             "kind": kind,
@@ -374,8 +422,106 @@ pub async fn list_providers(
             "cost_per_generation_microunits": cost,
             "credential_available": credential_env_var.as_deref().is_none_or(|name| state.settings().has_content_ai_credential(name)),
             "enabled": enabled,
+            "health_status": health_status,
+            "last_health_at": last_health_at,
+            "supports_stream": supports_stream,
+            "supports_tools": supports_tools,
+            "fallback_provider_id": fallback_provider_id,
         })).collect::<Vec<_>>()
     })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProviderRequest {
+    enabled: bool,
+    supports_stream: bool,
+    supports_tools: bool,
+    fallback_provider_id: Option<Uuid>,
+}
+
+pub async fn update_provider(
+    State(state): State<AppState>,
+    Path(provider_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateProviderRequest>,
+) -> Result<Json<Value>, ContentFactoryError> {
+    let user_id = authorize(&state, &headers, "provider.configure").await?;
+    if request.fallback_provider_id == Some(provider_id) {
+        return Err(ContentFactoryError::InvalidInput(
+            "제공자는 자기 자신을 대체 제공자로 지정할 수 없습니다",
+        ));
+    }
+    if request.supports_stream || request.supports_tools {
+        return Err(ContentFactoryError::InvalidInput(
+            "현재 콘텐츠 worker는 스트리밍·도구 호출을 지원하지 않습니다",
+        ));
+    }
+    let mut transaction = state.pool().begin().await?;
+    if let Some(fallback_id) = request.fallback_provider_id {
+        let compatible: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                SELECT 1 FROM content_provider_configs primary_provider
+                JOIN content_provider_configs fallback ON fallback.id = $2
+                WHERE primary_provider.id = $1 AND fallback.enabled
+                  AND fallback.archived_at IS NULL AND fallback.kind = primary_provider.kind
+                  AND fallback.id <> primary_provider.id
+            )"#,
+        )
+        .bind(provider_id)
+        .bind(fallback_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if !compatible {
+            return Err(ContentFactoryError::InvalidInput(
+                "동일 종류의 활성 대체 제공자를 선택하고 순환 구성을 제거해 주세요",
+            ));
+        }
+        let creates_cycle: bool = sqlx::query_scalar(
+            r#"WITH RECURSIVE chain(id, path, is_cycle) AS (
+                   SELECT $2::uuid, ARRAY[$1::uuid, $2::uuid], $2::uuid = $1::uuid
+                   UNION ALL
+                   SELECT provider.fallback_provider_id,
+                          chain.path || provider.fallback_provider_id,
+                          provider.fallback_provider_id = ANY(chain.path)
+                   FROM chain
+                   JOIN content_provider_configs provider ON provider.id = chain.id
+                   WHERE provider.fallback_provider_id IS NOT NULL AND NOT chain.is_cycle
+               )
+               SELECT EXISTS(SELECT 1 FROM chain WHERE is_cycle)"#,
+        )
+        .bind(provider_id)
+        .bind(fallback_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if creates_cycle {
+            return Err(ContentFactoryError::InvalidInput(
+                "대체 제공자 순환 구성을 제거해 주세요",
+            ));
+        }
+    }
+    let updated = sqlx::query(
+        r#"UPDATE content_provider_configs SET enabled = $2, supports_stream = $3,
+           supports_tools = $4, fallback_provider_id = $5, updated_at = now()
+           WHERE id = $1 AND archived_at IS NULL"#,
+    )
+    .bind(provider_id)
+    .bind(request.enabled)
+    .bind(request.supports_stream)
+    .bind(request.supports_tools)
+    .bind(request.fallback_provider_id)
+    .execute(&mut *transaction)
+    .await?;
+    if updated.rows_affected() != 1 {
+        return Err(ContentFactoryError::NotFound);
+    }
+    sqlx::query("INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, 'content_provider.updated', 'content_provider', $2, jsonb_build_object('enabled', $3::boolean, 'supports_stream', $4::boolean, 'supports_tools', $5::boolean, 'fallback_provider_id', $6::uuid))")
+        .bind(user_id).bind(provider_id.to_string()).bind(request.enabled).bind(request.supports_stream)
+        .bind(request.supports_tools).bind(request.fallback_provider_id).execute(&mut *transaction).await?;
+    transaction.commit().await?;
+    Ok(Json(
+        serde_json::json!({"id": provider_id, "enabled": request.enabled}),
+    ))
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -409,19 +555,39 @@ pub async fn create_job(
             "생성 작업 설정을 확인해 주세요",
         ));
     }
-    let provider: Option<(bool, String, Option<String>, i64)> = sqlx::query_as(
-        "SELECT enabled, kind, credential_env_var, cost_per_generation_microunits FROM content_provider_configs WHERE id = $1",
+    let provider: Option<JobProviderPricing> = sqlx::query_as(
+        r#"SELECT provider.enabled, provider.kind, provider.credential_env_var,
+                  provider.cost_per_generation_microunits, provider.fallback_provider_id,
+                  fallback.enabled, fallback.cost_per_generation_microunits, fallback.credential_env_var
+           FROM content_provider_configs provider
+           LEFT JOIN content_provider_configs fallback ON fallback.id = provider.fallback_provider_id
+           WHERE provider.id = $1 AND provider.archived_at IS NULL"#,
     )
     .bind(request.provider_id)
     .fetch_optional(state.pool())
     .await?;
-    let (enabled, provider_kind, credential_env_var, unit_cost) =
-        provider.ok_or(ContentFactoryError::NotFound)?;
-    let estimated_cost_microunits = unit_cost
+    let (
+        enabled,
+        provider_kind,
+        credential_env_var,
+        unit_cost,
+        fallback_id,
+        fallback_enabled,
+        fallback_cost,
+        fallback_credential,
+    ) = provider.ok_or(ContentFactoryError::NotFound)?;
+    let liability_unit_cost = unit_cost.max(fallback_cost.unwrap_or(0));
+    let attempt_cost_microunits = liability_unit_cost
         .checked_mul(i64::from(request.generation_count))
         .ok_or(ContentFactoryError::InvalidInput(
             "제공자 가격을 확인해 주세요",
         ))?;
+    let estimated_cost_microunits =
+        attempt_cost_microunits
+            .checked_mul(3)
+            .ok_or(ContentFactoryError::InvalidInput(
+                "제공자 가격을 확인해 주세요",
+            ))?;
     let provider_capability = if provider_kind == "local" {
         "provider.use.local"
     } else {
@@ -430,11 +596,17 @@ pub async fn create_job(
     if !crate::governance::has_capability(state.pool(), user_id, provider_capability).await? {
         return Err(ContentFactoryError::Forbidden);
     }
-    let status = if !state.settings().content_ai_enabled || !enabled {
+    let status = if !state.settings().content_ai_enabled
+        || !enabled
+        || (fallback_id.is_some() && fallback_enabled != Some(true))
+    {
         "blocked_disabled"
     } else if credential_env_var
         .as_deref()
         .is_some_and(|name| !state.settings().has_content_ai_credential(name))
+        || fallback_credential
+            .as_deref()
+            .is_some_and(|name| !state.settings().has_content_ai_credential(name))
     {
         "blocked_missing_credential"
     } else {
@@ -465,17 +637,19 @@ pub async fn create_job(
     };
     let id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO content_generation_jobs
-           (created_by, provider_id, content_type, request_spec, request_hash, status,
-            estimated_cost_microunits, reserved_cost_microunits)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id"#,
+           (created_by, provider_id, fallback_provider_id_snapshot, content_type, request_spec, request_hash, status,
+            estimated_cost_microunits, attempt_cost_microunits, reserved_cost_microunits)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id"#,
     )
     .bind(user_id)
     .bind(request.provider_id)
+    .bind(fallback_id)
     .bind(&request.content_type)
     .bind(&spec)
     .bind(request_hash)
     .bind(status)
     .bind(estimated_cost_microunits)
+    .bind(attempt_cost_microunits)
     .bind(reserved)
     .fetch_one(&mut *transaction)
     .await?;
@@ -498,7 +672,7 @@ pub async fn list_jobs(
                       job.last_error_code, job.created_at
                FROM content_generation_jobs job
                JOIN content_provider_configs provider ON provider.id = job.provider_id
-               WHERE job.created_by = $1
+               WHERE job.created_by = $1 AND job.archived_at IS NULL
                ORDER BY job.created_at DESC LIMIT 50"#,
     )
     .bind(user_id)
@@ -527,6 +701,303 @@ pub async fn get_budget(
         "reserved_microunits": reserved,
         "spent_microunits": spent,
     })))
+}
+
+pub async fn job_detail(
+    State(state): State<AppState>,
+    Path(job_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ContentFactoryError> {
+    let user_id = authorize_read(&state, &headers, "content.generate").await?;
+    let job: Option<Value> = sqlx::query_scalar(
+        r#"SELECT jsonb_build_object(
+             'id', job.id, 'provider', provider.name, 'content_type', job.content_type,
+             'request_spec', job.request_spec, 'status', job.status, 'attempts', job.attempt_count,
+             'max_attempts', job.max_attempts, 'reserved_microunits', job.reserved_cost_microunits,
+             'last_error_code', job.last_error_code, 'created_at', job.created_at,
+             'updated_at', job.updated_at, 'archived_at', job.archived_at,
+             'cloned_from_job_id', job.cloned_from_job_id)
+           FROM content_generation_jobs job
+           JOIN content_provider_configs provider ON provider.id = job.provider_id
+           WHERE job.id = $1 AND job.created_by = $2"#,
+    )
+    .bind(job_id)
+    .bind(user_id)
+    .fetch_optional(state.pool())
+    .await?;
+    let job = job.ok_or(ContentFactoryError::NotFound)?;
+    let artifacts: Vec<Value> = sqlx::query_scalar(
+        r#"SELECT jsonb_build_object('id', artifact.id, 'attempt_id', artifact.attempt_id,
+                  'kind', artifact.artifact_kind, 'payload', artifact.payload,
+                  'hash', encode(artifact.content_hash, 'hex'), 'created_at', artifact.created_at)
+           FROM content_artifacts artifact
+           WHERE artifact.job_id = $1 ORDER BY artifact.created_at"#,
+    )
+    .bind(job_id)
+    .fetch_all(state.pool())
+    .await?;
+    let attempts: Vec<Value> = sqlx::query_scalar(
+        r#"SELECT jsonb_build_object('id', id, 'attempt_number', attempt_number,
+                  'provider_snapshot', provider_snapshot, 'request_hash', encode(request_hash, 'hex'),
+                  'response_hash', CASE WHEN response_hash IS NULL THEN NULL ELSE encode(response_hash, 'hex') END,
+                  'status', status, 'error_code', error_code, 'started_at', started_at, 'completed_at', completed_at)
+           FROM content_generation_attempts WHERE job_id = $1 ORDER BY attempt_number"#,
+    ).bind(job_id).fetch_all(state.pool()).await?;
+    let audit: Vec<Value> = sqlx::query_scalar(
+        r#"SELECT jsonb_build_object('action', action, 'metadata', metadata, 'occurred_at', occurred_at)
+           FROM audit_events WHERE target_type = 'content_generation_job' AND target_id = $1 ORDER BY occurred_at"#,
+    ).bind(job_id.to_string()).fetch_all(state.pool()).await?;
+    Ok(Json(serde_json::json!({
+        "job": job, "attempts": attempts, "artifacts": artifacts, "audit": audit
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobActionRequest {
+    idempotency_key: Uuid,
+}
+
+pub async fn cancel_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<JobActionRequest>,
+) -> Result<Json<Value>, ContentFactoryError> {
+    let user_id = authorize(&state, &headers, "content.generate").await?;
+    let mut transaction = state.pool().begin().await?;
+    let row: Option<(String, i64, Option<Uuid>, i16, i64)> = sqlx::query_as(
+        "SELECT status, reserved_cost_microunits, cancel_idempotency_key, attempt_count, attempt_cost_microunits FROM content_generation_jobs WHERE id = $1 AND created_by = $2 FOR UPDATE",
+    )
+    .bind(job_id).bind(user_id).fetch_optional(&mut *transaction).await?;
+    let (status, reserved, prior_key, attempt_count, attempt_cost) =
+        row.ok_or(ContentFactoryError::NotFound)?;
+    if prior_key == Some(request.idempotency_key) {
+        transaction.commit().await?;
+        return Ok(Json(
+            serde_json::json!({"id": job_id, "status": "cancelled", "idempotent_replay": true}),
+        ));
+    }
+    if prior_key.is_some()
+        || !matches!(
+            status.as_str(),
+            "queued" | "leased" | "blocked_disabled" | "blocked_missing_credential"
+        )
+    {
+        return Err(ContentFactoryError::Conflict(
+            "현재 상태에서는 작업을 취소할 수 없습니다",
+        ));
+    }
+    if status == "leased" {
+        sqlx::query("UPDATE content_generation_attempts SET status = 'cancelled', error_code = 'owner_cancelled', completed_at = now() WHERE job_id = $1 AND attempt_number = $2 AND status = 'running'")
+            .bind(job_id).bind(attempt_count).execute(&mut *transaction).await?;
+    }
+    sqlx::query("UPDATE content_generation_jobs SET status = 'cancelled', settled = true, reserved_cost_microunits = 0, lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL, cancel_idempotency_key = $2, updated_at = now() WHERE id = $1")
+        .bind(job_id).bind(request.idempotency_key).execute(&mut *transaction).await?;
+    let charged = if status == "leased" {
+        i64::from(attempt_count) * attempt_cost
+    } else {
+        0
+    };
+    if reserved > 0 {
+        sqlx::query("UPDATE content_budgets SET reserved_microunits = reserved_microunits - $1, spent_microunits = spent_microunits + $2, updated_at = now() WHERE budget_key = 'global'")
+            .bind(reserved).bind(charged).execute(&mut *transaction).await?;
+    }
+    sqlx::query("INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, 'content_job.cancelled', 'content_generation_job', $2, jsonb_build_object('idempotency_key', $3::uuid, 'charged_microunits', $4::bigint))")
+        .bind(user_id).bind(job_id.to_string()).bind(request.idempotency_key).bind(charged).execute(&mut *transaction).await?;
+    transaction.commit().await?;
+    Ok(Json(
+        serde_json::json!({"id": job_id, "status": "cancelled"}),
+    ))
+}
+
+async fn clone_job_inner(
+    state: &AppState,
+    headers: &HeaderMap,
+    job_id: Uuid,
+    request: JobActionRequest,
+    retry_only: bool,
+) -> Result<Json<Value>, ContentFactoryError> {
+    let user_id = authorize(state, headers, "content.generate").await?;
+    let mut transaction = state.pool().begin().await?;
+    let replay: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM content_generation_jobs WHERE created_by = $1 AND cloned_from_job_id = $2 AND clone_idempotency_key = $3",
+    ).bind(user_id).bind(job_id).bind(request.idempotency_key).fetch_optional(&mut *transaction).await?;
+    if let Some(id) = replay {
+        transaction.commit().await?;
+        return Ok(Json(
+            serde_json::json!({"id": id, "idempotent_replay": true}),
+        ));
+    }
+    let source: Option<CloneSource> = sqlx::query_as(
+        r#"SELECT job.provider_id, job.fallback_provider_id_snapshot, job.content_type, job.request_spec, job.request_hash, job.status,
+                  job.estimated_cost_microunits, job.attempt_cost_microunits,
+                  provider.enabled, provider.credential_env_var, provider.kind,
+                  fallback.enabled, fallback.credential_env_var
+           FROM content_generation_jobs job JOIN content_provider_configs provider ON provider.id = job.provider_id
+           LEFT JOIN content_provider_configs fallback ON fallback.id = job.fallback_provider_id_snapshot
+           WHERE job.id = $1 AND job.created_by = $2 FOR UPDATE OF job"#,
+    ).bind(job_id).bind(user_id).fetch_optional(&mut *transaction).await?;
+    let (
+        provider_id,
+        fallback_id,
+        content_type,
+        spec,
+        request_hash,
+        source_status,
+        estimated,
+        attempt_cost,
+        enabled,
+        credential_env,
+        provider_kind,
+        fallback_enabled,
+        fallback_credential,
+    ) = source.ok_or(ContentFactoryError::NotFound)?;
+    let provider_capability = if provider_kind == "local" {
+        "provider.use.local"
+    } else {
+        "provider.use.frontier"
+    };
+    if !crate::governance::has_capability(state.pool(), user_id, provider_capability).await? {
+        return Err(ContentFactoryError::Forbidden);
+    }
+    if retry_only && source_status != "failed" {
+        return Err(ContentFactoryError::Conflict(
+            "실패한 작업만 수동 재시도할 수 있습니다",
+        ));
+    }
+    if !retry_only && source_status == "leased" {
+        return Err(ContentFactoryError::Conflict(
+            "실행 중인 작업은 복제할 수 없습니다",
+        ));
+    }
+    let status = if !state.settings().content_ai_enabled
+        || !enabled
+        || (fallback_id.is_some() && fallback_enabled != Some(true))
+    {
+        "blocked_disabled"
+    } else if credential_env
+        .as_deref()
+        .is_some_and(|name| !state.settings().has_content_ai_credential(name))
+        || fallback_credential
+            .as_deref()
+            .is_some_and(|name| !state.settings().has_content_ai_credential(name))
+    {
+        "blocked_missing_credential"
+    } else {
+        "queued"
+    };
+    let reserved = if status == "queued" {
+        let updated = sqlx::query("UPDATE content_budgets SET reserved_microunits = reserved_microunits + $1, updated_at = now() WHERE budget_key = 'global' AND reserved_microunits + spent_microunits + $1 <= limit_microunits")
+            .bind(estimated).execute(&mut *transaction).await?;
+        if updated.rows_affected() != 1 {
+            return Err(ContentFactoryError::Conflict(
+                "콘텐츠 생성 예산이 부족합니다",
+            ));
+        }
+        estimated
+    } else {
+        0
+    };
+    let id: Uuid = sqlx::query_scalar(
+        r#"INSERT INTO content_generation_jobs
+           (created_by, provider_id, fallback_provider_id_snapshot, content_type, request_spec, request_hash, status,
+            estimated_cost_microunits, attempt_cost_microunits, reserved_cost_microunits,
+            cloned_from_job_id, clone_idempotency_key)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id"#,
+    )
+    .bind(user_id)
+    .bind(provider_id)
+    .bind(fallback_id)
+    .bind(content_type)
+    .bind(spec)
+    .bind(request_hash)
+    .bind(status)
+    .bind(estimated)
+    .bind(attempt_cost)
+    .bind(reserved)
+    .bind(job_id)
+    .bind(request.idempotency_key)
+    .fetch_one(&mut *transaction)
+    .await?;
+    sqlx::query("INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, $2, 'content_generation_job', $3, jsonb_build_object('source_job_id', $4::uuid, 'idempotency_key', $5::uuid))")
+        .bind(user_id).bind(if retry_only { "content_job.manual_retry" } else { "content_job.cloned" })
+        .bind(id.to_string()).bind(job_id).bind(request.idempotency_key).execute(&mut *transaction).await?;
+    transaction.commit().await?;
+    Ok(Json(serde_json::json!({"id": id, "status": status})))
+}
+
+pub async fn clone_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<JobActionRequest>,
+) -> Result<Json<Value>, ContentFactoryError> {
+    clone_job_inner(&state, &headers, job_id, request, false).await
+}
+
+pub async fn retry_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<JobActionRequest>,
+) -> Result<Json<Value>, ContentFactoryError> {
+    clone_job_inner(&state, &headers, job_id, request, true).await
+}
+
+pub async fn archive_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<JobActionRequest>,
+) -> Result<Json<Value>, ContentFactoryError> {
+    let user_id = authorize(&state, &headers, "content.generate").await?;
+    let mut transaction = state.pool().begin().await?;
+    let row: Option<(String, Option<Uuid>)> = sqlx::query_as("SELECT status, archive_idempotency_key FROM content_generation_jobs WHERE id = $1 AND created_by = $2 FOR UPDATE")
+        .bind(job_id).bind(user_id).fetch_optional(&mut *transaction).await?;
+    let (status, prior_key) = row.ok_or(ContentFactoryError::NotFound)?;
+    if prior_key == Some(request.idempotency_key) {
+        transaction.commit().await?;
+        return Ok(Json(
+            serde_json::json!({"id": job_id, "archived": true, "idempotent_replay": true}),
+        ));
+    }
+    if prior_key.is_some() || !matches!(status.as_str(), "completed" | "failed" | "cancelled") {
+        return Err(ContentFactoryError::Conflict(
+            "종료된 작업만 보관할 수 있습니다",
+        ));
+    }
+    sqlx::query("UPDATE content_generation_jobs SET archived_at = now(), archive_idempotency_key = $2, updated_at = now() WHERE id = $1")
+        .bind(job_id).bind(request.idempotency_key).execute(&mut *transaction).await?;
+    sqlx::query("INSERT INTO audit_events (actor_user_id, action, target_type, target_id, metadata) VALUES ($1, 'content_job.archived', 'content_generation_job', $2, jsonb_build_object('idempotency_key', $3::uuid))")
+        .bind(user_id).bind(job_id.to_string()).bind(request.idempotency_key).execute(&mut *transaction).await?;
+    transaction.commit().await?;
+    Ok(Json(serde_json::json!({"id": job_id, "archived": true})))
+}
+
+#[derive(Deserialize)]
+pub struct CompareJobsQuery {
+    left: Uuid,
+    right: Uuid,
+}
+
+pub async fn compare_jobs(
+    State(state): State<AppState>,
+    Query(query): Query<CompareJobsQuery>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ContentFactoryError> {
+    let user_id = authorize_read(&state, &headers, "content.generate").await?;
+    let rows: Vec<(Uuid, Value)> = sqlx::query_as(
+        r#"SELECT job.id, artifact.payload FROM content_generation_jobs job
+           JOIN LATERAL (SELECT payload FROM content_artifacts WHERE job_id = job.id AND artifact_kind = 'candidate' ORDER BY created_at DESC LIMIT 1) artifact ON true
+           WHERE job.created_by = $1 AND job.id = ANY($2)"#,
+    ).bind(user_id).bind(vec![query.left, query.right]).fetch_all(state.pool()).await?;
+    if rows.len() != 2 {
+        return Err(ContentFactoryError::NotFound);
+    }
+    Ok(Json(
+        serde_json::json!({"jobs": rows.into_iter().map(|(id, artifact)| serde_json::json!({"id": id, "artifact": artifact})).collect::<Vec<_>>()}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -570,6 +1041,7 @@ pub async fn update_budget(
 #[derive(Debug, sqlx::FromRow)]
 pub struct GenerationLease {
     pub job_id: Uuid,
+    pub provider_id: Uuid,
     pub attempt_id: Uuid,
     pub attempt_number: i16,
     pub lease_token: Uuid,
@@ -580,6 +1052,7 @@ pub struct GenerationLease {
     pub credential_env_var: Option<String>,
     pub request_spec: Value,
     pub reserved_cost_microunits: i64,
+    pub attempt_cost_microunits: i64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -608,8 +1081,8 @@ pub async fn lease_next_generation_job(
     .execute(&mut *transaction)
     .await?;
 
-    let expired_leases: Vec<(Uuid, i16, i16, i64)> = sqlx::query_as(
-        r#"SELECT id, attempt_count, max_attempts, reserved_cost_microunits
+    let expired_leases: Vec<(Uuid, i16, i16, i64, i64)> = sqlx::query_as(
+        r#"SELECT id, attempt_count, max_attempts, reserved_cost_microunits, attempt_cost_microunits
            FROM content_generation_jobs
            WHERE status = 'leased' AND lease_expires_at <= now() AND NOT settled
            FOR UPDATE"#,
@@ -618,14 +1091,20 @@ pub async fn lease_next_generation_job(
     .await?;
     let terminal_reserved: i64 = expired_leases
         .iter()
-        .filter(|(_, attempt, max_attempts, _)| attempt >= max_attempts)
-        .map(|(_, _, _, reserved)| *reserved)
+        .filter(|(_, attempt, max_attempts, _, _)| attempt >= max_attempts)
+        .map(|(_, _, _, reserved, _)| *reserved)
+        .sum();
+    let terminal_spent: i64 = expired_leases
+        .iter()
+        .filter(|(_, attempt, max_attempts, _, _)| attempt >= max_attempts)
+        .map(|(_, attempt, _, _, attempt_cost)| i64::from(*attempt) * *attempt_cost)
         .sum();
     if terminal_reserved > 0 {
         sqlx::query(
-            "UPDATE content_budgets SET reserved_microunits = reserved_microunits - $1, updated_at = now() WHERE budget_key = 'global'",
+            "UPDATE content_budgets SET reserved_microunits = reserved_microunits - $1, spent_microunits = spent_microunits + $2, updated_at = now() WHERE budget_key = 'global'",
         )
         .bind(terminal_reserved)
+        .bind(terminal_spent)
         .execute(&mut *transaction)
         .await?;
     }
@@ -638,7 +1117,7 @@ pub async fn lease_next_generation_job(
     )
     .execute(&mut *transaction)
     .await?;
-    for (job_id, attempt, max_attempts, _) in &expired_leases {
+    for (job_id, attempt, max_attempts, _, _) in &expired_leases {
         let outcome = if attempt >= max_attempts {
             "failed"
         } else {
@@ -664,11 +1143,16 @@ pub async fn lease_next_generation_job(
     .await?;
 
     let candidate: Option<LeaseCandidate> = sqlx::query_as(
-        r#"SELECT job.id, job.attempt_count, provider.kind, provider.protocol, provider.base_url,
-                      provider.model, provider.credential_env_var, job.request_spec,
-                      job.request_hash, job.reserved_cost_microunits
+        r#"SELECT job.id, COALESCE(fallback.id, provider.id), job.attempt_count,
+                      COALESCE(fallback.kind, provider.kind), COALESCE(fallback.protocol, provider.protocol),
+                      COALESCE(fallback.base_url, provider.base_url), COALESCE(fallback.model, provider.model),
+                      COALESCE(fallback.credential_env_var, provider.credential_env_var), job.request_spec,
+                      job.request_hash, job.reserved_cost_microunits, job.attempt_cost_microunits
                FROM content_generation_jobs job
                JOIN content_provider_configs provider ON provider.id = job.provider_id
+               LEFT JOIN content_provider_configs fallback
+                 ON fallback.id = job.fallback_provider_id_snapshot AND fallback.enabled
+                AND fallback.archived_at IS NULL AND provider.health_status = 'unhealthy'
                WHERE job.status = 'queued' AND job.available_at <= now()
                ORDER BY job.available_at, job.created_at
                FOR UPDATE OF job SKIP LOCKED LIMIT 1"#,
@@ -677,6 +1161,7 @@ pub async fn lease_next_generation_job(
     .await?;
     let Some((
         job_id,
+        provider_id,
         attempt_count,
         provider_kind,
         provider_protocol,
@@ -686,6 +1171,7 @@ pub async fn lease_next_generation_job(
         request_spec,
         request_hash,
         reserved_cost_microunits,
+        attempt_cost_microunits,
     )) = candidate
     else {
         transaction.commit().await?;
@@ -711,12 +1197,21 @@ pub async fn lease_next_generation_job(
     .bind(lease_expires_at)
     .execute(&mut *transaction)
     .await?;
+    let prompt_template_hash = Sha256::digest(CONTENT_PROMPT_TEMPLATE.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let provider_snapshot = serde_json::json!({
         "kind": &provider_kind,
+        "provider_id": provider_id,
         "protocol": &provider_protocol,
         "base_url": &base_url,
         "model": &model,
         "credential_env_var": &credential_env_var,
+        "prompt_template_version": CONTENT_PROMPT_TEMPLATE_VERSION,
+        "prompt_template_hash": prompt_template_hash,
+        "seed_policy": "sha256(job_id:output_index)",
+        "provider_idempotency_key_policy": "job_id:output_index",
     });
     sqlx::query(
         r#"INSERT INTO content_generation_attempts
@@ -733,6 +1228,7 @@ pub async fn lease_next_generation_job(
     transaction.commit().await?;
     Ok(Some(GenerationLease {
         job_id,
+        provider_id,
         attempt_id,
         attempt_number,
         lease_token,
@@ -743,6 +1239,7 @@ pub async fn lease_next_generation_job(
         credential_env_var,
         request_spec,
         reserved_cost_microunits,
+        attempt_cost_microunits,
     }))
 }
 
@@ -756,11 +1253,10 @@ pub async fn complete_generation_job(
     attempt_id: Uuid,
     lease_token: Uuid,
     payload: Value,
-    actual_cost_microunits: i64,
 ) -> Result<(), CompleteGenerationError> {
     let mut transaction = pool.begin().await?;
-    let lease: Option<(i64, i16)> = sqlx::query_as(
-        r#"SELECT reserved_cost_microunits, attempt_count FROM content_generation_jobs
+    let lease: Option<(i64, i16, i64)> = sqlx::query_as(
+        r#"SELECT reserved_cost_microunits, attempt_count, attempt_cost_microunits FROM content_generation_jobs
            WHERE id = $1 AND lease_token = $2 AND status = 'leased'
              AND lease_expires_at > now() AND NOT settled FOR UPDATE"#,
     )
@@ -768,8 +1264,12 @@ pub async fn complete_generation_job(
     .bind(lease_token)
     .fetch_optional(&mut *transaction)
     .await?;
-    let (reserved, attempt_number) = lease.ok_or(CompleteGenerationError::LeaseLost)?;
-    if actual_cost_microunits < 0 || actual_cost_microunits > reserved {
+    let (reserved, attempt_number, attempt_cost) =
+        lease.ok_or(CompleteGenerationError::LeaseLost)?;
+    let actual_cost_microunits = i64::from(attempt_number)
+        .checked_mul(attempt_cost)
+        .ok_or(CompleteGenerationError::CostExceeded)?;
+    if actual_cost_microunits > reserved {
         return Err(CompleteGenerationError::CostExceeded);
     }
     let hash = payload_hash(&payload);
@@ -810,8 +1310,8 @@ pub async fn fail_generation_job(
     retryable: bool,
 ) -> Result<(), CompleteGenerationError> {
     let mut transaction = pool.begin().await?;
-    let lease: Option<(i16, i16, i64)> = sqlx::query_as(
-        r#"SELECT attempt_count, max_attempts, reserved_cost_microunits
+    let lease: Option<(i16, i16, i64, i64)> = sqlx::query_as(
+        r#"SELECT attempt_count, max_attempts, reserved_cost_microunits, attempt_cost_microunits
            FROM content_generation_jobs WHERE id = $1 AND lease_token = $2
              AND status = 'leased' AND lease_expires_at > now() AND NOT settled FOR UPDATE"#,
     )
@@ -819,7 +1319,7 @@ pub async fn fail_generation_job(
     .bind(lease_token)
     .fetch_optional(&mut *transaction)
     .await?;
-    let (attempt_count, max_attempts, reserved) =
+    let (attempt_count, max_attempts, reserved, attempt_cost) =
         lease.ok_or(CompleteGenerationError::LeaseLost)?;
     let will_retry = retryable && attempt_count < max_attempts;
     let hash = payload_hash(&receipt);
@@ -856,8 +1356,9 @@ pub async fn fail_generation_job(
         .bind(error_code)
         .execute(&mut *transaction)
         .await?;
-        sqlx::query("UPDATE content_budgets SET reserved_microunits = reserved_microunits - $1, updated_at = now() WHERE budget_key = 'global'")
-            .bind(reserved).execute(&mut *transaction).await?;
+        let charged = i64::from(attempt_count) * attempt_cost;
+        sqlx::query("UPDATE content_budgets SET reserved_microunits = reserved_microunits - $1, spent_microunits = spent_microunits + $2, updated_at = now() WHERE budget_key = 'global'")
+            .bind(reserved).bind(charged).execute(&mut *transaction).await?;
     }
     sqlx::query(
         "INSERT INTO audit_events (action, target_type, target_id, metadata) VALUES ($1, 'content_generation_job', $2, jsonb_build_object('attempt', $3::smallint, 'error_code', $4::text))",
