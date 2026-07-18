@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import PortalHeader from "./PortalHeader";
 
-type Provider = { id: string; name: string; kind: string; protocol: string; model: string; cost_per_generation_microunits: number; enabled: boolean; credential_available: boolean };
+type Provider = { id: string; name: string; kind: string; protocol: string; model: string; cost_per_generation_microunits: number; liability_cost_per_generation_microunits: number; enabled: boolean; credential_available: boolean };
 type Job = { id: string; provider: string; content_type: string; status: string; attempts: number; has_artifact: boolean; last_error_code?: string };
 type JobDetail = { job: Job & { request_spec: object }; attempts: Array<Record<string, unknown>>; artifacts: Array<{ id: string; kind: string; payload: unknown; hash: string }>; audit: Array<Record<string, unknown>> };
 
@@ -83,7 +83,7 @@ function ContentStudioPage() {
           <option value="algorithm_problem">알고리즘 문제</option><option value="code_reading">코드 읽기</option><option value="debugging">디버깅</option><option value="documentation_lesson">문서 학습</option><option value="implementation_task">구현 과제</option>
         </select></label>
         <label><span>생성 주제</span><textarea minLength={2} maxLength={200} value={topic} onChange={(event) => setTopic(event.target.value)} required /></label>
-        <div className="factory-fields"><label><span>생성 수</span><input type="number" min="1" max="20" value={count} onChange={(event) => setCount(Number(event.target.value))} /></label><p>재시도 3회를 포함한 최대 예약액: {((providers.find((provider) => provider.id === providerId)?.cost_per_generation_microunits ?? 0) * count * 3).toLocaleString()} 마이크로 단위</p></div>
+        <div className="factory-fields"><label><span>생성 수</span><input type="number" min="1" max="20" value={count} onChange={(event) => setCount(Number(event.target.value))} /></label><p>재시도 3회를 포함한 최대 예약액: {((providers.find((provider) => provider.id === providerId)?.liability_cost_per_generation_microunits ?? 0) * count * 3).toLocaleString()} 마이크로 단위</p></div>
         <button type="submit" disabled={!providerId || topic.trim().length < 2}>생성 작업 요청</button>
       </form></section>
       <section><h2>최근 작업</h2><div className="factory-jobs">

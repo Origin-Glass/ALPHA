@@ -370,6 +370,18 @@ async fn expensive_fallback_is_snapshotted_and_fully_reserved(pool: PgPool) {
         ).await.status(),
         StatusCode::BAD_REQUEST
     );
+    let listed = json_body(get(&app, &owner, "/api/v1/content/providers").await).await;
+    let listed_primary = listed["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["id"] == primary_id.to_string())
+        .unwrap();
+    assert_eq!(listed_primary["cost_per_generation_microunits"], 30);
+    assert_eq!(
+        listed_primary["liability_cost_per_generation_microunits"],
+        80
+    );
     let created = post(
         &app, &owner, "/api/v1/content/jobs",
         json!({"idempotency_key": Uuid::now_v7(), "provider_id": primary_id, "content_type": "debugging", "topic": "fallback snapshot", "target_language": "ko", "generation_count": 2}),
@@ -424,12 +436,61 @@ async fn expensive_fallback_is_snapshotted_and_fully_reserved(pool: PgPool) {
         .unwrap();
     sqlx::query("UPDATE content_provider_configs SET consecutive_failures = 3, last_health_at = now() WHERE id = $1")
         .bind(primary_id).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE content_provider_configs SET health_status = 'unhealthy', consecutive_failures = 3, last_health_at = now() WHERE id = $1")
+        .bind(fallback_id).execute(&pool).await.unwrap();
+    let half_open = lease_next_generation_job(
+        &pool,
+        "primary-half-open",
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        half_open.provider_id, primary_id,
+        "fresh unhealthy fallback must not receive calls"
+    );
+    fail_generation_job(
+        &pool,
+        half_open.job_id,
+        half_open.attempt_id,
+        half_open.lease_token,
+        "half_open_failed",
+        json!({"error":"safe"}),
+        true,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE content_generation_jobs SET available_at = now() WHERE id = $1")
+        .bind(job_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE content_provider_configs SET health_status = 'healthy', consecutive_failures = 0, last_health_at = now() WHERE id = $1")
+        .bind(fallback_id).execute(&pool).await.unwrap();
     let lease =
         lease_next_generation_job(&pool, "fallback-worker", std::time::Duration::from_secs(30))
             .await
             .unwrap()
             .unwrap();
     assert_eq!(lease.provider_id, fallback_id);
+    sqlx::query("UPDATE content_provider_configs SET enabled = false WHERE id = $1")
+        .bind(primary_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        !begin_provider_call(
+            &pool,
+            lease.job_id,
+            lease.provider_id,
+            lease.attempt_id,
+            lease.lease_token
+        )
+        .await
+        .unwrap(),
+        "primary kill switch must fence a leased fallback call"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]

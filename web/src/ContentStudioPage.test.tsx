@@ -18,13 +18,14 @@ const jsonResponse = (payload: unknown, status = 200) => Promise.resolve({
 const providerPayload = { providers: [{
   id: "provider-1", name: "frontier", kind: "external", protocol: "openai_compatible",
   model: "test-model", cost_per_generation_microunits: 1000, enabled: true,
+  liability_cost_per_generation_microunits: 2500,
   credential_available: true,
 }] };
 
 test("자격 증명이 없는 생성 요청을 성공으로 꾸미지 않고 차단 상태로 표시한다", async () => {
   const fetchMock = vi.fn().mockImplementation((path: string, options?: RequestInit) => {
     if (path === "/api/v1/content/providers") {
-      return Promise.resolve({ ok: true, json: async () => ({ providers: [{ id: "provider-1", name: "frontier", kind: "external", protocol: "openai_compatible", model: "test-model", cost_per_generation_microunits: 1000, enabled: true, credential_available: false }] }) });
+      return Promise.resolve({ ok: true, json: async () => ({ providers: [{ id: "provider-1", name: "frontier", kind: "external", protocol: "openai_compatible", model: "test-model", cost_per_generation_microunits: 1000, liability_cost_per_generation_microunits: 2500, enabled: true, credential_available: false }] }) });
     }
     if (path === "/api/v1/content/jobs" && !options?.method) {
       return Promise.resolve({ ok: true, json: async () => ({ jobs: [] }) });
@@ -35,6 +36,7 @@ test("자격 증명이 없는 생성 요청을 성공으로 꾸미지 않고 차
 
   render(<ContentStudioPage />);
   await screen.findByRole("option", { name: /frontier/ });
+  expect(screen.getByText(/최대 예약액: 7,500 마이크로 단위/)).toBeInTheDocument();
   fireEvent.change(screen.getByRole("textbox", { name: "생성 주제" }), { target: { value: "이진 탐색 경계 오류를 설명하는 코드 읽기 문제" } });
   fireEvent.click(screen.getByRole("button", { name: "생성 작업 요청" }));
 

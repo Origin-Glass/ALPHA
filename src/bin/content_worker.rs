@@ -84,25 +84,37 @@ fn normalized_content(content_type: &str, text: &str) -> Result<Value, &'static 
     let object = content
         .as_object()
         .ok_or("provider_content_schema_invalid")?;
-    let required: &[&str] = match content_type {
+    let string_fields: &[&str] = match content_type {
         "algorithm_problem" => &["title", "statement", "solution"],
         "code_reading" => &["title", "code", "question", "answer"],
         "debugging" => &["title", "buggy_code", "explanation", "fixed_code"],
         "documentation_lesson" => &["title", "lesson"],
-        "implementation_task" => &["title", "requirements", "reference_solution"],
+        "implementation_task" => &["title", "reference_solution"],
         _ => return Err("provider_content_schema_invalid"),
     };
-    if required.iter().any(|field| {
-        object.get(*field).is_none_or(|value| match value {
-            Value::String(value) => value.trim().is_empty(),
-            Value::Array(value) => value.is_empty(),
-            Value::Null => true,
-            _ => false,
-        })
-    }) {
-        return Err("provider_content_schema_invalid");
+    let mut projected = serde_json::Map::new();
+    for field in string_fields {
+        let value = object
+            .get(*field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("provider_content_schema_invalid")?;
+        projected.insert((*field).to_owned(), json!(value));
     }
-    Ok(content)
+    if content_type == "implementation_task" {
+        let requirements = object
+            .get("requirements")
+            .and_then(Value::as_array)
+            .filter(|values| {
+                !values.is_empty()
+                    && values
+                        .iter()
+                        .all(|value| value.as_str().is_some_and(|value| !value.trim().is_empty()))
+            })
+            .ok_or("provider_content_schema_invalid")?;
+        projected.insert("requirements".into(), Value::Array(requirements.clone()));
+    }
+    Ok(Value::Object(projected))
 }
 
 fn normalize_provider_output(
@@ -279,6 +291,15 @@ async fn call_with_lease_heartbeat(
     }
 }
 
+async fn run_until_batch_deadline<F: std::future::Future>(
+    deadline: tokio::time::Instant,
+    future: F,
+) -> Result<F::Output, ()> {
+    tokio::time::timeout_at(deadline, future)
+        .await
+        .map_err(|_| ())
+}
+
 async fn run_lease(pool: &sqlx::PgPool, lease: alpha::content_factory::GenerationLease) {
     let endpoint = match resolve_provider_endpoint(&lease.provider_kind, &lease.base_url).await {
         Ok(endpoint) => endpoint,
@@ -383,16 +404,30 @@ async fn run_lease(pool: &sqlx::PgPool, lease: alpha::content_factory::Generatio
         ) {
             return;
         }
-        let Some(result) = call_with_lease_heartbeat(
+        let heartbeat_call = call_with_lease_heartbeat(
             pool,
             &client,
             &endpoint.url,
             &lease,
             credential.as_deref(),
             output_index,
-        )
-        .await
-        else {
+        );
+        let Some(result) = (match run_until_batch_deadline(batch_deadline, heartbeat_call).await {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = fail_generation_job(
+                    pool,
+                    lease.job_id,
+                    lease.attempt_id,
+                    lease.lease_token,
+                    "batch_deadline_exceeded",
+                    json!({"error": "배치 실행 제한 시간 초과"}),
+                    true,
+                )
+                .await;
+                return;
+            }
+        }) else {
             return;
         };
         match result {
@@ -487,6 +522,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     use uuid::Uuid;
 
     fn lease(protocol: &str) -> alpha::content_factory::GenerationLease {
@@ -613,7 +652,7 @@ mod tests {
             "openai_compatible",
             "code_reading",
             &json!({
-                "choices": [{"message": {"content": "{\"title\":\"경계 조건\",\"code\":\"x\",\"question\":\"왜?\",\"answer\":\"불변식\"}", "reasoning": "hidden"}}],
+                "choices": [{"message": {"content": "{\"title\":\"경계 조건\",\"code\":\"x\",\"question\":\"왜?\",\"answer\":\"불변식\",\"reasoning\":\"drop\",\"debug\":{\"raw\":true}}", "reasoning": "hidden"}}],
                 "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19, "secret": "drop"},
                 "internal_trace": "drop-me"
             }),
@@ -627,6 +666,8 @@ mod tests {
         assert!(!encoded.contains("hidden"));
         assert!(!encoded.contains("secret"));
         assert!(!encoded.contains("internal_trace"));
+        assert!(!encoded.contains("reasoning"));
+        assert!(!encoded.contains("debug"));
     }
 
     #[test]
@@ -657,6 +698,7 @@ mod tests {
         for content in [
             "설명부터 시작합니다 {\"title\":\"숨김\"}",
             "{\"title\":\"누락\"}",
+            "{\"title\":7,\"buggy_code\":\"x\",\"explanation\":\"e\",\"fixed_code\":\"y\"}",
         ] {
             assert!(matches!(
                 normalize_provider_output(
@@ -668,5 +710,35 @@ mod tests {
                 Err("provider_content_invalid_json" | "provider_content_schema_invalid")
             ));
         }
+        assert!(matches!(
+            normalized_content(
+                "implementation_task",
+                r#"{"title":"과제","requirements":"문자열은 거부","reference_solution":"code"}"#,
+            ),
+            Err("provider_content_schema_invalid")
+        ));
+    }
+
+    #[tokio::test]
+    async fn strict_batch_deadline_drops_an_in_flight_provider_future() {
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let guard = DropFlag(Arc::clone(&cancelled));
+        let provider_call = async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(5);
+        assert!(
+            run_until_batch_deadline(deadline, provider_call)
+                .await
+                .is_err()
+        );
+        assert!(cancelled.load(Ordering::SeqCst));
     }
 }

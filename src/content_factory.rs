@@ -25,6 +25,7 @@ type ProviderRow = (
     String,
     String,
     i64,
+    i64,
     Option<String>,
     bool,
     String,
@@ -407,24 +408,29 @@ pub async fn list_providers(
 ) -> Result<Json<Value>, ContentFactoryError> {
     authorize_read(&state, &headers, "content.generate").await?;
     let providers: Vec<ProviderRow> = sqlx::query_as(
-        r#"SELECT id, name, kind, protocol, model, cost_per_generation_microunits,
-                      credential_env_var, enabled,
-                      CASE WHEN health_status = 'unhealthy' AND last_health_at <= now() - interval '10 minutes'
-                           THEN 'unverified' ELSE health_status END,
-                      last_health_at,
-                      supports_stream, supports_tools, fallback_provider_id
-               FROM content_provider_configs ORDER BY name"#,
+        r#"SELECT provider.id, provider.name, provider.kind, provider.protocol, provider.model,
+                      provider.cost_per_generation_microunits,
+                      GREATEST(provider.cost_per_generation_microunits, COALESCE(fallback.cost_per_generation_microunits, 0)),
+                      provider.credential_env_var, provider.enabled,
+                      CASE WHEN provider.health_status = 'unhealthy' AND provider.last_health_at <= now() - interval '10 minutes'
+                           THEN 'unverified' ELSE provider.health_status END,
+                      provider.last_health_at, provider.supports_stream, provider.supports_tools,
+                      provider.fallback_provider_id
+               FROM content_provider_configs provider
+               LEFT JOIN content_provider_configs fallback ON fallback.id = provider.fallback_provider_id
+               ORDER BY provider.name"#,
     )
     .fetch_all(state.pool())
     .await?;
     Ok(Json(serde_json::json!({
-        "providers": providers.into_iter().map(|(id, name, kind, protocol, model, cost, credential_env_var, enabled, health_status, last_health_at, supports_stream, supports_tools, fallback_provider_id)| serde_json::json!({
+        "providers": providers.into_iter().map(|(id, name, kind, protocol, model, cost, liability_cost, credential_env_var, enabled, health_status, last_health_at, supports_stream, supports_tools, fallback_provider_id)| serde_json::json!({
             "id": id,
             "name": name,
             "kind": kind,
             "protocol": protocol,
             "model": model,
             "cost_per_generation_microunits": cost,
+            "liability_cost_per_generation_microunits": liability_cost,
             "credential_available": credential_env_var.as_deref().is_none_or(|name| state.settings().has_content_ai_credential(name)),
             "enabled": enabled,
             "health_status": health_status,
@@ -907,8 +913,8 @@ async fn clone_job_inner(
         ))
         .execute(&mut *transaction)
         .await?;
-    let replay: Option<Uuid> = sqlx::query_scalar(
-        r#"SELECT id FROM content_generation_jobs
+    let replay: Option<(Uuid, String)> = sqlx::query_as(
+        r#"SELECT id, status FROM content_generation_jobs
            WHERE created_by = $1 AND cloned_from_job_id = $2
              AND (($4 AND retry_idempotency_key = $3) OR (NOT $4 AND clone_idempotency_key = $3))"#,
     )
@@ -918,10 +924,10 @@ async fn clone_job_inner(
     .bind(retry_only)
     .fetch_optional(&mut *transaction)
     .await?;
-    if let Some(id) = replay {
+    if let Some((id, status)) = replay {
         transaction.commit().await?;
         return Ok(Json(
-            serde_json::json!({"id": id, "idempotent_replay": true}),
+            serde_json::json!({"id": id, "status": status, "idempotent_replay": true}),
         ));
     }
     let source: Option<CloneSource> = sqlx::query_as(
@@ -1260,6 +1266,8 @@ pub async fn lease_next_generation_job(
                 AND fallback.archived_at IS NULL AND provider.health_status = 'unhealthy'
                 AND provider.consecutive_failures >= 3
                 AND provider.last_health_at > now() - interval '10 minutes'
+                AND NOT (fallback.health_status = 'unhealthy'
+                         AND fallback.last_health_at > now() - interval '10 minutes')
                WHERE job.status = 'queued' AND job.available_at <= now()
                  AND provider.enabled AND provider.archived_at IS NULL
                ORDER BY job.available_at, job.created_at
@@ -1386,11 +1394,13 @@ pub async fn begin_provider_call(
 ) -> Result<bool, sqlx::Error> {
     let mut transaction = pool.begin().await?;
     let fenced: Option<bool> = sqlx::query_scalar(
-        r#"SELECT provider.enabled FROM content_generation_jobs job
-           JOIN content_provider_configs provider ON provider.id = $2
+        r#"SELECT original.enabled AND selected.enabled FROM content_generation_jobs job
+           JOIN content_provider_configs original ON original.id = job.provider_id
+           JOIN content_provider_configs selected ON selected.id = $2
            WHERE job.id = $1 AND job.lease_token = $3 AND job.status = 'leased'
              AND job.lease_expires_at > now() AND NOT job.settled
-             AND provider.enabled AND provider.archived_at IS NULL FOR UPDATE OF job"#,
+             AND original.enabled AND original.archived_at IS NULL
+             AND selected.enabled AND selected.archived_at IS NULL FOR UPDATE OF job"#,
     )
     .bind(job_id)
     .bind(provider_id)

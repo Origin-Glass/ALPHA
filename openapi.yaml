@@ -306,7 +306,13 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/ContentProviderRequest" }
       responses:
-        "201": { $ref: "#/components/responses/ContentMutation" }
+        "201": { $ref: "#/components/responses/ContentProviderCreated" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/content/providers/{id}:
     parameters:
       - name: id
@@ -333,10 +339,13 @@ paths:
                     - { type: string, format: uuid }
                     - { type: "null" }
       responses:
-        "200": { $ref: "#/components/responses/ContentMutation" }
+        "200": { $ref: "#/components/responses/ContentProviderUpdated" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/content/providers/{id}/validate:
     parameters:
       - name: id
@@ -347,11 +356,13 @@ paths:
       operationId: validateContentProviderConfiguration
       security: *write
       responses:
-        "200": { $ref: "#/components/responses/ContentMutation" }
+        "200": { $ref: "#/components/responses/ContentProviderValidated" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/content/jobs:
     get:
       operationId: listContentGenerationJobs
@@ -366,11 +377,14 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/ContentGenerationJobRequest" }
       responses:
-        "201": { $ref: "#/components/responses/ContentMutation" }
+        "201": { $ref: "#/components/responses/ContentJobMutation" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/content/jobs/compare:
     get:
       operationId: compareContentGenerationJobs
@@ -392,11 +406,14 @@ paths:
       security: *write
       requestBody: { $ref: "#/components/requestBodies/ContentJobAction" }
       responses:
-        "200": { $ref: "#/components/responses/ContentMutation" }
+        "200": { $ref: "#/components/responses/ContentJobMutation" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/content/jobs/{id}/retry:
     parameters: [*id]
     post:
@@ -404,11 +421,14 @@ paths:
       security: *write
       requestBody: { $ref: "#/components/requestBodies/ContentJobAction" }
       responses:
-        "200": { $ref: "#/components/responses/ContentMutation" }
+        "200": { $ref: "#/components/responses/ContentJobMutation" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/content/jobs/{id}/clone:
     parameters: [*id]
     post:
@@ -416,11 +436,14 @@ paths:
       security: *write
       requestBody: { $ref: "#/components/requestBodies/ContentJobAction" }
       responses:
-        "200": { $ref: "#/components/responses/ContentMutation" }
+        "200": { $ref: "#/components/responses/ContentJobMutation" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/content/jobs/{id}/archive:
     parameters: [*id]
     post:
@@ -428,11 +451,14 @@ paths:
       security: *write
       requestBody: { $ref: "#/components/requestBodies/ContentJobAction" }
       responses:
-        "200": { $ref: "#/components/responses/ContentMutation" }
+        "200": { $ref: "#/components/responses/ContentJobArchived" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/content/budget:
     get:
       operationId: getContentBudget
@@ -452,7 +478,13 @@ paths:
               properties:
                 limit_microunits: { type: integer, minimum: 0, maximum: 1000000000000 }
       responses:
-        "200": { $ref: "#/components/responses/ContentMutation" }
+        "200": { $ref: "#/components/responses/ContentBudgetUpdated" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/learning/path:
     get:
       operationId: learningPath
@@ -1003,9 +1035,24 @@ components:
     ContentBudget:
       description: 콘텐츠 생성 예산
       content: { application/json: { schema: { $ref: "#/components/schemas/ContentBudgetResponse" } } }
-    ContentMutation:
-      description: 콘텐츠 작업 변경 결과
-      content: { application/json: { schema: { $ref: "#/components/schemas/ContentMutationResponse" } } }
+    ContentProviderCreated:
+      description: 제공자 생성 결과
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentProviderCreatedResponse" } } }
+    ContentProviderUpdated:
+      description: 제공자 운영 설정 변경 결과
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentProviderUpdatedResponse" } } }
+    ContentProviderValidated:
+      description: 제공자 구성 검증 결과
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentProviderValidatedResponse" } } }
+    ContentJobMutation:
+      description: 콘텐츠 작업 생성·상태 변경 결과
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentJobMutationResponse" } } }
+    ContentJobArchived:
+      description: 콘텐츠 작업 보관 결과
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentJobArchivedResponse" } } }
+    ContentBudgetUpdated:
+      description: 콘텐츠 예산 변경 결과
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentBudgetUpdatedResponse" } } }
 
   requestBodies:
     ContentJobAction:
@@ -1033,18 +1080,48 @@ components:
     GenericObject:
       type: object
       additionalProperties: true
-    ContentMutationResponse:
+    ContentProviderCreatedResponse:
       type: object
       additionalProperties: false
+      required: [id]
+      properties: { id: { type: string, format: uuid } }
+    ContentProviderUpdatedResponse:
+      type: object
+      additionalProperties: false
+      required: [id, enabled]
+      properties:
+        id: { type: string, format: uuid }
+        enabled: { type: boolean }
+    ContentProviderValidatedResponse:
+      type: object
+      additionalProperties: false
+      required: [id, configuration_valid, execution_health]
+      properties:
+        id: { type: string, format: uuid }
+        configuration_valid: { type: boolean, const: true }
+        execution_health: { type: string, const: unverified }
+    ContentJobMutationResponse:
+      type: object
+      additionalProperties: false
+      required: [id, status]
       properties:
         id: { type: string, format: uuid }
         status: { type: string }
-        enabled: { type: boolean }
-        archived: { type: boolean }
         idempotent_replay: { type: boolean }
-        limit_microunits: { type: integer }
-        configuration_valid: { type: boolean }
-        execution_health: { type: string, enum: [unverified] }
+    ContentJobArchivedResponse:
+      type: object
+      additionalProperties: false
+      required: [id, archived]
+      properties:
+        id: { type: string, format: uuid }
+        archived: { type: boolean, const: true }
+        idempotent_replay: { type: boolean }
+    ContentBudgetUpdatedResponse:
+      type: object
+      additionalProperties: false
+      required: [limit_microunits]
+      properties:
+        limit_microunits: { type: integer, minimum: 0, maximum: 1000000000000 }
     ContentProviderListResponse:
       type: object
       additionalProperties: false
@@ -1055,7 +1132,7 @@ components:
           items:
             type: object
             additionalProperties: false
-            required: [id, name, kind, protocol, model, cost_per_generation_microunits, credential_available, enabled, health_status, supports_stream, supports_tools]
+            required: [id, name, kind, protocol, model, cost_per_generation_microunits, liability_cost_per_generation_microunits, credential_available, enabled, health_status, supports_stream, supports_tools]
             properties:
               id: { type: string, format: uuid }
               name: { type: string }
@@ -1063,6 +1140,7 @@ components:
               protocol: { type: string, enum: [openai_compatible, anthropic] }
               model: { type: string }
               cost_per_generation_microunits: { type: integer, minimum: 1 }
+              liability_cost_per_generation_microunits: { type: integer, minimum: 1 }
               credential_available: { type: boolean }
               enabled: { type: boolean }
               health_status: { type: string, enum: [unverified, healthy, unhealthy] }
@@ -1171,7 +1249,7 @@ components:
     ContentBudgetResponse:
       type: object
       additionalProperties: false
-      required: [limit_microunits]
+      required: [limit_microunits, reserved_microunits, spent_microunits]
       properties:
         limit_microunits: { type: integer, minimum: 0 }
         reserved_microunits: { type: integer, minimum: 0 }
