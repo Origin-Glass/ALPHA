@@ -56,6 +56,7 @@ test("제거 증거를 기록한 뒤 대체 리비전은 AI 검토부터 다시 
   });
   const keys=["removal-key","revision-key"];vi.stubGlobal("fetch",fetchMock);vi.stubGlobal("crypto",{randomUUID:()=>keys.shift()});
   render(<ReviewWorkspacePage/>);await screen.findByText("제거 대기");fireEvent.click(screen.getByRole("button",{name:"검토 열기"}));await screen.findByRole("button",{name:"제거 완료 기록"});
+  expect(screen.queryByRole("button",{name:"AI 검토부터 다시 시작"})).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("제거 사유"),{target:{value:"배포본 제거 완료"}});fireEvent.change(screen.getByLabelText("제거 확인 증거"),{target:{value:"CDN과 공개 카탈로그 404 확인"}});fireEvent.click(screen.getByRole("button",{name:"제거 완료 기록"}));
   await screen.findByRole("button",{name:"AI 검토부터 다시 시작"});fireEvent.change(screen.getByLabelText("새 아티팩트 UUID"),{target:{value:"00000000-0000-7000-8000-000000000003"}});fireEvent.click(screen.getByRole("button",{name:"AI 검토부터 다시 시작"}));
   await waitFor(()=>expect(writes).toHaveLength(2));expect(writes[0]).toEqual({path:"/api/v1/content/reviews/review-3/removal/complete",body:{reason:"배포본 제거 완료",evidence:"CDN과 공개 카탈로그 404 확인",idempotency_key:"removal-key"}});expect(writes[1]).toEqual({path:"/api/v1/content/reviews/review-3/revise",body:{artifact_id:"00000000-0000-7000-8000-000000000003",idempotency_key:"revision-key"}});

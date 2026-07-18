@@ -1241,6 +1241,42 @@ components:
         artifact_id: { type: string, format: uuid }
         impact: { type: string, enum: [standard, high, novel] }
         idempotency_key: { type: string, format: uuid }
+    AiReviewContext:
+      type: object
+      additionalProperties: false
+      required: [artifact_hash, policy, kind]
+      properties:
+        artifact_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        policy: { type: string, minLength: 3, maxLength: 2000 }
+        kind: { type: string, enum: [specification_pedagogy, solution_judge, adversarial_rights] }
+    AiReviewResponse:
+      type: object
+      additionalProperties: false
+      required: [summary, scores, outcome]
+      properties:
+        summary: { type: string, minLength: 3, maxLength: 4000 }
+        scores: { type: object, maxProperties: 20, additionalProperties: { type: number, minimum: 0, maximum: 1 } }
+        outcome: { type: string, enum: [pass, fail] }
+    AiReviewUsage:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      maxProperties: 5
+      properties:
+        input_tokens: { type: integer, minimum: 0, maximum: 1000000000 }
+        output_tokens: { type: integer, minimum: 0, maximum: 1000000000 }
+        total_tokens: { type: integer, minimum: 0, maximum: 2000000000 }
+        cost_microunits: { type: integer, minimum: 0, maximum: 1000000000000 }
+        local_compute_ms: { type: integer, minimum: 0, maximum: 3600000 }
+    AiReviewFinding:
+      type: object
+      additionalProperties: false
+      required: [severity, evidence, message, proposed_fix]
+      properties:
+        severity: { type: string, enum: [low, medium, high, critical] }
+        evidence: { type: string, minLength: 1, maxLength: 2000 }
+        message: { type: string, minLength: 3, maxLength: 2000 }
+        proposed_fix: { type: string, minLength: 3, maxLength: 2000 }
     AiReviewReceiptRequest:
       type: object
       additionalProperties: false
@@ -1252,36 +1288,14 @@ components:
         prompt_version: { type: string, enum: [spec-pedagogy-v1, solution-judge-v1, adversarial-rights-v1] }
         role_identifier: { type: string, enum: [specification-pedagogy-reviewer, solution-judge-reviewer, adversarial-rights-reviewer] }
         review_seed: { type: integer, format: int64 }
-        review_context:
-          type: object
-          additionalProperties: false
-          required: [artifact_hash, policy, kind]
-          properties:
-            artifact_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
-            policy: { type: string, minLength: 3, maxLength: 2000 }
-            kind: { type: string, enum: [specification_pedagogy, solution_judge, adversarial_rights] }
-        review_response:
-          type: object
-          additionalProperties: false
-          required: [summary, scores, outcome]
-          properties:
-            summary: { type: string, minLength: 3, maxLength: 4000 }
-            scores: { type: object, maxProperties: 20, additionalProperties: { type: number, minimum: 0, maximum: 1 } }
-            outcome: { type: string, enum: [pass, fail] }
+        review_context: { $ref: "#/components/schemas/AiReviewContext" }
+        review_response: { $ref: "#/components/schemas/AiReviewResponse" }
         latency_ms: { type: integer, minimum: 1, maximum: 3600000 }
-        usage: { type: object, additionalProperties: true }
+        usage: { $ref: "#/components/schemas/AiReviewUsage" }
         outcome: { type: string, enum: [pass, fail] }
         findings:
           type: array
-          items:
-            type: object
-            additionalProperties: false
-            required: [severity, evidence, message, proposed_fix]
-            properties:
-              severity: { type: string, enum: [low, medium, high, critical] }
-              evidence: { type: string, minLength: 1, maxLength: 2000 }
-              message: { type: string, minLength: 3, maxLength: 2000 }
-              proposed_fix: { type: string, minLength: 3, maxLength: 2000 }
+          items: { $ref: "#/components/schemas/AiReviewFinding" }
         idempotency_key: { type: string, format: uuid }
     ContentProvenanceRequest:
       type: object
@@ -1438,15 +1452,15 @@ components:
         role_identifier: { type: string }
         prompt_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
         review_seed: { type: integer, format: int64 }
-        review_context: { type: object, additionalProperties: true }
+        review_context: { $ref: "#/components/schemas/AiReviewContext" }
         context_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
-        review_response: { type: object, additionalProperties: true }
+        review_response: { $ref: "#/components/schemas/AiReviewResponse" }
         input_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
         output_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
         latency_ms: { type: integer }
-        usage: { type: object, additionalProperties: true }
+        usage: { $ref: "#/components/schemas/AiReviewUsage" }
         outcome: { type: string, enum: [pass, fail] }
-        findings: { type: array, items: { type: object, additionalProperties: true } }
+        findings: { type: array, items: { $ref: "#/components/schemas/AiReviewFinding" } }
         created_at: { type: string, format: date-time }
     ContentProvenanceRecord:
       type: object

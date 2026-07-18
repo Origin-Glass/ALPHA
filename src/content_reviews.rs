@@ -141,6 +141,22 @@ fn valid_review_response(value: &Value, outcome: &str) -> bool {
                 })
     })
 }
+fn valid_usage(value: &Value) -> bool {
+    value.as_object().is_some_and(|usage| {
+        !usage.is_empty()
+            && usage.len() <= 5
+            && usage.iter().all(|(key, value)| {
+                let maximum = match key.as_str() {
+                    "input_tokens" | "output_tokens" => 1_000_000_000,
+                    "total_tokens" => 2_000_000_000,
+                    "cost_microunits" => 1_000_000_000_000,
+                    "local_compute_ms" => 3_600_000,
+                    _ => return false,
+                };
+                value.as_u64().is_some_and(|amount| amount <= maximum)
+            })
+    })
+}
 fn valid_findings(findings: &Value, outcome: &str) -> bool {
     findings.as_array().is_some_and(|items| {
         (outcome != "fail" || !items.is_empty())
@@ -214,6 +230,21 @@ pub async fn create(
     if artifact.1 != actor {
         return Err(ReviewError::Forbidden);
     }
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("content-review-artifact:{}", input.artifact_id))
+        .execute(&mut *tx)
+        .await?;
+    if sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM content_review_revisions WHERE artifact_id=$1)",
+    )
+    .bind(input.artifact_id)
+    .fetch_one(&mut *tx)
+    .await?
+    {
+        return Err(ReviewError::Conflict(
+            "같은 아티팩트의 검토가 이미 존재합니다",
+        ));
+    }
     let id:Uuid=sqlx::query_scalar("INSERT INTO content_review_items (artifact_id,artifact_hash,author_user_id,impact,create_idempotency_key) VALUES ($1,$2,$3,$4,$5) RETURNING id")
         .bind(input.artifact_id).bind(&artifact.0).bind(actor).bind(&input.impact).bind(input.idempotency_key).fetch_one(&mut *tx).await?;
     let create_hash = receipt_hash(&input)?;
@@ -274,7 +305,7 @@ pub async fn ai_receipt(
         || input.role_identifier != expected_contract.0
         || input.latency_ms < 1
         || input.latency_ms > 3_600_000
-        || !input.usage.is_object()
+        || !valid_usage(&input.usage)
         || !input.review_context.is_object()
         || !input.review_response.is_object()
         || !valid_review_context(&input.review_context, &input.kind)
@@ -422,18 +453,7 @@ pub struct ProvenanceInput {
     legal_status: String,
     idempotency_key: Uuid,
 }
-type ProvenanceSourceRow = (
-    i32,
-    Vec<u8>,
-    Uuid,
-    String,
-    Uuid,
-    Uuid,
-    Uuid,
-    String,
-    String,
-    Vec<u8>,
-);
+type ProvenanceSourceRow = (i32, Vec<u8>, Uuid, String, Uuid, Uuid, Value, Vec<u8>);
 pub async fn record_provenance(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -463,7 +483,7 @@ pub async fn record_provenance(
     }
     let evidence_hash = hex32(&input.evidence_hash)?;
     let mut tx = state.pool().begin().await?;
-    let row: ProvenanceSourceRow=sqlx::query_as("SELECT item.revision_number,item.artifact_hash,item.author_user_id,item.state,artifact.job_id,artifact.attempt_id,provider.id,provider.name,attempt.provider_snapshot->>'model',attempt.request_hash FROM content_review_items item JOIN content_artifacts artifact ON artifact.id=item.artifact_id JOIN content_generation_attempts attempt ON attempt.id=artifact.attempt_id JOIN content_provider_configs provider ON provider.id=(attempt.provider_snapshot->>'provider_id')::uuid WHERE item.id=$1 FOR UPDATE OF item").bind(id).fetch_optional(&mut *tx).await?.ok_or(ReviewError::NotFound)?;
+    let row: ProvenanceSourceRow=sqlx::query_as("SELECT item.revision_number,item.artifact_hash,item.author_user_id,item.state,artifact.job_id,artifact.attempt_id,attempt.provider_snapshot,attempt.request_hash FROM content_review_items item JOIN content_artifacts artifact ON artifact.id=item.artifact_id JOIN content_generation_attempts attempt ON attempt.id=artifact.attempt_id WHERE item.id=$1 FOR UPDATE OF item").bind(id).fetch_optional(&mut *tx).await?.ok_or(ReviewError::NotFound)?;
     if row.2 != actor {
         return Err(ReviewError::Forbidden);
     }
@@ -472,13 +492,36 @@ pub async fn record_provenance(
             "게시 또는 제거 완료 뒤에는 출처 기록을 바꿀 수 없습니다",
         ));
     }
-    let creator = row.7.clone();
-    let source_revision = hex(&row.9);
-    let derived = json!({"review_item_id":id,"revision":row.0,"artifact_hash":hex(&row.1),"origin_type":"ai_generated","creator_or_provider":creator,"source_url":null,"source_revision":source_revision,"license_basis":"provider_contract","license_identifier":input.license_identifier.trim(),"attribution":input.attribution.trim(),"modification_status":input.modification_status,"commercial_use_allowed":input.commercial_use_allowed,"redistribution_allowed":input.redistribution_allowed,"ai_provider_id":row.6,"ai_provider_name":row.7,"ai_model":row.8,"generation_job_id":row.4,"generation_attempt_id":row.5,"generation_run_reference":row.5.to_string(),"evidence_reference":input.evidence_reference.trim(),"evidence_hash":input.evidence_hash,"attachment_metadata":input.attachment_metadata,"legal_status":"pending"});
+    let provider_id = row
+        .6
+        .get("provider_id")
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse::<Uuid>().ok())
+        .ok_or(ReviewError::Conflict(
+            "생성 시도의 provider snapshot이 유효하지 않습니다",
+        ))?;
+    let model = row
+        .6
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|value| (1..=120).contains(&value.trim().chars().count()))
+        .ok_or(ReviewError::Conflict(
+            "생성 시도의 provider snapshot이 유효하지 않습니다",
+        ))?;
+    let creator: String =
+        sqlx::query_scalar("SELECT name FROM content_provider_configs WHERE id=$1")
+            .bind(provider_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(ReviewError::Conflict(
+                "생성 시도의 provider snapshot이 유효하지 않습니다",
+            ))?;
+    let source_revision = hex(&row.7);
+    let derived = json!({"review_item_id":id,"revision":row.0,"artifact_hash":hex(&row.1),"origin_type":"ai_generated","creator_or_provider":creator,"source_url":null,"source_revision":source_revision,"license_basis":"provider_contract","license_identifier":input.license_identifier.trim(),"attribution":input.attribution.trim(),"modification_status":input.modification_status,"commercial_use_allowed":input.commercial_use_allowed,"redistribution_allowed":input.redistribution_allowed,"ai_provider_id":provider_id,"ai_provider_name":creator,"ai_model":model,"generation_job_id":row.4,"generation_attempt_id":row.5,"generation_run_reference":row.5.to_string(),"evidence_reference":input.evidence_reference.trim(),"evidence_hash":input.evidence_hash,"attachment_metadata":input.attachment_metadata,"legal_status":"pending"});
     let provenance_hash = receipt_hash(&derived)?;
     if let Some((existing,old_hash))=sqlx::query_as::<_,(Uuid,Vec<u8>)>("SELECT id,provenance_hash FROM content_provenance_records WHERE recorded_by=$1 AND review_item_id=$2 AND idempotency_key=$3").bind(actor).bind(id).bind(input.idempotency_key).fetch_optional(&mut *tx).await?{if old_hash!=provenance_hash{return Err(ReviewError::Conflict("같은 멱등성 키에 다른 출처 기록을 사용할 수 없습니다"));}tx.commit().await?;return Ok(Json(json!({"id":existing,"provenance_hash":hex(&old_hash),"replayed":true})));}
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM content_provenance_records WHERE review_item_id=$1 AND revision_number=$2)").bind(id).bind(row.0).fetch_one(&mut *tx).await?{return Err(ReviewError::Conflict("현재 리비전의 출처 기록이 이미 존재합니다"));}
-    let provenance_id:Uuid=sqlx::query_scalar("INSERT INTO content_provenance_records (review_item_id,revision_number,artifact_hash,origin_type,creator_or_provider,source_url,source_revision,license_basis,license_identifier,attribution,modification_status,commercial_use_allowed,redistribution_allowed,ai_provider_id,ai_provider_name,ai_model,generation_job_id,generation_attempt_id,generation_run_reference,evidence_reference,evidence_hash,attachment_metadata,legal_status,provenance_hash,recorded_by,idempotency_key) VALUES ($1,$2,$3,'ai_generated',$4,NULL,$5,'provider_contract',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'pending',$20,$21,$22) RETURNING id").bind(id).bind(row.0).bind(&row.1).bind(&creator).bind(&source_revision).bind(input.license_identifier.trim()).bind(input.attribution.trim()).bind(&input.modification_status).bind(input.commercial_use_allowed).bind(input.redistribution_allowed).bind(row.6).bind(row.7).bind(row.8).bind(row.4).bind(row.5).bind(row.5.to_string()).bind(input.evidence_reference.trim()).bind(evidence_hash).bind(&input.attachment_metadata).bind(&provenance_hash).bind(actor).bind(input.idempotency_key).fetch_one(&mut *tx).await?;
+    let provenance_id:Uuid=sqlx::query_scalar("INSERT INTO content_provenance_records (review_item_id,revision_number,artifact_hash,origin_type,creator_or_provider,source_url,source_revision,license_basis,license_identifier,attribution,modification_status,commercial_use_allowed,redistribution_allowed,ai_provider_id,ai_provider_name,ai_model,generation_job_id,generation_attempt_id,generation_run_reference,evidence_reference,evidence_hash,attachment_metadata,legal_status,provenance_hash,recorded_by,idempotency_key) VALUES ($1,$2,$3,'ai_generated',$4,NULL,$5,'provider_contract',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'pending',$20,$21,$22) RETURNING id").bind(id).bind(row.0).bind(&row.1).bind(&creator).bind(&source_revision).bind(input.license_identifier.trim()).bind(input.attribution.trim()).bind(&input.modification_status).bind(input.commercial_use_allowed).bind(input.redistribution_allowed).bind(provider_id).bind(&creator).bind(model).bind(row.4).bind(row.5).bind(row.5.to_string()).bind(input.evidence_reference.trim()).bind(evidence_hash).bind(&input.attachment_metadata).bind(&provenance_hash).bind(actor).bind(input.idempotency_key).fetch_one(&mut *tx).await?;
     sqlx::query(audit_query()).bind(actor).bind("content.provenance.recorded").bind(id.to_string()).bind(json!({"revision":row.0,"provenance_id":provenance_id,"provenance_hash":hex(&provenance_hash)})).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(
@@ -846,7 +889,7 @@ pub async fn revise(
     if let Some((existing,old_request_hash))=sqlx::query_as::<_,(i32,Vec<u8>)>("SELECT revision_number,request_hash FROM content_review_revisions WHERE review_item_id=$1 AND changed_by=$2 AND idempotency_key=$3").bind(id).bind(actor).bind(input.idempotency_key).fetch_optional(&mut *tx).await?{if old_request_hash!=request_hash{return Err(ReviewError::Conflict("같은 멱등성 키에 다른 리비전을 사용할 수 없습니다"));}tx.commit().await?;return Ok(Json(json!({"state":state_name,"revision":existing,"replayed":true})));}
     if !matches!(
         state_name.as_str(),
-        "changes_requested" | "unpublished" | "removal_pending" | "removal_completed"
+        "changes_requested" | "unpublished" | "removal_completed"
     ) {
         return Err(ReviewError::Conflict(
             "변경 요청·게시 해제·제거 상태에서만 새 리비전을 만들 수 있습니다",

@@ -75,6 +75,52 @@ async fn provenance_uses_actual_attempt_provider_and_rejects_generated_lineage_d
         detail["provenance"]["source_revision"],
         "immutable-artifact-v1"
     );
+
+    for (title, snapshot) in [
+        (
+            "provider id missing",
+            json!({"model":"review-test","protocol":"openai_compatible"}),
+        ),
+        (
+            "provider id malformed",
+            json!({"provider_id":"not-a-uuid","model":"review-test","protocol":"openai_compatible"}),
+        ),
+        (
+            "provider model missing",
+            json!({"provider_id":fallback,"protocol":"openai_compatible"}),
+        ),
+    ] {
+        let (artifact_id, _) = artifact(&pool, author.user_id, title).await;
+        sqlx::query("UPDATE content_generation_attempts SET provider_snapshot=$2 WHERE id=(SELECT attempt_id FROM content_artifacts WHERE id=$1)")
+            .bind(artifact_id)
+            .bind(snapshot)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let created = post(
+            &app,
+            &author,
+            "/api/v1/content/reviews",
+            json!({"artifact_id":artifact_id,"impact":"standard","idempotency_key":Uuid::now_v7()}),
+        )
+        .await;
+        let created: Value =
+            serde_json::from_slice(&to_bytes(created.into_body(), 16_384).await.unwrap()).unwrap();
+        assert_eq!(
+            post(
+                &app,
+                &author,
+                &format!(
+                    "/api/v1/content/reviews/{}/provenance",
+                    created["id"].as_str().unwrap()
+                ),
+                provenance_payload("pending")
+            )
+            .await
+            .status(),
+            StatusCode::CONFLICT
+        );
+    }
 }
 
 async fn login(app: &axum::Router, pool: &PgPool, handle: &str, role: &str) -> Session {
@@ -400,6 +446,18 @@ async fn exact_three_reviews_and_separated_human_rights_pilot_gate_publication(p
             .status(),
         StatusCode::NOT_FOUND
     );
+    let (replacement, _) = artifact(&pool, author.user_id, "제거 후 대체 리비전").await;
+    assert_eq!(
+        post(
+            &app,
+            &author,
+            &format!("/api/v1/content/reviews/{id}/revise"),
+            json!({"artifact_id":replacement,"idempotency_key":Uuid::now_v7()}),
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
     assert_eq!(post(&app,&publisher,&format!("/api/v1/content/reviews/{id}/removal/complete"),json!({"reason":"배포본 제거 완료","evidence":"CDN 및 공개 카탈로그 조회 404 확인","idempotency_key":Uuid::now_v7()})).await.status(),StatusCode::OK);
     let removal_evidence: Value = sqlx::query_scalar(
         "SELECT metadata FROM audit_events WHERE action='content.removal_completed' AND target_id=$1",
@@ -414,7 +472,6 @@ async fn exact_three_reviews_and_separated_human_rights_pilot_gate_publication(p
         "CDN 및 공개 카탈로그 조회 404 확인"
     );
     assert_eq!(removal_evidence["payload_hash"].as_str().unwrap().len(), 64);
-    let (replacement, _) = artifact(&pool, author.user_id, "제거 후 대체 리비전").await;
     let replaced = post(
         &app,
         &author,
@@ -609,6 +666,31 @@ async fn review_endpoints_enforce_csrf_owner_scope_and_atomic_idempotency(pool: 
         serde_json::from_slice(&to_bytes(second.into_body(), 16_384).await.unwrap()).unwrap();
     assert_eq!(first_body["id"], second_body["id"]);
     let id = first_body["id"].as_str().unwrap();
+    let (duplicate_artifact, _) = artifact(&pool, author.user_id, "동시 중복 검토 대상").await;
+    let (duplicate_first, duplicate_second) = tokio::join!(
+        post(
+            &app,
+            &author,
+            "/api/v1/content/reviews",
+            json!({"artifact_id":duplicate_artifact,"impact":"standard","idempotency_key":Uuid::now_v7()})
+        ),
+        post(
+            &app,
+            &author,
+            "/api/v1/content/reviews",
+            json!({"artifact_id":duplicate_artifact,"impact":"standard","idempotency_key":Uuid::now_v7()})
+        )
+    );
+    let statuses = [duplicate_first.status(), duplicate_second.status()];
+    assert!(statuses.contains(&StatusCode::CREATED));
+    assert!(statuses.contains(&StatusCode::CONFLICT));
+    let duplicate_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM content_review_items WHERE artifact_id=$1")
+            .bind(duplicate_artifact)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(duplicate_count, 1);
     assert_eq!(
         get(
             &app,
@@ -657,6 +739,27 @@ async fn review_endpoints_enforce_csrf_owner_scope_and_atomic_idempotency(pool: 
         .status(),
         StatusCode::BAD_REQUEST
     );
+    for unsafe_usage in [
+        json!({"input_tokens":40,"output_tokens":20,"debug":{"api_key":"secret-key"}}),
+        json!({"input_tokens":40,"output_tokens":20,"raw":"secret-chain"}),
+        json!({"input_tokens":-1,"output_tokens":20}),
+        json!({"input_tokens":40.5,"output_tokens":20}),
+        json!({"input_tokens":1_000_000_001_u64,"output_tokens":20}),
+    ] {
+        let mut unsafe_receipt = receipt("specification_pedagogy", &hash, &"84".repeat(32), "pass");
+        unsafe_receipt["usage"] = unsafe_usage;
+        assert_eq!(
+            post(
+                &app,
+                &ai,
+                &format!("/api/v1/content/reviews/{id}/ai-receipts"),
+                unsafe_receipt
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
     let idem = Uuid::now_v7();
     let mut valid = receipt("specification_pedagogy", &hash, &"82".repeat(32), "pass");
     valid["idempotency_key"] = json!(idem);
@@ -712,6 +815,8 @@ async fn review_endpoints_enforce_csrf_owner_scope_and_atomic_idempotency(pool: 
     .unwrap();
     assert!(!detail_body.contains("raw_response"));
     assert!(!detail_body.contains("secret chain"));
+    assert!(!detail_body.contains("secret-key"));
+    assert!(!detail_body.contains("secret-chain"));
     assert_eq!(
         post(
             &app,
