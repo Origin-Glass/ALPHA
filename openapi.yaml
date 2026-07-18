@@ -473,6 +473,114 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
         "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/content/reviews:
+    get:
+      operationId: listContentReviews
+      responses:
+        "200": { $ref: "#/components/responses/ContentReviewList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      operationId: createContentReview
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ContentReviewCreateRequest" } } } }
+      responses:
+        "201": { $ref: "#/components/responses/ContentReviewMutation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+  /api/v1/content/reviews/{id}:
+    parameters: [*id]
+    get:
+      operationId: contentReviewDetail
+      responses:
+        "200": { $ref: "#/components/responses/ContentReviewDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/v1/content/reviews/{id}/ai-receipts:
+    parameters: [*id]
+    post:
+      operationId: recordIndependentAiReviewReceipt
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AiReviewReceiptRequest" } } } }
+      responses: { "200": { $ref: "#/components/responses/ContentReviewMutation" }, "400": { $ref: "#/components/responses/BadRequest" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "422": { $ref: "#/components/responses/UnprocessableEntity" } }
+  /api/v1/content/reviews/{id}/provenance:
+    parameters: [*id]
+    post:
+      operationId: recordExactContentProvenance
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ContentProvenanceRequest" } } } }
+      responses: { "200": { $ref: "#/components/responses/ContentProvenanceRecorded" }, "400": { $ref: "#/components/responses/BadRequest" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "422": { $ref: "#/components/responses/UnprocessableEntity" } }
+  /api/v1/content/reviews/{id}/human:
+    parameters: [*id]
+    post:
+      operationId: decideHumanContentReview
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/HumanReviewDecisionRequest" } } } }
+      responses: { "200": { $ref: "#/components/responses/ContentReviewMutation" }, "400": { $ref: "#/components/responses/BadRequest" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "422": { $ref: "#/components/responses/UnprocessableEntity" } }
+  /api/v1/content/reviews/{id}/rights:
+    parameters: [*id]
+    post:
+      operationId: decideContentRightsReview
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/RightsReviewDecisionRequest" } } } }
+      responses: { "200": { $ref: "#/components/responses/ContentReviewMutation" }, "400": { $ref: "#/components/responses/BadRequest" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "422": { $ref: "#/components/responses/UnprocessableEntity" } }
+  /api/v1/content/reviews/{id}/pilot:
+    parameters: [*id]
+    post:
+      operationId: recordContentPilotEvidence
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PilotReceiptRequest" } } } }
+      responses: { "200": { $ref: "#/components/responses/ContentReviewMutation" }, "400": { $ref: "#/components/responses/BadRequest" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "422": { $ref: "#/components/responses/UnprocessableEntity" } }
+  /api/v1/content/reviews/{id}/revise:
+    parameters: [*id]
+    post:
+      operationId: reviseContentReviewArtifact
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ContentReviewRevisionRequest" } } } }
+      responses: { "200": { $ref: "#/components/responses/ContentReviewMutation" }, "400": { $ref: "#/components/responses/BadRequest" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "422": { $ref: "#/components/responses/UnprocessableEntity" } }
+  /api/v1/content/reviews/{id}/publish:
+    parameters: [*id]
+    post:
+      operationId: publishApprovedContentReview
+      security: *write
+      requestBody: { $ref: "#/components/requestBodies/ContentJobAction" }
+      responses: { "200": { $ref: "#/components/responses/ContentReviewMutation" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "422": { $ref: "#/components/responses/UnprocessableEntity" } }
+  /api/v1/content/reviews/{id}/unpublish:
+    parameters: [*id]
+    post:
+      operationId: unpublishReviewedContent
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ContentReviewReasonRequest" } } } }
+      responses: { "200": { $ref: "#/components/responses/ContentReviewMutation" }, "400": { $ref: "#/components/responses/BadRequest" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "422": { $ref: "#/components/responses/UnprocessableEntity" } }
+  /api/v1/content/reviews/{id}/removal:
+    parameters: [*id]
+    post:
+      operationId: markReviewedContentRemovalPending
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ContentReviewReasonRequest" } } } }
+      responses: { "200": { $ref: "#/components/responses/ContentReviewMutation" }, "400": { $ref: "#/components/responses/BadRequest" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "422": { $ref: "#/components/responses/UnprocessableEntity" } }
+  /api/v1/content/reviews/{id}/removal/complete:
+    parameters: [*id]
+    post:
+      operationId: completeReviewedContentRemoval
+      security: *write
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/RemovalCompleteRequest" } } } }
+      responses: { "200": { $ref: "#/components/responses/ContentReviewMutation" }, "400": { $ref: "#/components/responses/BadRequest" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "422": { $ref: "#/components/responses/UnprocessableEntity" } }
+  /api/v1/content/public/{id}:
+    parameters: [*id]
+    get:
+      operationId: publicReviewedContent
+      security: *public
+      responses:
+        "200": { $ref: "#/components/responses/PublicReviewedContent" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/content/budget:
     get:
       operationId: getContentBudget
@@ -1024,6 +1132,9 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     UnprocessableEntity:
       description: JSON 본문이 요청 스키마와 일치하지 않음
+      content:
+        text/plain:
+          schema: { type: string }
     InternalError:
       description: 서버 내부 처리 실패
       content:
@@ -1070,6 +1181,21 @@ components:
     ContentBudgetUpdated:
       description: 콘텐츠 예산 변경 결과
       content: { application/json: { schema: { $ref: "#/components/schemas/ContentBudgetUpdatedResponse" } } }
+    ContentReviewList:
+      description: 역할 범위 또는 소유자 검토 대기열
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentReviewListResponse" } } }
+    ContentReviewDetail:
+      description: 현재 불변 리비전과 독립 AI 검토 증거
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentReviewDetailResponse" } } }
+    ContentReviewMutation:
+      description: 검토 상태 전이 결과
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentReviewMutationResponse" } } }
+    ContentProvenanceRecorded:
+      description: 현재 불변 리비전에 결속된 출처 기록 결과
+      content: { application/json: { schema: { $ref: "#/components/schemas/ContentProvenanceRecordedResponse" } } }
+    PublicReviewedContent:
+      description: 게시 승인된 학습자 안전 필드만 포함한 콘텐츠
+      content: { application/json: { schema: { $ref: "#/components/schemas/PublicReviewedContentResponse" } } }
 
   requestBodies:
     ContentJobAction:
@@ -1086,10 +1212,12 @@ components:
   schemas:
     Error:
       type: object
+      additionalProperties: false
       required: [error]
       properties:
         error:
           type: object
+          additionalProperties: false
           required: [code, message]
           properties:
             code: { type: string }
@@ -1102,6 +1230,332 @@ components:
       additionalProperties: false
       required: [id]
       properties: { id: { type: string, format: uuid } }
+    ContentReviewState:
+      type: string
+      enum: [ai_review_pending, changes_requested, human_review_pending, rights_review_pending, pilot_pending, approved, published, unpublished, removal_pending, removal_completed, rejected]
+    ContentReviewCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [artifact_id, impact, idempotency_key]
+      properties:
+        artifact_id: { type: string, format: uuid }
+        impact: { type: string, enum: [standard, high, novel] }
+        idempotency_key: { type: string, format: uuid }
+    AiReviewContext:
+      type: object
+      additionalProperties: false
+      required: [artifact_hash, policy, kind]
+      properties:
+        artifact_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        policy: { type: string, minLength: 3, maxLength: 2000 }
+        kind: { type: string, enum: [specification_pedagogy, solution_judge, adversarial_rights] }
+    AiReviewResponse:
+      type: object
+      additionalProperties: false
+      required: [summary, scores, outcome]
+      properties:
+        summary: { type: string, minLength: 3, maxLength: 4000 }
+        scores: { type: object, maxProperties: 20, additionalProperties: { type: number, minimum: 0, maximum: 1 } }
+        outcome: { type: string, enum: [pass, fail] }
+    AiReviewUsage:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      maxProperties: 5
+      properties:
+        input_tokens: { type: integer, minimum: 0, maximum: 1000000000 }
+        output_tokens: { type: integer, minimum: 0, maximum: 1000000000 }
+        total_tokens: { type: integer, minimum: 0, maximum: 2000000000 }
+        cost_microunits: { type: integer, minimum: 0, maximum: 1000000000000 }
+        local_compute_ms: { type: integer, minimum: 0, maximum: 3600000 }
+    AiReviewFinding:
+      type: object
+      additionalProperties: false
+      required: [severity, evidence, message, proposed_fix]
+      properties:
+        severity: { type: string, enum: [low, medium, high, critical] }
+        evidence: { type: string, minLength: 1, maxLength: 2000 }
+        message: { type: string, minLength: 3, maxLength: 2000 }
+        proposed_fix: { type: string, minLength: 3, maxLength: 2000 }
+    AiReviewReceiptRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, provider, model, prompt_version, role_identifier, review_seed, review_context, review_response, latency_ms, usage, outcome, findings, idempotency_key]
+      properties:
+        kind: { type: string, enum: [specification_pedagogy, solution_judge, adversarial_rights] }
+        provider: { type: string, minLength: 1, maxLength: 120 }
+        model: { type: string, minLength: 1, maxLength: 120 }
+        prompt_version: { type: string, enum: [spec-pedagogy-v1, solution-judge-v1, adversarial-rights-v1] }
+        role_identifier: { type: string, enum: [specification-pedagogy-reviewer, solution-judge-reviewer, adversarial-rights-reviewer] }
+        review_seed: { type: integer, format: int64 }
+        review_context: { $ref: "#/components/schemas/AiReviewContext" }
+        review_response: { $ref: "#/components/schemas/AiReviewResponse" }
+        latency_ms: { type: integer, minimum: 1, maximum: 3600000 }
+        usage: { $ref: "#/components/schemas/AiReviewUsage" }
+        outcome: { type: string, enum: [pass, fail] }
+        findings:
+          type: array
+          items: { $ref: "#/components/schemas/AiReviewFinding" }
+        idempotency_key: { type: string, format: uuid }
+    ContentProvenanceRequest:
+      type: object
+      additionalProperties: false
+      required: [origin_type, creator_or_provider, source_url, source_revision, license_basis, license_identifier, attribution, modification_status, commercial_use_allowed, redistribution_allowed, evidence_reference, evidence_hash, attachment_metadata, legal_status, idempotency_key]
+      properties:
+        origin_type: { type: string, const: ai_generated }
+        creator_or_provider: { type: string, minLength: 2, maxLength: 300, description: 서버가 실제 attempt provider로 대체 }
+        source_url: { type: "null" }
+        source_revision: { type: string, minLength: 2, maxLength: 300, description: 서버가 실제 attempt request hash로 대체 }
+        license_basis: { type: string, const: provider_contract }
+        license_identifier: { type: string, minLength: 2, maxLength: 300 }
+        attribution: { type: string, minLength: 2, maxLength: 2000 }
+        modification_status: { type: string, enum: [unmodified, modified, translated, generated] }
+        commercial_use_allowed: { type: boolean }
+        redistribution_allowed: { type: boolean }
+        evidence_reference: { type: string, minLength: 3, maxLength: 1000 }
+        evidence_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        attachment_metadata: { type: object, additionalProperties: true }
+        legal_status: { type: string, const: pending }
+        idempotency_key: { type: string, format: uuid }
+    HumanReviewDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [decision, note, idempotency_key]
+      properties:
+        decision: { type: string, enum: [approve, changes_requested, reject] }
+        note: { type: string, minLength: 3, maxLength: 2000 }
+        idempotency_key: { type: string, format: uuid }
+    RightsReviewDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [provenance_id, provenance_hash, decision, basis, evidence, commercial_use_allowed, redistribution_allowed, provider_terms_version, idempotency_key]
+      properties:
+        provenance_id: { type: string, format: uuid }
+        provenance_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        decision: { type: string, enum: [approve, reject] }
+        basis: { type: string, enum: [original, licensed, public_domain, contract] }
+        evidence: { type: string, minLength: 3, maxLength: 4000 }
+        commercial_use_allowed: { type: boolean }
+        redistribution_allowed: { type: boolean }
+        provider_terms_version: { type: string, minLength: 3, maxLength: 120 }
+        idempotency_key: { type: string, format: uuid }
+    PilotReceiptRequest:
+      type: object
+      additionalProperties: false
+      required: [cohort, source_reference, started_at, ended_at, participants, completion_rate, failure_rate, report_count, rollback_ready, rollback_evidence, decision, note, idempotency_key]
+      properties:
+        cohort: { type: string, minLength: 3, maxLength: 200 }
+        source_reference: { type: string, minLength: 3, maxLength: 1000 }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time }
+        participants: { type: integer, minimum: 5 }
+        completion_rate: { type: number, minimum: 0, maximum: 1 }
+        failure_rate: { type: number, minimum: 0, maximum: 1 }
+        report_count: { type: integer, minimum: 0 }
+        rollback_ready: { type: boolean }
+        rollback_evidence: { type: string, minLength: 3, maxLength: 2000 }
+        decision: { type: string, enum: [pass, fail] }
+        note: { type: string, minLength: 3, maxLength: 2000 }
+        idempotency_key: { type: string, format: uuid }
+    ContentReviewRevisionRequest:
+      type: object
+      additionalProperties: false
+      required: [artifact_id, idempotency_key]
+      properties: { artifact_id: { type: string, format: uuid }, idempotency_key: { type: string, format: uuid } }
+    ContentReviewReasonRequest:
+      type: object
+      additionalProperties: false
+      required: [reason, idempotency_key]
+      properties: { reason: { type: string, minLength: 3, maxLength: 2000 }, idempotency_key: { type: string, format: uuid } }
+    RemovalCompleteRequest:
+      type: object
+      additionalProperties: false
+      required: [reason, evidence, idempotency_key]
+      properties:
+        reason: { type: string, minLength: 3, maxLength: 2000 }
+        evidence: { type: string, minLength: 3, maxLength: 4000 }
+        idempotency_key: { type: string, format: uuid }
+    ContentReviewMutationResponse:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        id: { type: string, format: uuid }
+        state: { $ref: "#/components/schemas/ContentReviewState" }
+        revision: { type: integer, minimum: 1 }
+        replayed: { type: boolean }
+    ContentProvenanceRecordedResponse:
+      type: object
+      additionalProperties: false
+      required: [id, provenance_hash]
+      properties:
+        id: { type: string, format: uuid }
+        provenance_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        replayed: { type: boolean }
+    ContentReviewListResponse:
+      type: object
+      additionalProperties: false
+      required: [reviews]
+      properties:
+        reviews:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, revision, state, artifact_hash, updated_at]
+            properties:
+              id: { type: string, format: uuid }
+              revision: { type: integer, minimum: 1 }
+              state: { $ref: "#/components/schemas/ContentReviewState" }
+              artifact_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+              updated_at: { type: string, format: date-time }
+    ContentReviewDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [id, artifact_id, revision, state, artifact_hash, artifact, provenance, ai_receipts, human_receipts, rights_receipts, pilot_receipts, audit]
+      properties:
+        id: { type: string, format: uuid }
+        artifact_id: { type: string, format: uuid }
+        revision: { type: integer, minimum: 1 }
+        state: { $ref: "#/components/schemas/ContentReviewState" }
+        artifact_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        artifact: { type: object, additionalProperties: true }
+        provenance:
+          oneOf:
+            - { type: "null" }
+            - { $ref: "#/components/schemas/ContentProvenanceRecord" }
+        ai_receipts:
+          type: array
+          items: { $ref: "#/components/schemas/AiReviewReceipt" }
+        human_receipts:
+          type: array
+          items: { $ref: "#/components/schemas/HumanReviewReceipt" }
+        rights_receipts:
+          type: array
+          items: { $ref: "#/components/schemas/RightsReviewReceipt" }
+        pilot_receipts:
+          type: array
+          items: { $ref: "#/components/schemas/PilotReviewReceipt" }
+        audit:
+          type: array
+          items: { $ref: "#/components/schemas/ContentReviewAuditEvent" }
+    AiReviewReceipt:
+      type: object
+      additionalProperties: false
+      required: [id, kind, provider, model, prompt_version, role_identifier, prompt_hash, review_seed, review_context, context_hash, review_response, input_hash, output_hash, latency_ms, usage, outcome, findings, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [specification_pedagogy, solution_judge, adversarial_rights] }
+        provider: { type: string }
+        model: { type: string }
+        prompt_version: { type: string }
+        role_identifier: { type: string }
+        prompt_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        review_seed: { type: integer, format: int64 }
+        review_context: { $ref: "#/components/schemas/AiReviewContext" }
+        context_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        review_response: { $ref: "#/components/schemas/AiReviewResponse" }
+        input_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        output_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        latency_ms: { type: integer }
+        usage: { $ref: "#/components/schemas/AiReviewUsage" }
+        outcome: { type: string, enum: [pass, fail] }
+        findings: { type: array, items: { $ref: "#/components/schemas/AiReviewFinding" } }
+        created_at: { type: string, format: date-time }
+    ContentProvenanceRecord:
+      type: object
+      additionalProperties: false
+      required: [id, origin_type, creator_or_provider, source_url, source_revision, license_basis, license_identifier, attribution, modification_status, commercial_use_allowed, redistribution_allowed, ai_provider_id, ai_provider_name, ai_model, generation_job_id, generation_attempt_id, generation_run_reference, evidence_reference, evidence_hash, attachment_metadata, legal_status, provenance_hash, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        origin_type: { type: string, const: ai_generated }
+        creator_or_provider: { type: string }
+        source_url: { type: "null" }
+        source_revision: { type: string }
+        license_basis: { type: string, const: provider_contract }
+        license_identifier: { type: string }
+        attribution: { type: string }
+        modification_status: { type: string }
+        commercial_use_allowed: { type: boolean }
+        redistribution_allowed: { type: boolean }
+        ai_provider_id: { type: string, format: uuid }
+        ai_provider_name: { type: string }
+        ai_model: { type: string }
+        generation_job_id: { type: string, format: uuid }
+        generation_attempt_id: { type: string, format: uuid }
+        generation_run_reference: { type: string }
+        evidence_reference: { type: string }
+        evidence_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        attachment_metadata: { type: object, additionalProperties: true }
+        legal_status: { type: string, enum: [pending, approved, rejected, restricted, removal_required] }
+        provenance_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        created_at: { type: string, format: date-time }
+    HumanReviewReceipt:
+      type: object
+      additionalProperties: false
+      required: [id, reviewer_user_id, decision, note, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        reviewer_user_id: { type: string, format: uuid }
+        decision: { type: string, enum: [approve, changes_requested, reject] }
+        note: { type: string }
+        created_at: { type: string, format: date-time }
+    RightsReviewReceipt:
+      type: object
+      additionalProperties: false
+      required: [id, reviewer_user_id, provenance_id, provenance_hash, decision, basis, evidence, commercial_use_allowed, redistribution_allowed, provider_terms_version, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        reviewer_user_id: { type: string, format: uuid }
+        provenance_id: { type: string, format: uuid }
+        provenance_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        decision: { type: string, enum: [approve, reject] }
+        basis: { type: string }
+        evidence: { type: string }
+        commercial_use_allowed: { type: boolean }
+        redistribution_allowed: { type: boolean }
+        provider_terms_version: { type: string }
+        created_at: { type: string, format: date-time }
+    PilotReviewReceipt:
+      type: object
+      additionalProperties: false
+      required: [id, reviewer_user_id, cohort, source_reference, started_at, ended_at, participants, completion_rate, failure_rate, report_count, rollback_ready, rollback_evidence, decision, note, evidence_hash, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        reviewer_user_id: { type: string, format: uuid }
+        cohort: { type: string }
+        source_reference: { type: string }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time }
+        participants: { type: integer }
+        completion_rate: { type: number }
+        failure_rate: { type: number }
+        report_count: { type: integer }
+        rollback_ready: { type: boolean }
+        rollback_evidence: { type: string }
+        decision: { type: string, enum: [pass, fail] }
+        note: { type: string }
+        evidence_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        created_at: { type: string, format: date-time }
+    ContentReviewAuditEvent:
+      type: object
+      additionalProperties: false
+      required: [action, actor_user_id, metadata, occurred_at]
+      properties:
+        action: { type: string }
+        actor_user_id: { type: string, format: uuid }
+        metadata: { type: object, additionalProperties: true }
+        occurred_at: { type: string, format: date-time }
+    PublicReviewedContentResponse:
+      type: object
+      additionalProperties: false
+      required: [id, revision, content_type, content, artifact_hash]
+      properties:
+        id: { type: string, format: uuid }
+        revision: { type: integer, minimum: 1 }
+        content_type: { type: string, enum: [algorithm_problem, code_reading, debugging, documentation_lesson, implementation_task] }
+        content: { type: object, additionalProperties: true }
+        artifact_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
     ContentProviderUpdatedResponse:
       type: object
       additionalProperties: false

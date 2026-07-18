@@ -72,7 +72,7 @@ function ContentStudioPage() {
   };
 
   return <div className="learning-page"><PortalHeader /><main className="factory-page">
-    <p className="eyebrow">AI 콘텐츠 공장</p><h1>제공자는 바꿔도,<br /><span>생성 기록은 남겨요</span></h1>
+    <p className="eyebrow">AI 콘텐츠 공장</p><h1>제공자는 바꿔도,<br /><span>생성 기록은 남겨요</span></h1><p><a className="secondary-action" href="/content-reviews">검토 작업대 열기</a></p>
     <div className="factory-grid">
       <section><h2>새 생성 작업</h2><form onSubmit={submit}>
         <label><span>AI 제공자</span><select value={providerId} onChange={(event) => setProviderId(event.target.value)} required>
