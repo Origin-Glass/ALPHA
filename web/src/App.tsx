@@ -17,6 +17,9 @@ import ContestsPage from './ContestsPage';
 import ContestDetailPage from './ContestDetailPage';
 import ClassesPage from './ClassesPage';
 import ClassDetailPage from './ClassDetailPage';
+import CommunityPage from './CommunityPage';
+import CommunityDetailPage from './CommunityDetailPage';
+import AdminPage from './AdminPage';
 
 const learningAxes = [
   { number: '01', title: '알고리즘 추론', description: '정답보다 사고 과정을 단단하게 만듭니다.' },
@@ -163,6 +166,9 @@ function App() {
   if (window.location.pathname === '/classes/join') return <ClassesPage joinMode />;
   if (window.location.pathname === '/classes') return <ClassesPage />;
   if (window.location.pathname.startsWith('/classes/')) return <ClassDetailPage classId={decodeURIComponent(window.location.pathname.slice('/classes/'.length))} />;
+  if (window.location.pathname === '/community') return <CommunityPage />;
+  if (window.location.pathname.startsWith('/community/')) return <CommunityDetailPage postId={decodeURIComponent(window.location.pathname.slice('/community/'.length))} />;
+  if (window.location.pathname === '/admin') return <AdminPage />;
   if (window.location.pathname === '/problems') return <ProblemsPage />;
   if (window.location.pathname.startsWith('/problems/')) return <ProblemDetailPage slug={decodeURIComponent(window.location.pathname.slice('/problems/'.length))} />;
   if (window.location.pathname.startsWith('/solve/')) return <SolvePage slug={decodeURIComponent(window.location.pathname.slice('/solve/'.length))} />;

@@ -226,19 +226,19 @@ pub async fn lease_next_job(
 
 pub async fn load_test_cases(
     pool: &PgPool,
-    problem_id: Uuid,
+    problem_revision_id: Uuid,
     run_kind: &str,
 ) -> Result<Vec<JudgeTestCase>, QueueError> {
     Ok(sqlx::query_as::<_, JudgeTestCase>(
         r#"
         SELECT ordinal, input, expected_output, score_weight, group_key
         FROM problem_test_cases
-        WHERE problem_id = $1
+        WHERE problem_revision_id = $1
           AND ($2 <> 'sample' OR visibility = 'sample')
         ORDER BY ordinal
         "#,
     )
-    .bind(problem_id)
+    .bind(problem_revision_id)
     .bind(run_kind)
     .fetch_all(pool)
     .await?)

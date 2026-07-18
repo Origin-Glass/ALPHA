@@ -464,9 +464,20 @@ pub async fn rejudge_problem(
     }
     let mut transaction = state.pool().begin().await?;
     let problem: Option<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT id,current_revision_id FROM problems WHERE slug=$1 AND status='published' FOR UPDATE",
+        r#"
+        SELECT id, current_revision_id FROM problems
+        WHERE slug = $1 AND status = 'published'
+          AND (
+              created_by = $2 OR EXISTS (
+                  SELECT 1 FROM user_roles
+                  WHERE user_id = $2 AND role = 'ADMIN'
+              )
+          )
+        FOR UPDATE
+        "#,
     )
     .bind(&problem_slug)
+    .bind(user_id)
     .fetch_optional(&mut *transaction)
     .await?;
     let (problem_id, revision_id) = problem.ok_or(SubmissionError::NotFound)?;

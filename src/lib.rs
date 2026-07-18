@@ -1,6 +1,8 @@
 pub mod activities;
+pub mod admin;
 pub mod auth;
 pub mod classes;
+pub mod community;
 pub mod config;
 pub mod contests;
 pub mod db;
