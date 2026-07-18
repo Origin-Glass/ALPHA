@@ -28,6 +28,9 @@ import ReviewWorkspacePage from './ReviewWorkspacePage';
 import LearningPlanBuilderPage from './LearningPlanBuilderPage';
 import ProjectIdeationPage from './ProjectIdeationPage';
 import ProjectWorkspacePage from './ProjectWorkspacePage';
+import MultiFileWorkspacePage from './MultiFileWorkspacePage';
+import UnderstandingPage from './UnderstandingPage';
+import PortfolioPage from './PortfolioPage';
 
 const learningAxes = [
   { number: '01', title: '알고리즘 추론', description: '정답보다 사고 과정을 단단하게 만듭니다.' },
@@ -169,6 +172,9 @@ function App() {
   if (window.location.pathname === '/learning-plan') return <LearningPlanBuilderPage />;
   if (window.location.pathname === '/projects/ideas') return <ProjectIdeationPage />;
   if (window.location.pathname === '/projects/workspace') return <ProjectWorkspacePage />;
+  if (window.location.pathname === '/workspace') return <MultiFileWorkspacePage />;
+  if (window.location.pathname === '/understanding') return <UnderstandingPage />;
+  if (window.location.pathname === '/portfolio') return <PortfolioPage />;
   if (window.location.pathname === '/activities') return <ActivitiesPage />;
   if (window.location.pathname.startsWith('/activities/')) return <ActivityDetailPage slug={decodeURIComponent(window.location.pathname.slice('/activities/'.length))} />;
   if (window.location.pathname === '/tracks/docs-builder') return <DocsTrackPage />;

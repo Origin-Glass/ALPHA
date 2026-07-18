@@ -7,6 +7,9 @@ function PortalHeader() {
         <a href="/learn">나의 경로</a>
         <a href="/learning-plan">계획 만들기</a>
         <a href="/projects/ideas">프로젝트 시작</a>
+        <a href="/workspace">실행 작업공간</a>
+        <a href="/understanding">이해 검증</a>
+        <a href="/portfolio">포트폴리오</a>
         <a href="/activities">읽기·디버깅</a>
         <a href="/tracks/docs-builder">문서 트랙</a>
         <a href="/dashboard">성장</a>
