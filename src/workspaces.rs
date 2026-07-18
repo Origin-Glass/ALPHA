@@ -549,14 +549,14 @@ pub async fn complete_run(
     receipt_secret: &[u8],
 ) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    let row:Option<(Vec<u8>,Vec<u8>,String,Option<Uuid>,Vec<u8>,String,SqlJson<Value>,String,Vec<u8>,String)>=sqlx::query_as("SELECT r.artifact_hash,r.semantic_hash,r.validation_kind,r.challenge_id,r.template_digest,r.image_reference,r.command,r.check_suite_id,r.check_suite_hash,r.execution_image_digest FROM workspace_runs r JOIN project_workspaces w ON(w.id,w.user_id)=(r.workspace_id,r.user_id) WHERE r.id=$1 AND r.lease_token=$2 AND r.status='running' AND r.lease_expires_at>now() AND r.cancel_requested_at IS NULL AND w.status='active' AND w.expires_at>now() FOR UPDATE OF r").bind(id).bind(token).fetch_optional(&mut *tx).await?;
+    let row:Option<(Vec<u8>,Vec<u8>,String,Option<Uuid>,Vec<u8>,String,SqlJson<Value>,String,Vec<u8>,String,bool)>=sqlx::query_as("SELECT r.artifact_hash,r.semantic_hash,r.validation_kind,r.challenge_id,r.template_digest,r.image_reference,r.command,r.check_suite_id,r.check_suite_hash,r.execution_image_digest,r.supports_tests_snapshot FROM workspace_runs r JOIN project_workspaces w ON(w.id,w.user_id)=(r.workspace_id,r.user_id) WHERE r.id=$1 AND r.lease_token=$2 AND r.status='running' AND r.lease_expires_at>now() AND r.cancel_requested_at IS NULL AND w.status='active' AND w.expires_at>now() FOR UPDATE OF r").bind(id).bind(token).fetch_optional(&mut *tx).await?;
     let Some(row) = row else {
         tx.rollback().await?;
         return Ok(false);
     };
     let stdout_hash = Sha256::digest(out.stdout.as_bytes()).to_vec();
     let passed = out.status == "succeeded" && out.exit_code == Some(0) && !out.output_truncated;
-    let receipt=Sha256::digest(serde_json::to_vec(&json!({"run":id,"lease_token":token,"artifact_hash":row.0,"semantic_hash":row.1,"validation_kind":row.2,"challenge_id":row.3,"template_digest":row.4,"declared_image_reference":row.5,"command":row.6.0,"check_suite_id":row.7,"check_suite_hash":row.8,"execution_image_digest":row.9,"status":out.status,"exit_code":out.exit_code,"stdout_hash":stdout_hash,"output_truncated":out.output_truncated,"checks_passed":passed})).unwrap_or_default()).to_vec();
+    let receipt=Sha256::digest(serde_json::to_vec(&json!({"run":id,"lease_token":token,"artifact_hash":row.0,"semantic_hash":row.1,"validation_kind":row.2,"challenge_id":row.3,"template_digest":row.4,"declared_image_reference":row.5,"command":row.6.0,"check_suite_id":row.7,"check_suite_hash":row.8,"execution_image_digest":row.9,"supports_tests":row.10,"status":out.status,"exit_code":out.exit_code,"stdout_hash":stdout_hash,"output_truncated":out.output_truncated,"checks_passed":passed})).unwrap_or_default()).to_vec();
     let receipt_mac = sign_receipt(receipt_secret, &receipt);
     sqlx::query("UPDATE workspace_runs SET status=$3,lease_token=NULL,leased_by=NULL,lease_expires_at=NULL,exit_code=$4,stdout=$5,stderr=$6,output_truncated=$7,stdout_hash=$8,deterministic_checks_passed=$9,runner_receipt_hash=$10,runner_receipt_mac=$11,completed_at=now() WHERE id=$1 AND lease_token=$2").bind(id).bind(token).bind(out.status).bind(out.exit_code).bind(&out.stdout).bind(&out.stderr).bind(out.output_truncated).bind(stdout_hash).bind(passed).bind(receipt).bind(receipt_mac).execute(&mut *tx).await?;
     tx.commit().await?;
