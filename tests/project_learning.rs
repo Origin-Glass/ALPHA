@@ -246,6 +246,44 @@ async fn same_input_and_rule_produce_same_auditable_plan(pool: PgPool) {
     let assigned = json_body(post(&app, &user, "/api/v1/learning/plans", assigned).await).await;
     assert_eq!(assigned["origin"], "template_assignment");
     assert_eq!(assigned["locked_requirements"], json!(["필수 코드 읽기"]));
+    sqlx::query(
+        "UPDATE learning_plan_assignments SET revoked_at=now() WHERE user_id=$1 AND template_id=$2",
+    )
+    .bind(user.user_id)
+    .bind(template_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut revoked = plan_request(Uuid::now_v7());
+    revoked["origin"] = json!("template_assignment");
+    revoked["template_id"] = json!(template_id);
+    revoked["locked_requirements"] = json!(["필수 코드 읽기"]);
+    assert_eq!(
+        post(&app, &user, "/api/v1/learning/plans", revoked.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    sqlx::query(
+        "UPDATE learning_plan_assignments SET revoked_at=NULL WHERE user_id=$1 AND template_id=$2",
+    )
+    .bind(user.user_id)
+    .bind(template_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE learning_plan_templates SET active=false WHERE id=$1")
+        .bind(template_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    revoked["idempotency_key"] = json!(Uuid::now_v7());
+    assert_eq!(
+        post(&app, &user, "/api/v1/learning/plans", revoked)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]

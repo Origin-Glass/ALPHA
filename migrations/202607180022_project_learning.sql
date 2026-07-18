@@ -12,6 +12,7 @@ CREATE TABLE learning_plan_assignments (
     template_id uuid NOT NULL REFERENCES learning_plan_templates(id) ON DELETE RESTRICT,
     locked_requirements jsonb NOT NULL CHECK (jsonb_typeof(locked_requirements)='array' AND jsonb_array_length(locked_requirements) BETWEEN 1 AND 12),
     assigned_at timestamptz NOT NULL DEFAULT now(),
+    revoked_at timestamptz,
     UNIQUE (user_id, template_id)
 );
 

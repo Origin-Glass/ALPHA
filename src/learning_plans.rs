@@ -320,7 +320,7 @@ pub async fn create(
         .await?;
     if let Some(template_id) = request.template_id {
         let assigned: Option<SqlJson<Value>> = sqlx::query_scalar(
-            "SELECT locked_requirements FROM learning_plan_assignments WHERE user_id=$1 AND template_id=$2",
+            "SELECT assignment.locked_requirements FROM learning_plan_assignments assignment JOIN learning_plan_templates template ON template.id=assignment.template_id WHERE assignment.user_id=$1 AND assignment.template_id=$2 AND assignment.revoked_at IS NULL AND template.active=true",
         )
         .bind(user_id)
         .bind(template_id)
