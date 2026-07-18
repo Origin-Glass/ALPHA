@@ -402,6 +402,7 @@ pub async fn complete_job_with_output(
                 },
             )
             .await?;
+            crate::classes::reward_completed_assignments(&mut transaction, user_id).await?;
         }
     }
     transaction.commit().await?;

@@ -691,6 +691,7 @@ pub async fn attempt(
             },
         )
         .await?;
+        crate::classes::reward_completed_assignments(&mut transaction, user_id).await?;
     }
     transaction.commit().await?;
 

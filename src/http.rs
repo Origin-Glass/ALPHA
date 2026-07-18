@@ -144,7 +144,36 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/payments/checkout",
             axum::routing::post(crate::payments::create_checkout),
         )
+        .route(
+            "/api/v1/organizations",
+            axum::routing::post(crate::classes::create_organization),
+        )
+        .route(
+            "/api/v1/organizations/{organization_id}/classes",
+            axum::routing::post(crate::classes::create_class),
+        )
+        .route("/api/v1/classes", get(crate::classes::list))
         .route("/api/v1/classes/{class_id}", get(crate::classes::detail))
+        .route(
+            "/api/v1/classes/{class_id}/invitations",
+            axum::routing::post(crate::classes::create_invitation),
+        )
+        .route(
+            "/api/v1/class-invitations/accept",
+            axum::routing::post(crate::classes::accept_invitation),
+        )
+        .route(
+            "/api/v1/classes/{class_id}/assignments",
+            axum::routing::post(crate::classes::create_assignment),
+        )
+        .route(
+            "/api/v1/classes/{class_id}/instructor-dashboard",
+            get(crate::classes::instructor_dashboard),
+        )
+        .route(
+            "/api/v1/classes/{class_id}/export.csv",
+            get(crate::classes::export_csv),
+        )
         .route("/api/v1/problems", get(crate::problems::list))
         .route("/api/v1/problems/{slug}", get(crate::problems::detail))
         .route(

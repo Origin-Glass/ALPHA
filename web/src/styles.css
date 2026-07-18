@@ -542,6 +542,55 @@ footer strong { color: var(--ink); font-style: italic; }
 .contest-invite label { margin-top: 10px; font-size: .72rem; font-weight: 800; }
 .contest-invite input { min-height: 48px; padding: 0 14px; border: 1px solid var(--line); border-radius: 13px; background: #eef2f7; font: inherit; }
 .contest-invite button { min-height: 48px; border: 0; border-radius: 13px; color: white; background: var(--violet); font: inherit; font-weight: 850; cursor: pointer; }
+.classes-page, .class-detail-page { width: min(1060px, 100%); margin: 0 auto; padding: 72px 0 90px; }
+.classes-heading { display: flex; justify-content: space-between; gap: 30px; align-items: end; }
+.classes-heading h1, .class-hero h1 { font-size: clamp(3rem, 7vw, 5.5rem); }
+.classes-heading h1 span { color: var(--violet); }
+.classes-heading p, .class-hero p { color: var(--muted); }
+.classes-heading > a, .class-hero > button { padding: 14px 18px; border: 0; border-radius: 13px; color: white; background: var(--violet); font: inherit; font-weight: 850; text-decoration: none; cursor: pointer; }
+.class-list { margin-top: 46px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+.class-list > a { padding: 25px; border: 1px solid var(--line); border-radius: 21px; color: inherit; background: rgba(255,255,255,.58); box-shadow: 8px 8px 20px rgba(116,132,153,.11), -8px -8px 20px rgba(255,255,255,.75); text-decoration: none; }
+.class-list > a > div { display: flex; justify-content: space-between; color: var(--muted); font-size: .7rem; font-weight: 800; }
+.class-list h2 { margin: 28px 0 8px; }
+.class-list p { margin: 0; color: var(--muted); font-size: .78rem; }
+.class-create, .assignment-create { margin-top: 52px; padding: 30px; display: grid; grid-template-columns: .7fr 1.3fr; gap: 36px; border-radius: 22px; background: #e7ecf2; box-shadow: inset 5px 5px 12px rgba(111,127,148,.12), inset -5px -5px 12px rgba(255,255,255,.72); }
+.class-create form, .assignment-create form, .class-join form { display: grid; gap: 13px; }
+.class-create label, .assignment-create label, .class-join label { display: grid; gap: 6px; color: var(--muted); font-size: .72rem; font-weight: 800; }
+.class-create input, .assignment-create input, .assignment-create textarea, .class-join input { min-height: 46px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; background: #f5f7fa; font: inherit; }
+.assignment-create textarea { min-height: 80px; resize: vertical; }
+.class-create button, .assignment-create button, .class-join button { min-height: 47px; border: 0; border-radius: 11px; color: white; background: var(--violet); font: inherit; font-weight: 850; cursor: pointer; }
+.class-join { width: min(580px, calc(100% - 30px)); margin: 90px auto; padding: 38px; border: 1px solid var(--line); border-radius: 24px; background: rgba(255,255,255,.6); box-shadow: 10px 10px 26px rgba(116,132,153,.13), -9px -9px 24px rgba(255,255,255,.78); }
+.class-join h1 { font-size: clamp(2.4rem, 7vw, 4rem); }
+.class-join > p:not(.eyebrow) { color: var(--muted); }
+.class-hero { margin: 35px 0 45px; display: flex; justify-content: space-between; gap: 30px; align-items: center; }
+.invite-result { margin-bottom: 34px; padding: 16px; display: grid; gap: 7px; border-radius: 14px; background: #e7ecf2; color: var(--muted); font-size: .72rem; font-weight: 800; }
+.invite-result input { padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: white; font: inherit; }
+.assignment-list > h2, .instructor-dashboard h2, .assignment-create h2 { font-size: 1.45rem; }
+.assignment-list > article { margin-top: 16px; padding: 24px; border: 1px solid var(--line); border-radius: 20px; background: rgba(255,255,255,.55); }
+.assignment-list article > header { display: flex; justify-content: space-between; gap: 20px; }
+.assignment-list header span { color: var(--violet); font-size: .68rem; font-weight: 850; }
+.assignment-list header h3 { margin: 8px 0; font-size: 1.25rem; }
+.assignment-list header p { color: var(--muted); }
+.assignment-list header > strong { font-size: 1.6rem; }
+.assignment-list article > div { display: grid; }
+.assignment-list article a { padding: 13px 5px; display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid rgba(121,138,158,.14); color: inherit; text-decoration: none; }
+.assignment-list article a b { color: var(--violet); font-size: .75rem; }
+.assignment-list article a.completed { color: var(--muted); }
+.assignment-list article a.completed b { color: #23715e; }
+.instructor-dashboard { margin-top: 55px; }
+.class-goals { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.class-goals article { padding: 20px; display: grid; gap: 6px; border-radius: 17px; background: #e7ecf2; }
+.class-goals article.met { background: #dcf3ea; }
+.class-goals span, .class-goals small { color: var(--muted); font-size: .68rem; }
+.class-goals strong { font-size: 1.7rem; }
+.instructor-columns { margin-top: 22px; display: grid; grid-template-columns: 1.3fr .7fr; gap: 18px; }
+.instructor-columns > section { padding: 22px; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.5); }
+.learner-progress { min-height: 54px; display: grid; grid-template-columns: minmax(130px,1fr) 1fr 50px; gap: 12px; align-items: center; }
+.learner-progress a { display: grid; color: inherit; font-weight: 750; text-decoration: none; }
+.learner-progress small { color: var(--muted); font-size: .65rem; }
+.learner-progress progress { width: 100%; accent-color: var(--violet); }
+.common-error { padding: 12px 0; display: flex; justify-content: space-between; border-bottom: 1px solid rgba(121,138,158,.14); }
+.common-error b { color: #9a4b54; }
 
 a:focus-visible { outline: 3px solid rgba(77,148,255,.42); outline-offset: 4px; }
 
@@ -627,6 +676,13 @@ a:focus-visible { outline: 3px solid rgba(77,148,255,.42); outline-offset: 4px; 
   .contest-hero { grid-template-columns: 1fr; }
   .contest-hero > button { width: 100%; }
   .contest-problems > a { padding: 12px 4px; grid-template-columns: 36px 1fr auto; }
+  .classes-page, .class-detail-page { padding: 52px 4px; }
+  .classes-heading, .class-hero { align-items: stretch; flex-direction: column; }
+  .class-list, .class-goals, .instructor-columns { grid-template-columns: 1fr; }
+  .class-create, .assignment-create { padding: 22px 18px; grid-template-columns: 1fr; }
+  .assignment-list article > header { flex-direction: column; }
+  .learner-progress { grid-template-columns: 1fr 54px; }
+  .learner-progress progress { grid-column: 1 / -1; grid-row: 2; }
 }
 
 @media (prefers-reduced-motion: reduce) {
