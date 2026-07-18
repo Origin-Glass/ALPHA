@@ -160,6 +160,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(crate::content_reviews::ai_receipt),
         )
         .route(
+            "/api/v1/content/reviews/{id}/provenance",
+            axum::routing::post(crate::content_reviews::record_provenance),
+        )
+        .route(
             "/api/v1/content/reviews/{id}/human",
             axum::routing::post(crate::content_reviews::human),
         )
@@ -186,6 +190,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/content/reviews/{id}/removal",
             axum::routing::post(crate::content_reviews::removal),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/removal/complete",
+            axum::routing::post(crate::content_reviews::complete_removal),
         )
         .route(
             "/api/v1/content/public/{id}",

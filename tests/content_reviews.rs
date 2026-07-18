@@ -20,6 +20,63 @@ struct Session {
     csrf: String,
 }
 
+#[sqlx::test(migrations = "./migrations")]
+async fn provenance_uses_actual_attempt_provider_and_rejects_generated_lineage_downgrade(
+    pool: PgPool,
+) {
+    let settings = Settings::from_pairs(HashMap::from([
+        ("APP_ENV", "test"),
+        ("DATABASE_URL", "postgres://test"),
+        ("TEST_IDENTITY_ENABLED", "true"),
+    ]))
+    .unwrap();
+    let app = router(AppState::new(pool.clone(), settings));
+    let author = login(&app, &pool, "fallback-author", "CONTENT_CREATOR").await;
+    let (artifact_id, _) = artifact(&pool, author.user_id, "fallback provenance").await;
+    let fallback:Uuid=sqlx::query_scalar("INSERT INTO content_provider_configs (name,kind,protocol,base_url,model,cost_per_generation_microunits,credential_env_var,created_by) VALUES ('actual-fallback','local','openai_compatible','http://127.0.0.1:11434','fallback-model',1,NULL,$1) RETURNING id").bind(author.user_id).fetch_one(&pool).await.unwrap();
+    sqlx::query("UPDATE content_generation_attempts SET provider_snapshot=jsonb_build_object('provider_id',$2::uuid,'model','fallback-model','protocol','openai_compatible') WHERE id=(SELECT attempt_id FROM content_artifacts WHERE id=$1)").bind(artifact_id).bind(fallback).execute(&pool).await.unwrap();
+    let response = post(
+        &app,
+        &author,
+        "/api/v1/content/reviews",
+        json!({"artifact_id":artifact_id,"impact":"standard","idempotency_key":Uuid::now_v7()}),
+    )
+    .await;
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 16_384).await.unwrap()).unwrap();
+    let id = body["id"].as_str().unwrap();
+    let mut forged = provenance_payload("pending");
+    forged["origin_type"] = json!("original");
+    forged["license_basis"] = json!("copyright_owner");
+    assert_eq!(
+        post(
+            &app,
+            &author,
+            &format!("/api/v1/content/reviews/{id}/provenance"),
+            forged
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let _ = provenance(&app, &author, id, "pending").await;
+    let response = get(
+        &app,
+        Some(&author),
+        &format!("/api/v1/content/reviews/{id}"),
+    )
+    .await;
+    let detail: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 131_072).await.unwrap()).unwrap();
+    assert_eq!(detail["provenance"]["ai_provider_id"], json!(fallback));
+    assert_eq!(detail["provenance"]["ai_provider_name"], "actual-fallback");
+    assert_eq!(detail["provenance"]["ai_model"], "fallback-model");
+    assert_ne!(
+        detail["provenance"]["source_revision"],
+        "immutable-artifact-v1"
+    );
+}
+
 async fn login(app: &axum::Router, pool: &PgPool, handle: &str, role: &str) -> Session {
     let response = app
         .clone()
@@ -115,8 +172,8 @@ async fn artifact_of_type(
     let request_hash = Sha256::digest(title.as_bytes()).to_vec();
     let job: Uuid = sqlx::query_scalar("INSERT INTO content_generation_jobs (created_by,provider_id,content_type,request_spec,request_hash,status,estimated_cost_microunits,attempt_cost_microunits,max_attempts,settled) VALUES ($1,$2,$3,$4,$5,'completed',3,1,3,true) RETURNING id")
         .bind(author).bind(provider).bind(content_type).bind(json!({"title":title})).bind(&request_hash).fetch_one(pool).await.unwrap();
-    let attempt: Uuid = sqlx::query_scalar("INSERT INTO content_generation_attempts (job_id,attempt_number,provider_snapshot,request_hash,response_hash,status,completed_at) VALUES ($1,1,'{}',$2,$2,'completed',now()) RETURNING id")
-        .bind(job).bind(&request_hash).fetch_one(pool).await.unwrap();
+    let attempt: Uuid = sqlx::query_scalar("INSERT INTO content_generation_attempts (job_id,attempt_number,provider_snapshot,request_hash,response_hash,status,completed_at) VALUES ($1,1,$2,$3,$3,'completed',now()) RETURNING id")
+        .bind(job).bind(json!({"provider_id":provider,"model":"review-test","protocol":"openai_compatible"})).bind(&request_hash).fetch_one(pool).await.unwrap();
     let hash = Sha256::digest(format!("artifact:{title}").as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -127,11 +184,48 @@ async fn artifact_of_type(
 }
 
 fn receipt(kind: &str, input_hash: &str, output_hash: &str, outcome: &str) -> Value {
-    json!({"kind":kind,"provider":"review-provider","model":"review-model","prompt_version":format!("{kind}-v1"),
-        "role_identifier":kind,"prompt_hash":format!("{}", match kind {"specification_pedagogy"=>"44".repeat(32),"solution_judge"=>"55".repeat(32),_=>"66".repeat(32)}),
+    let (role, prompt) = match kind {
+        "specification_pedagogy" => ("specification-pedagogy-reviewer", "spec-pedagogy-v1"),
+        "solution_judge" => ("solution-judge-reviewer", "solution-judge-v1"),
+        _ => ("adversarial-rights-reviewer", "adversarial-rights-v1"),
+    };
+    json!({"kind":kind,"provider":"review-provider","model":"review-model","prompt_version":prompt,
+        "role_identifier":role,
         "review_seed":match kind {"specification_pedagogy"=>11,"solution_judge"=>22,_=>33},"idempotency_key":Uuid::now_v7(),
-        "input_hash":input_hash,"output_hash":output_hash,"latency_ms":120,"usage":{"input_tokens":40,"output_tokens":20},
-        "outcome":outcome,"findings":if outcome == "pass" { json!([]) } else { json!([{"severity":"high","message":"제약 조건 누락"}]) }})
+        "review_context":{"artifact_hash":input_hash,"policy":"독립 검토","kind":kind},
+        "review_response":{"summary":format!("검토 결과 {output_hash}"),"scores":{"quality":0.9},"outcome":outcome},"latency_ms":120,"usage":{"input_tokens":40,"output_tokens":20},
+        "outcome":outcome,"findings":if outcome == "pass" { json!([]) } else { json!([{"severity":"high","evidence":"statement.constraints","message":"제약 조건 누락","proposed_fix":"입력 범위를 명시하세요"}]) }})
+}
+
+async fn provenance(
+    app: &axum::Router,
+    session: &Session,
+    id: &str,
+    status: &str,
+) -> (Uuid, String) {
+    let response = post(
+        app,
+        session,
+        &format!("/api/v1/content/reviews/{id}/provenance"),
+        provenance_payload(status),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 16_384).await.unwrap()).unwrap();
+    (
+        body["id"].as_str().unwrap().parse().unwrap(),
+        body["provenance_hash"].as_str().unwrap().to_owned(),
+    )
+}
+fn provenance_payload(status: &str) -> Value {
+    json!({
+        "origin_type":"ai_generated","creator_or_provider":"ALPHA content factory","source_url":null,"source_revision":"immutable-artifact-v1",
+        "license_basis":"provider_contract","license_identifier":"provider-terms-2026-07","attribution":"AI 생성 및 사람 검토",
+        "modification_status":"unmodified","commercial_use_allowed":true,"redistribution_allowed":true,
+        "evidence_reference":"audit://generation-job","evidence_hash":"91".repeat(32),"attachment_metadata":{"kind":"generation_receipt"},
+        "legal_status":status,"idempotency_key":Uuid::now_v7()
+    })
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -213,13 +307,42 @@ async fn exact_three_reviews_and_separated_human_rights_pilot_gate_publication(p
         .status(),
         StatusCode::CONFLICT
     );
-    assert_eq!(post(&app, &human, &format!("/api/v1/content/reviews/{id}/rights"), json!({"basis":"original","evidence":"원본 생성 작업과 감사 추적 확인","commercial_use_allowed":true,"redistribution_allowed":true,"provider_terms_version":"2026-07","decision":"approve","idempotency_key":Uuid::now_v7()})).await.status(), StatusCode::FORBIDDEN);
+    assert_eq!(post(&app, &human, &format!("/api/v1/content/reviews/{id}/rights"), json!({"provenance_id":Uuid::now_v7(),"provenance_hash":"92".repeat(32),"basis":"contract","evidence":"원본 생성 작업과 감사 추적 확인","commercial_use_allowed":true,"redistribution_allowed":true,"provider_terms_version":"2026-07","decision":"approve","idempotency_key":Uuid::now_v7()})).await.status(), StatusCode::FORBIDDEN);
+    assert_eq!(post(&app, &rights, &format!("/api/v1/content/reviews/{id}/rights"), json!({"provenance_id":Uuid::now_v7(),"provenance_hash":"92".repeat(32),"basis":"contract","evidence":"원본 생성 작업과 감사 추적 확인","commercial_use_allowed":true,"redistribution_allowed":true,"provider_terms_version":"2026-07","decision":"approve","idempotency_key":Uuid::now_v7()})).await.status(), StatusCode::CONFLICT);
+    for prohibited in ["approved", "rejected", "restricted", "removal_required"] {
+        assert_eq!(
+            post(
+                &app,
+                &author,
+                &format!("/api/v1/content/reviews/{id}/provenance"),
+                provenance_payload(prohibited)
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let mut incomplete = provenance_payload("pending");
+    incomplete["origin_type"] = json!("licensed");
+    assert_eq!(
+        post(
+            &app,
+            &author,
+            &format!("/api/v1/content/reviews/{id}/provenance"),
+            incomplete
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let (provenance_id, provenance_hash) = provenance(&app, &author, id, "pending").await;
+    assert_eq!(post(&app,&rights,&format!("/api/v1/content/reviews/{id}/rights"),json!({"provenance_id":provenance_id,"provenance_hash":"93".repeat(32),"basis":"contract","evidence":"원본 생성 작업과 감사 추적 확인","commercial_use_allowed":true,"redistribution_allowed":true,"provider_terms_version":"2026-07","decision":"approve","idempotency_key":Uuid::now_v7()})).await.status(),StatusCode::CONFLICT);
     let rights_key = Uuid::now_v7();
-    assert_eq!(post(&app, &rights, &format!("/api/v1/content/reviews/{id}/rights"), json!({"basis":"original","evidence":"원본 생성 작업과 감사 추적 확인","commercial_use_allowed":true,"redistribution_allowed":true,"provider_terms_version":"2026-07","decision":"approve","idempotency_key":rights_key})).await.status(), StatusCode::OK);
-    assert_eq!(post(&app, &rights, &format!("/api/v1/content/reviews/{id}/rights"), json!({"basis":"original","evidence":"변조된 근거","commercial_use_allowed":true,"redistribution_allowed":true,"provider_terms_version":"2026-07","decision":"approve","idempotency_key":rights_key})).await.status(), StatusCode::CONFLICT);
+    assert_eq!(post(&app, &rights, &format!("/api/v1/content/reviews/{id}/rights"), json!({"provenance_id":provenance_id,"provenance_hash":provenance_hash,"basis":"contract","evidence":"원본 생성 작업과 감사 추적 확인","commercial_use_allowed":true,"redistribution_allowed":true,"provider_terms_version":"2026-07","decision":"approve","idempotency_key":rights_key})).await.status(), StatusCode::OK);
+    assert_eq!(post(&app, &rights, &format!("/api/v1/content/reviews/{id}/rights"), json!({"provenance_id":provenance_id,"provenance_hash":provenance_hash,"basis":"contract","evidence":"변조된 근거","commercial_use_allowed":true,"redistribution_allowed":true,"provider_terms_version":"2026-07","decision":"approve","idempotency_key":rights_key})).await.status(), StatusCode::CONFLICT);
     let pilot_key = Uuid::now_v7();
-    assert_eq!(post(&app, &human, &format!("/api/v1/content/reviews/{id}/pilot"), json!({"cohort":"내부 베타 20명","started_at":"2026-07-18T00:00:00Z","ended_at":"2026-07-19T00:00:00Z","participants":20,"completion_rate":0.8,"failure_rate":0.1,"report_count":0,"rollback_ready":true,"decision":"pass","note":"기준 충족","idempotency_key":pilot_key})).await.status(), StatusCode::OK);
-    assert_eq!(post(&app, &human, &format!("/api/v1/content/reviews/{id}/pilot"), json!({"cohort":"변조 코호트","started_at":"2026-07-18T00:00:00Z","ended_at":"2026-07-19T00:00:00Z","participants":20,"completion_rate":0.8,"failure_rate":0.1,"report_count":0,"rollback_ready":true,"decision":"pass","note":"기준 충족","idempotency_key":pilot_key})).await.status(), StatusCode::CONFLICT);
+    assert_eq!(post(&app, &human, &format!("/api/v1/content/reviews/{id}/pilot"), json!({"cohort":"내부 베타 20명","source_reference":"pilot://run-2026-07","started_at":"2026-07-18T00:00:00Z","ended_at":"2026-07-19T00:00:00Z","participants":20,"completion_rate":0.8,"failure_rate":0.1,"report_count":0,"rollback_ready":true,"rollback_evidence":"게시 해제 절차와 담당자 확인","decision":"pass","note":"기준 충족","idempotency_key":pilot_key})).await.status(), StatusCode::OK);
+    assert_eq!(post(&app, &human, &format!("/api/v1/content/reviews/{id}/pilot"), json!({"cohort":"변조 코호트","source_reference":"pilot://run-2026-07","started_at":"2026-07-18T00:00:00Z","ended_at":"2026-07-19T00:00:00Z","participants":20,"completion_rate":0.8,"failure_rate":0.1,"report_count":0,"rollback_ready":true,"rollback_evidence":"게시 해제 절차와 담당자 확인","decision":"pass","note":"기준 충족","idempotency_key":pilot_key})).await.status(), StatusCode::CONFLICT);
     assert_eq!(
         post(
             &app,
@@ -237,28 +360,39 @@ async fn exact_three_reviews_and_separated_human_rights_pilot_gate_publication(p
             .status(),
         StatusCode::OK
     );
-    let unpublish_key = Uuid::now_v7();
+    let publication_evidence: Value = sqlx::query_scalar(
+        "SELECT metadata->'publication_evidence' FROM audit_events WHERE action='content.published' AND target_id=$1",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(publication_evidence["revision"], 1);
+    assert_eq!(publication_evidence["artifact_hash"], hash);
+    assert_eq!(
+        publication_evidence["provenance_id"],
+        provenance_id.to_string()
+    );
+    assert_eq!(
+        publication_evidence["ai_receipt_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert!(publication_evidence["human_receipt_id"].is_string());
+    assert!(publication_evidence["rights_receipt_id"].is_string());
+    assert!(publication_evidence["pilot_receipt_id"].is_string());
     assert_eq!(
         post(
             &app,
             &publisher,
-            &format!("/api/v1/content/reviews/{id}/unpublish"),
-            json!({"reason":"품질 재검토","idempotency_key":unpublish_key})
+            &format!("/api/v1/content/reviews/{id}/removal"),
+            json!({"reason":"권리 제거 요청 접수","idempotency_key":Uuid::now_v7()})
         )
         .await
         .status(),
         StatusCode::OK
-    );
-    assert_eq!(
-        post(
-            &app,
-            &publisher,
-            &format!("/api/v1/content/reviews/{id}/unpublish"),
-            json!({"reason":"다른 해제 사유","idempotency_key":unpublish_key})
-        )
-        .await
-        .status(),
-        StatusCode::CONFLICT
     );
     assert_eq!(
         get(&app, None, &format!("/api/v1/content/public/{id}"))
@@ -266,6 +400,49 @@ async fn exact_three_reviews_and_separated_human_rights_pilot_gate_publication(p
             .status(),
         StatusCode::NOT_FOUND
     );
+    assert_eq!(post(&app,&publisher,&format!("/api/v1/content/reviews/{id}/removal/complete"),json!({"reason":"배포본 제거 완료","evidence":"CDN 및 공개 카탈로그 조회 404 확인","idempotency_key":Uuid::now_v7()})).await.status(),StatusCode::OK);
+    let removal_evidence: Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_events WHERE action='content.removal_completed' AND target_id=$1",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(removal_evidence["reason"], "배포본 제거 완료");
+    assert_eq!(
+        removal_evidence["evidence"],
+        "CDN 및 공개 카탈로그 조회 404 확인"
+    );
+    assert_eq!(removal_evidence["payload_hash"].as_str().unwrap().len(), 64);
+    let (replacement, _) = artifact(&pool, author.user_id, "제거 후 대체 리비전").await;
+    let replaced = post(
+        &app,
+        &author,
+        &format!("/api/v1/content/reviews/{id}/revise"),
+        json!({"artifact_id":replacement,"idempotency_key":Uuid::now_v7()}),
+    )
+    .await;
+    assert_eq!(replaced.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(replaced.into_body(), 16_384).await.unwrap()).unwrap();
+    assert_eq!(body["state"], "ai_review_pending");
+    assert_eq!(body["revision"], 2);
+    let detail_response = get(
+        &app,
+        Some(&author),
+        &format!("/api/v1/content/reviews/{id}"),
+    )
+    .await;
+    let detail: Value =
+        serde_json::from_slice(&to_bytes(detail_response.into_body(), 65_536).await.unwrap())
+            .unwrap();
+    assert_eq!(detail["state"], "ai_review_pending");
+    assert_eq!(detail["revision"], 2);
+    assert!(detail["ai_receipts"].as_array().unwrap().is_empty());
+    assert!(detail["human_receipts"].as_array().unwrap().is_empty());
+    assert!(detail["rights_receipts"].as_array().unwrap().is_empty());
+    assert!(detail["pilot_receipts"].as_array().unwrap().is_empty());
+    assert!(detail["provenance"].is_null());
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -467,6 +644,19 @@ async fn review_endpoints_enforce_csrf_owner_scope_and_atomic_idempotency(pool: 
         .await
         .unwrap();
     assert_eq!(no_csrf.status(), StatusCode::FORBIDDEN);
+    let mut unsafe_receipt = receipt("specification_pedagogy", &hash, &"80".repeat(32), "pass");
+    unsafe_receipt["review_response"]["raw_response"] = json!({"reasoning":"secret chain"});
+    assert_eq!(
+        post(
+            &app,
+            &ai,
+            &format!("/api/v1/content/reviews/{id}/ai-receipts"),
+            unsafe_receipt
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
     let idem = Uuid::now_v7();
     let mut valid = receipt("specification_pedagogy", &hash, &"82".repeat(32), "pass");
     valid["idempotency_key"] = json!(idem);
@@ -492,7 +682,7 @@ async fn review_endpoints_enforce_csrf_owner_scope_and_atomic_idempotency(pool: 
         .status(),
         StatusCode::OK
     );
-    valid["output_hash"] = json!("83".repeat(32));
+    valid["review_response"]["summary"] = json!(format!("변경 결과 {}", "83".repeat(32)));
     assert_eq!(
         post(
             &app,
@@ -512,6 +702,16 @@ async fn review_endpoints_enforce_csrf_owner_scope_and_atomic_idempotency(pool: 
     .await
     .unwrap();
     assert_eq!(count, 1);
+    let detail = get(&app, Some(&ai), &format!("/api/v1/content/reviews/{id}")).await;
+    let detail_body = String::from_utf8(
+        to_bytes(detail.into_body(), 131_072)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(!detail_body.contains("raw_response"));
+    assert!(!detail_body.contains("secret chain"));
     assert_eq!(
         post(
             &app,
