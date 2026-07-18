@@ -13,6 +13,8 @@ function PortalHeader() {
         <a href="/classes">교실</a>
         <a href="/community">커뮤니티</a>
         <a href="/problems">문제 탐색</a>
+        <a href="/governance">게시 검토</a>
+        <a href="/policies">정책·개인정보</a>
       </nav>
     </header>
   );
