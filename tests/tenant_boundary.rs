@@ -94,13 +94,25 @@ async fn instructor_cannot_read_another_organizations_class(pool: PgPool) {
         .clone()
         .oneshot(
             Request::get(format!("/api/v1/classes/{class_b}"))
-                .header(header::COOKIE, instructor_a_cookie)
+                .header(header::COOKIE, &instructor_a_cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(cross_tenant.status(), StatusCode::NOT_FOUND);
+
+    let cross_tenant_dashboard = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/classes/{class_b}/instructor-dashboard"))
+                .header(header::COOKIE, &instructor_a_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cross_tenant_dashboard.status(), StatusCode::NOT_FOUND);
 
     let own_tenant = app
         .oneshot(

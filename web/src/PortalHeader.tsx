@@ -10,6 +10,7 @@ function PortalHeader() {
         <a href="/dashboard">성장</a>
         <a href="/rankings">랭킹</a>
         <a href="/contests">대회</a>
+        <a href="/classes">교실</a>
         <a href="/problems">문제 탐색</a>
       </nav>
     </header>
