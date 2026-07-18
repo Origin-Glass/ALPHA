@@ -280,12 +280,12 @@ async fn owned_workspace_run_understanding_and_portfolio_receipts_are_exact(pool
     assert_eq!(challenge.status(), StatusCode::CREATED);
     let challenge = body(challenge).await;
     let resumed=body(post(&app,&owner,"/api/v1/understanding/challenges",json!({"workspace_id":wid,"kind":"explanation_modification_transfer","idempotency_key":Uuid::now_v7()})).await).await;
-    assert_eq!(resumed["id"],challenge["id"]);
-    assert_eq!(resumed["predictions_committed"],false);
+    assert_eq!(resumed["id"], challenge["id"]);
+    assert_eq!(resumed["predictions_committed"], false);
     assert_eq!(post(&app,&owner,&format!("/api/v1/understanding/challenges/{}/predictions",challenge["id"].as_str().unwrap()),json!({"modification_prediction":"43","transfer_prediction":"44","idempotency_key":Uuid::now_v7()})).await.status(),StatusCode::CREATED);
     let remounted=body(post(&app,&owner,"/api/v1/understanding/challenges",json!({"workspace_id":wid,"kind":"explanation_modification_transfer","idempotency_key":Uuid::now_v7()})).await).await;
-    assert_eq!(remounted["id"],challenge["id"]);
-    assert_eq!(remounted["predictions_committed"],true);
+    assert_eq!(remounted["id"], challenge["id"]);
+    assert_eq!(remounted["predictions_committed"], true);
     let same=body(post(&app,&owner,"/api/v1/workspaces",json!({"title":"같은 템플릿","template_slug":"python-test-v1","project_id":null,"files":files("99"),"idempotency_key":Uuid::now_v7()})).await).await;
     assert_eq!(post(&app,&owner,&format!("/api/v1/workspaces/{}/runs",same["id"].as_str().unwrap()),json!({"idempotency_key":Uuid::now_v7(),"expected_version":1,"validation_kind":"transfer","challenge_id":challenge["id"]})).await.status(),StatusCode::BAD_REQUEST);
     let current: i32 = sqlx::query_scalar("SELECT version FROM project_workspaces WHERE id=$1")
@@ -626,6 +626,132 @@ async fn workspace_lease_cancel_retry_and_stale_completion_are_fenced(pool: PgPo
     assert_eq!(
         sqlx::query_scalar::<_, String>("SELECT status FROM workspace_runs WHERE id=$1")
             .bind(leased_cancel_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "cancelled"
+    );
+
+    let completion_race = body(
+        post(
+            &app,
+            &owner,
+            &uri,
+            json!({"idempotency_key":Uuid::now_v7(),"expected_version":1}),
+        )
+        .await,
+    )
+    .await;
+    let completion_race_id = completion_race["id"]
+        .as_str()
+        .unwrap()
+        .parse::<Uuid>()
+        .unwrap();
+    let completion_lease = alpha::workspaces::lease_next(
+        &pool,
+        "worker-completion-race",
+        DECLARED_IMAGE,
+        EXECUTION_IMAGE,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        alpha::workspaces::mark_running(&pool, completion_race_id, completion_lease.lease_token)
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE workspace_runs SET attempt=3 WHERE id=$1")
+        .bind(completion_race_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        post(
+            &app,
+            &owner,
+            &format!("/api/v1/workspace-runs/{completion_race_id}/cancel"),
+            json!({"idempotency_key":Uuid::now_v7()})
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert!(
+        !alpha::workspaces::complete_or_finish_cancel(
+            &pool,
+            completion_race_id,
+            completion_lease.lease_token,
+            &outcome,
+            b"alpha-local-workspace-receipt-secret-32"
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM workspace_runs WHERE id=$1")
+            .bind(completion_race_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "cancelled"
+    );
+
+    let expired_cancel = body(
+        post(
+            &app,
+            &owner,
+            &uri,
+            json!({"idempotency_key":Uuid::now_v7(),"expected_version":1}),
+        )
+        .await,
+    )
+    .await;
+    let expired_cancel_id = expired_cancel["id"]
+        .as_str()
+        .unwrap()
+        .parse::<Uuid>()
+        .unwrap();
+    let expired_lease = alpha::workspaces::lease_next(
+        &pool,
+        "worker-expired-cancel",
+        DECLARED_IMAGE,
+        EXECUTION_IMAGE,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        alpha::workspaces::mark_running(&pool, expired_cancel_id, expired_lease.lease_token)
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE workspace_runs SET attempt=3,lease_expires_at=now()-interval '1 second' WHERE id=$1").bind(expired_cancel_id).execute(&pool).await.unwrap();
+    assert_eq!(
+        post(
+            &app,
+            &owner,
+            &format!("/api/v1/workspace-runs/{expired_cancel_id}/cancel"),
+            json!({"idempotency_key":Uuid::now_v7()})
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert!(
+        alpha::workspaces::lease_next(
+            &pool,
+            "worker-after-expiry",
+            DECLARED_IMAGE,
+            EXECUTION_IMAGE
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM workspace_runs WHERE id=$1")
+            .bind(expired_cancel_id)
             .fetch_one(&pool)
             .await
             .unwrap(),

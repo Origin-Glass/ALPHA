@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             match outcome {
                 Some(Ok(out)) => {
-                    if !workspaces::complete_run(
+                    if !workspaces::complete_or_finish_cancel(
                         &pool,
                         job.id,
                         job.lease_token,

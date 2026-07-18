@@ -590,7 +590,7 @@ pub async fn lease_next(
     execution_image_digest: &str,
 ) -> Result<Option<LeasedWorkspaceRun>, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    sqlx::query("UPDATE workspace_runs SET status='expired',lease_token=NULL,leased_by=NULL,lease_expires_at=NULL,completed_at=now(),stderr='최대 재시도 횟수를 초과했습니다' WHERE status IN('leased','running') AND lease_expires_at<now() AND attempt>=3").execute(&mut *tx).await?;
+    sqlx::query("UPDATE workspace_runs SET status=CASE WHEN cancel_requested_at IS NOT NULL THEN 'cancelled' ELSE 'expired' END,lease_token=NULL,leased_by=NULL,lease_expires_at=NULL,completed_at=now(),stderr=CASE WHEN cancel_requested_at IS NOT NULL THEN stderr ELSE '최대 재시도 횟수를 초과했습니다' END WHERE status IN('leased','running') AND lease_expires_at<now() AND attempt>=3").execute(&mut *tx).await?;
     let row:Option<(Uuid,String,SqlJson<Value>,SqlJson<Value>)>=sqlx::query_as("WITH candidate AS(SELECT r.id FROM workspace_runs r JOIN project_workspaces w ON(w.id,w.user_id)=(r.workspace_id,r.user_id) WHERE r.image_reference=$2 AND w.status='active' AND w.expires_at>now() AND (r.status='queued' OR(r.status IN('leased','running') AND r.lease_expires_at<now() AND r.attempt<3)) ORDER BY r.created_at FOR UPDATE OF r SKIP LOCKED LIMIT 1) UPDATE workspace_runs r SET status='leased',attempt=attempt+1,lease_token=gen_random_uuid(),leased_by=$1,lease_expires_at=now()+interval '30 seconds',execution_image_digest=$3 FROM candidate WHERE r.id=candidate.id RETURNING r.id,r.image_reference,r.artifact,r.command").bind(worker).bind(declared_image_reference).bind(execution_image_digest).fetch_optional(&mut *tx).await?;
     let Some(row) = row else {
         tx.commit().await?;
@@ -636,6 +636,19 @@ pub async fn complete_run(
     sqlx::query("UPDATE workspace_runs SET status=$3,lease_token=NULL,leased_by=NULL,lease_expires_at=NULL,exit_code=$4,stdout=$5,stderr=$6,output_truncated=$7,stdout_hash=$8,deterministic_checks_passed=$9,runner_receipt_hash=$10,runner_receipt_mac=$11,completed_at=now() WHERE id=$1 AND lease_token=$2").bind(id).bind(token).bind(out.status).bind(out.exit_code).bind(&out.stdout).bind(&out.stderr).bind(out.output_truncated).bind(stdout_hash).bind(passed).bind(receipt).bind(receipt_mac).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(true)
+}
+pub async fn complete_or_finish_cancel(
+    pool: &sqlx::PgPool,
+    id: Uuid,
+    token: Uuid,
+    out: &crate::sandbox::WorkspaceOutcome,
+    receipt_secret: &[u8],
+) -> Result<bool, sqlx::Error> {
+    let completed = complete_run(pool, id, token, out, receipt_secret).await?;
+    if !completed {
+        finish_cancel(pool, id, token).await?;
+    }
+    Ok(completed)
 }
 pub async fn run_cancelled(
     pool: &sqlx::PgPool,
