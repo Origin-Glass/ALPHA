@@ -227,7 +227,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/learning/plans",
-            axum::routing::post(crate::learning_plans::create),
+            get(crate::learning_plans::history).post(crate::learning_plans::create),
+        )
+        .route(
+            "/api/v1/learning/plans/{revision}/restore",
+            axum::routing::post(crate::learning_plans::restore),
         )
         .route(
             "/api/v1/learning/recommendations/{key}/reject",
@@ -235,7 +239,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/projects/ideas",
-            axum::routing::post(crate::projects::create_idea),
+            get(crate::projects::idea_history).post(crate::projects::create_idea),
+        )
+        .route(
+            "/api/v1/projects/ideas/{id}/confirm",
+            axum::routing::post(crate::projects::confirm_idea),
         )
         .route(
             "/api/v1/projects",

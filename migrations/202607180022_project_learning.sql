@@ -16,6 +16,7 @@ CREATE TABLE learning_plan_revisions (
     items jsonb NOT NULL CHECK (jsonb_typeof(items) = 'array' AND jsonb_array_length(items) BETWEEN 1 AND 12),
     provider_used boolean NOT NULL DEFAULT false CHECK (provider_used = false),
     supersedes_id uuid REFERENCES learning_plan_revisions(id) ON DELETE RESTRICT,
+    restored_from_id uuid REFERENCES learning_plan_revisions(id) ON DELETE RESTRICT,
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (user_id, revision),
     UNIQUE (user_id, idempotency_key)
@@ -45,37 +46,71 @@ CREATE TABLE project_ideas (
     technology text NOT NULL CHECK (technology ~ '^[a-z0-9+#.-]{1,32}$'),
     weekly_minutes integer NOT NULL CHECK (weekly_minutes BETWEEN 30 AND 2400),
     assistance_policy text NOT NULL CHECK (assistance_policy IN ('guided_ai','socratic_ai','documentation_navigator','curated_documentation','cheat_sheet_only','independent','transfer_challenge')),
+    skill_level text NOT NULL CHECK (skill_level IN ('beginner','intermediate','advanced')),
+    runtime text NOT NULL CHECK (runtime IN ('browser','cli','server')),
+    infrastructure text NOT NULL CHECK (infrastructure IN ('local_only','container_available')),
     requested_features jsonb NOT NULL CHECK (jsonb_typeof(requested_features) = 'array' AND jsonb_array_length(requested_features) BETWEEN 1 AND 20),
     scoped_features jsonb NOT NULL CHECK (jsonb_typeof(scoped_features) = 'array' AND jsonb_array_length(scoped_features) BETWEEN 1 AND 5),
     milestones jsonb NOT NULL CHECK (jsonb_typeof(milestones) = 'array' AND jsonb_array_length(milestones) BETWEEN 1 AND 3),
+    feasibility_reasons jsonb NOT NULL CHECK (jsonb_typeof(feasibility_reasons) = 'array' AND jsonb_array_length(feasibility_reasons) > 0),
+    excluded_features jsonb NOT NULL CHECK (jsonb_typeof(excluded_features) = 'array'),
     scope_reduced boolean NOT NULL,
     provider_used boolean NOT NULL DEFAULT false CHECK (provider_used = false),
     rule_version text NOT NULL CHECK (rule_version = 'project-learning-v1'),
+    source_kind text NOT NULL DEFAULT 'original' CHECK (source_kind IN ('original','imported')),
+    repository_url text CHECK (repository_url IS NULL OR (char_length(repository_url) BETWEEN 10 AND 500 AND repository_url ~ '^https://')),
+    repository_revision text CHECK (repository_revision IS NULL OR char_length(repository_revision) BETWEEN 7 AND 128),
+    ownership_basis text CHECK (ownership_basis IS NULL OR char_length(ownership_basis) BETWEEN 3 AND 200),
+    license_identifier text CHECK (license_identifier IS NULL OR char_length(license_identifier) BETWEEN 2 AND 120),
     created_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (user_id, idempotency_key)
+    UNIQUE (user_id, idempotency_key),
+    UNIQUE (id, user_id),
+    CHECK (
+        (source_kind = 'original' AND repository_url IS NULL AND repository_revision IS NULL AND ownership_basis IS NULL AND license_identifier IS NULL)
+        OR
+        (source_kind = 'imported' AND repository_url IS NOT NULL AND repository_revision IS NOT NULL AND ownership_basis IS NOT NULL AND license_identifier IS NOT NULL)
+    )
 );
 
 CREATE TABLE learner_projects (
     id uuid PRIMARY KEY,
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    idea_id uuid NOT NULL REFERENCES project_ideas(id) ON DELETE RESTRICT,
+    idea_id uuid NOT NULL,
     idempotency_key uuid NOT NULL,
     status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','completed','archived')),
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (user_id, idea_id),
-    UNIQUE (user_id, idempotency_key)
+    UNIQUE (user_id, idempotency_key),
+    UNIQUE (id, user_id),
+    FOREIGN KEY (idea_id, user_id) REFERENCES project_ideas(id, user_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE project_idea_confirmations (
+    id uuid PRIMARY KEY,
+    idea_id uuid NOT NULL,
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    scoped_features jsonb NOT NULL CHECK (jsonb_typeof(scoped_features)='array' AND jsonb_array_length(scoped_features) BETWEEN 1 AND 5),
+    milestones jsonb NOT NULL CHECK (jsonb_typeof(milestones)='array' AND jsonb_array_length(milestones) BETWEEN 1 AND 3),
+    idempotency_key uuid NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (idea_id, user_id),
+    UNIQUE (user_id, idempotency_key),
+    FOREIGN KEY (idea_id, user_id) REFERENCES project_ideas(id, user_id) ON DELETE RESTRICT
 );
 
 CREATE TABLE project_milestones (
     id uuid PRIMARY KEY,
-    project_id uuid NOT NULL REFERENCES learner_projects(id) ON DELETE CASCADE,
+    project_id uuid NOT NULL,
+    user_id uuid NOT NULL,
     position smallint NOT NULL CHECK (position BETWEEN 1 AND 3),
     title text NOT NULL CHECK (char_length(title) BETWEEN 1 AND 160),
     estimated_minutes integer NOT NULL CHECK (estimated_minutes BETWEEN 30 AND 120),
     visible_result boolean NOT NULL,
     status text NOT NULL DEFAULT 'planned' CHECK (status IN ('planned','active','completed')),
     UNIQUE (project_id, position),
-    CHECK (position <> 1 OR visible_result)
+    UNIQUE (id, user_id),
+    CHECK (position <> 1 OR visible_result),
+    FOREIGN KEY (project_id, user_id) REFERENCES learner_projects(id, user_id) ON DELETE CASCADE
 );
 
 CREATE TABLE project_assistance_states (
@@ -83,6 +118,7 @@ CREATE TABLE project_assistance_states (
     milestone_id uuid NOT NULL REFERENCES project_milestones(id) ON DELETE CASCADE,
     skill text NOT NULL CHECK (skill ~ '^[a-z0-9+#.-]{1,32}$'),
     level smallint NOT NULL CHECK (level BETWEEN 1 AND 7),
+    mode text NOT NULL CHECK (mode IN ('guided_ai','socratic_ai','documentation_navigator','curated_documentation','cheat_sheet_only','independent','transfer_challenge')),
     consecutive_failures smallint NOT NULL DEFAULT 0 CHECK (consecutive_failures BETWEEN 0 AND 100),
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (project_id, milestone_id, skill)
@@ -91,16 +127,22 @@ CREATE TABLE project_assistance_states (
 CREATE TABLE project_learning_events (
     id uuid PRIMARY KEY,
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    project_id uuid REFERENCES learner_projects(id) ON DELETE CASCADE,
-    milestone_id uuid REFERENCES project_milestones(id) ON DELETE CASCADE,
+    project_id uuid,
+    milestone_id uuid,
     event_kind text NOT NULL CHECK (event_kind IN ('project_created','assistance_evidence','assistance_requested')),
     skill text CHECK (skill IS NULL OR skill ~ '^[a-z0-9+#.-]{1,32}$'),
     successful boolean,
     previous_level smallint CHECK (previous_level BETWEEN 1 AND 7),
     resulting_level smallint CHECK (resulting_level BETWEEN 1 AND 7),
     idempotency_key uuid,
+    source_attempt_id uuid REFERENCES activity_attempts(id) ON DELETE RESTRICT,
     metadata jsonb NOT NULL DEFAULT '{}',
     created_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (user_id, idempotency_key)
+    UNIQUE (user_id, idempotency_key),
+    FOREIGN KEY (project_id, user_id) REFERENCES learner_projects(id, user_id) ON DELETE CASCADE,
+    FOREIGN KEY (milestone_id, user_id) REFERENCES project_milestones(id, user_id) ON DELETE CASCADE
 );
 
+CREATE UNIQUE INDEX project_learning_events_mastery_attempt_once
+ON project_learning_events (source_attempt_id)
+WHERE source_attempt_id IS NOT NULL;

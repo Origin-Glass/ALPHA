@@ -94,6 +94,7 @@ pub struct PlanResponse {
     items: SqlJson<Value>,
     plan_hash: String,
     provider_used: bool,
+    restored_from_id: Option<Uuid>,
 }
 
 #[derive(FromRow)]
@@ -109,6 +110,23 @@ struct PlanRow {
     reason_codes: SqlJson<Value>,
     items: SqlJson<Value>,
     plan_hash: Vec<u8>,
+    provider_used: bool,
+    restored_from_id: Option<Uuid>,
+}
+#[derive(FromRow)]
+struct RestoreRow {
+    id: Uuid,
+    rule_version: String,
+    input: Value,
+    input_hash: Vec<u8>,
+    plan_hash: Vec<u8>,
+    target_outcome: String,
+    weekly_minutes: i32,
+    preferred_language: String,
+    path_mode: String,
+    recommendation_key: String,
+    reason_codes: SqlJson<Value>,
+    items: SqlJson<Value>,
     provider_used: bool,
 }
 impl From<PlanRow> for PlanResponse {
@@ -126,6 +144,7 @@ impl From<PlanRow> for PlanResponse {
             items: r.items,
             plan_hash: hex(&r.plan_hash),
             provider_used: r.provider_used,
+            restored_from_id: r.restored_from_id,
         }
     }
 }
@@ -278,8 +297,80 @@ async fn fetch_by_key(
     user: Uuid,
     key: Uuid,
 ) -> Result<Option<PlanRow>, sqlx::Error> {
-    sqlx::query_as("SELECT id,revision,rule_version,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,plan_hash,provider_used FROM learning_plan_revisions WHERE user_id=$1 AND idempotency_key=$2")
+    sqlx::query_as("SELECT id,revision,rule_version,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,plan_hash,provider_used,restored_from_id FROM learning_plan_revisions WHERE user_id=$1 AND idempotency_key=$2")
         .bind(user).bind(key).fetch_optional(&mut **tx).await
+}
+
+pub async fn history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, LearningPlanError> {
+    let user = crate::auth::authenticated_user_id(&state, &headers).await?;
+    let rows:Vec<PlanRow>=sqlx::query_as("SELECT id,revision,rule_version,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,plan_hash,provider_used,restored_from_id FROM learning_plan_revisions WHERE user_id=$1 ORDER BY revision DESC")
+        .bind(user).fetch_all(state.pool()).await?;
+    Ok(Json(
+        json!({"revisions":rows.into_iter().map(PlanResponse::from).collect::<Vec<_>>()}),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreRequest {
+    idempotency_key: Uuid,
+}
+pub async fn restore(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(revision): Path<i32>,
+    Json(request): Json<RestoreRequest>,
+) -> Result<(StatusCode, Json<PlanResponse>), LearningPlanError> {
+    let user = crate::auth::authenticated_user_id_with_csrf(&state, &headers).await?;
+    if revision < 1 {
+        return Err(LearningPlanError::Invalid(
+            "복원할 계획 리비전을 확인해 주세요",
+        ));
+    }
+    let mut tx = state.pool().begin().await?;
+    sqlx::query("SELECT id FROM users WHERE id=$1 FOR UPDATE")
+        .bind(user)
+        .fetch_one(&mut *tx)
+        .await?;
+    if let Some(row) = fetch_by_key(&mut tx, user, request.idempotency_key).await? {
+        let source: Option<i32> = sqlx::query_scalar(
+            "SELECT revision FROM learning_plan_revisions WHERE id=$1 AND user_id=$2",
+        )
+        .bind(row.restored_from_id)
+        .bind(user)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if source != Some(revision) {
+            return Err(LearningPlanError::Conflict);
+        }
+        tx.commit().await?;
+        return Ok((StatusCode::OK, Json(row.into())));
+    }
+    let source:RestoreRow=sqlx::query_as("SELECT id,rule_version,input,input_hash,plan_hash,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,provider_used FROM learning_plan_revisions WHERE user_id=$1 AND revision=$2")
+        .bind(user).bind(revision).fetch_optional(&mut *tx).await?.ok_or(LearningPlanError::NotFound)?;
+    let latest: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM learning_plan_revisions WHERE user_id=$1 ORDER BY revision DESC LIMIT 1",
+    )
+    .bind(user)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let next: i32 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(revision),0)+1 FROM learning_plan_revisions WHERE user_id=$1",
+    )
+    .bind(user)
+    .fetch_one(&mut *tx)
+    .await?;
+    let id = Uuid::now_v7();
+    sqlx::query("INSERT INTO learning_plan_revisions (id,user_id,revision,rule_version,idempotency_key,input,input_hash,plan_hash,target_outcome,weekly_minutes,preferred_language,path_mode,recommendation_key,reason_codes,items,provider_used,supersedes_id,restored_from_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)")
+        .bind(id).bind(user).bind(next).bind(source.rule_version).bind(request.idempotency_key).bind(source.input).bind(source.input_hash).bind(source.plan_hash).bind(source.target_outcome).bind(source.weekly_minutes).bind(source.preferred_language).bind(source.path_mode).bind(source.recommendation_key).bind(source.reason_codes).bind(source.items).bind(source.provider_used).bind(latest).bind(source.id).execute(&mut *tx).await?;
+    let row = fetch_by_key(&mut tx, user, request.idempotency_key)
+        .await?
+        .ok_or(LearningPlanError::NotFound)?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(row.into())))
 }
 
 #[derive(Deserialize)]
@@ -304,11 +395,27 @@ pub async fn reject(
     {
         return Err(LearningPlanError::Invalid("추천 거부 사유를 확인해 주세요"));
     }
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM learning_plan_revisions WHERE user_id=$1 AND recommendation_key=$2)").bind(user).bind(&key).fetch_one(state.pool()).await?;
+    let mut tx = state.pool().begin().await?;
+    sqlx::query("SELECT id FROM users WHERE id=$1 FOR UPDATE")
+        .bind(user)
+        .fetch_one(&mut *tx)
+        .await?;
+    if let Some((saved_key,saved_reason))=sqlx::query_as::<_,(String,String)>("SELECT recommendation_key,reason FROM learning_recommendation_rejections WHERE user_id=$1 AND idempotency_key=$2").bind(user).bind(request.idempotency_key).fetch_optional(&mut *tx).await?{
+        if saved_key!=key||saved_reason!=request.reason.trim(){return Err(LearningPlanError::Conflict);}
+        tx.commit().await?;return Ok(Json(json!({"recommendation_key":key,"rejected":true,"already_rejected":true})));
+    }
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM learning_plan_revisions WHERE user_id=$1 AND recommendation_key=$2)").bind(user).bind(&key).fetch_one(&mut *tx).await?;
     if !exists {
         return Err(LearningPlanError::NotFound);
     }
-    sqlx::query("INSERT INTO learning_recommendation_rejections (id,user_id,recommendation_key,reason,idempotency_key) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (user_id,recommendation_key) DO NOTHING")
-        .bind(Uuid::now_v7()).bind(user).bind(&key).bind(request.reason.trim()).bind(request.idempotency_key).execute(state.pool()).await?;
-    Ok(Json(json!({"recommendation_key":key,"rejected":true})))
+    let prior:Option<String>=sqlx::query_scalar("SELECT reason FROM learning_recommendation_rejections WHERE user_id=$1 AND recommendation_key=$2").bind(user).bind(&key).fetch_optional(&mut *tx).await?;
+    if prior.is_some() {
+        return Err(LearningPlanError::Conflict);
+    }
+    sqlx::query("INSERT INTO learning_recommendation_rejections (id,user_id,recommendation_key,reason,idempotency_key) VALUES ($1,$2,$3,$4,$5)")
+        .bind(Uuid::now_v7()).bind(user).bind(&key).bind(request.reason.trim()).bind(request.idempotency_key).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Json(
+        json!({"recommendation_key":key,"rejected":true,"already_rejected":false}),
+    ))
 }
