@@ -40,9 +40,9 @@ case "$dataset" in
   project_workspace_hashes)
     query="SELECT jsonb_build_object(
       'project_inputs', COALESCE((SELECT jsonb_agg(jsonb_build_object('id', id, 'revision', revision, 'input_hash', encode(input_hash, 'hex')) ORDER BY id, revision) FROM project_ideas), '[]'::jsonb),
-      'workspaces', COALESCE((SELECT jsonb_agg(jsonb_build_object('id', id, 'version', version, 'request_hash', encode(request_hash, 'hex'), 'template_digest', encode(template_digest, 'hex')) ORDER BY id) FROM project_workspaces), '[]'::jsonb),
-      'revisions', COALESCE((SELECT jsonb_agg(jsonb_build_object('workspace_id', workspace_id, 'version', version, 'artifact_hash', encode(artifact_hash, 'hex')) ORDER BY workspace_id, version) FROM workspace_revisions), '[]'::jsonb),
-      'files', COALESCE((SELECT jsonb_agg(jsonb_build_object('workspace_id', workspace_id, 'path', path, 'content_hash', encode(content_hash, 'hex')) ORDER BY workspace_id, path) FROM workspace_files), '[]'::jsonb)
+      'workspaces', COALESCE((SELECT jsonb_agg(jsonb_build_object('id', id, 'user_id', user_id, 'project_id', project_id, 'template_id', template_id, 'template_revision', template_revision, 'version', version, 'request_hash', encode(request_hash, 'hex'), 'template_digest', encode(template_digest, 'hex')) ORDER BY id) FROM project_workspaces), '[]'::jsonb),
+      'revisions', COALESCE((SELECT jsonb_agg(jsonb_build_object('workspace_id', workspace_id, 'user_id', user_id, 'version', version, 'artifact_hash', encode(artifact_hash, 'hex')) ORDER BY workspace_id, version) FROM workspace_revisions), '[]'::jsonb),
+      'files', COALESCE((SELECT jsonb_agg(jsonb_build_object('workspace_id', workspace_id, 'user_id', user_id, 'path', path, 'path_key', path_key, 'content_hash', encode(content_hash, 'hex')) ORDER BY workspace_id, path) FROM workspace_files), '[]'::jsonb)
     )"
     ;;
   *)

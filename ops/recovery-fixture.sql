@@ -123,3 +123,39 @@ SELECT '60000000-0000-7000-8000-000000000020',id,1,
        false,'60000000-0000-7000-8000-000000000022','{"fixture":"recovery-v1"}',
        decode(repeat('f1',32),'hex'),'project-learning-v1','2026-07-19 00:00:11+00'
 FROM users ORDER BY id LIMIT 1;
+
+INSERT INTO policy_versions (version,title_ko,body_ko,required,published_at)
+VALUES ('recovery-fixture-v1','복구 검증 정책',
+        repeat('복구 검증용 고정 정책 본문입니다. 백업과 복원 과정에서 동의 내용과 버전이 정확히 보존되는지 확인합니다. ',4),
+        true,'2026-07-19 00:00:12+00');
+
+INSERT INTO policy_consents
+  (user_id,policy_version,policy_title_ko,policy_body_ko,choices,consented_at)
+SELECT id,'recovery-fixture-v1','복구 검증 정책',
+       repeat('복구 검증용 고정 정책 본문입니다. 백업과 복원 과정에서 동의 내용과 버전이 정확히 보존되는지 확인합니다. ',4),
+       '{"terms":true,"privacy":true,"fixture":"recovery-v1"}',
+       '2026-07-19 00:00:13+00'
+FROM users ORDER BY id LIMIT 1;
+
+INSERT INTO project_workspaces
+  (id,user_id,project_id,template_id,template_revision,template_digest,title,version,
+   request_hash,idempotency_key,status,expires_at,created_at,updated_at)
+SELECT '60000000-0000-7000-8000-000000000030',id,NULL,
+       '23000000-0000-7000-8000-000000000004',1,decode(repeat('44',32),'hex'),
+       'Recovery fixture workspace',1,decode(repeat('a1',32),'hex'),
+       '60000000-0000-7000-8000-000000000031','active','2026-07-26 00:00:00+00',
+       '2026-07-19 00:00:14+00','2026-07-19 00:00:14+00'
+FROM users ORDER BY id LIMIT 1;
+
+INSERT INTO workspace_revisions
+  (workspace_id,user_id,version,artifact,artifact_hash,created_at)
+SELECT '60000000-0000-7000-8000-000000000030',id,1,
+       '[{"path":"main.py","content":"print(42)\\n"}]',decode(repeat('b2',32),'hex'),
+       '2026-07-19 00:00:15+00'
+FROM users ORDER BY id LIMIT 1;
+
+INSERT INTO workspace_files
+  (workspace_id,user_id,path,path_key,content,content_hash,updated_at)
+SELECT '60000000-0000-7000-8000-000000000030',id,'main.py','main.py','print(42)\n',
+       decode(repeat('c3',32),'hex'),'2026-07-19 00:00:16+00'
+FROM users ORDER BY id LIMIT 1;

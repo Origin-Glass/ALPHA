@@ -22,8 +22,19 @@ jq -e '
   any(.pilot[]; .id == "60000000-0000-7000-8000-00000000000a" and .decision == "pass" and .participants == 5)
 ' "$work_dir/review_receipts.json" >/dev/null
 
-jq -e '(.versions | length > 0) and (.consents | length > 0)' "$work_dir/policy_consents.json" >/dev/null
 jq -e '
+  any(.versions[]; .version == "recovery-fixture-v1" and .title_ko == "복구 검증 정책" and .required == true) and
+  any(.consents[]; .policy_version == "recovery-fixture-v1" and .policy_title_ko == "복구 검증 정책" and
+      .choices.terms == true and .choices.privacy == true and .choices.fixture == "recovery-v1")
+' "$work_dir/policy_consents.json" >/dev/null
+jq -e '. as $root |
   any(.project_inputs[]; .id == "60000000-0000-7000-8000-000000000020" and .revision == 1 and .input_hash == ("f1" * 32)) and
-  (.workspaces | length > 0) and (.revisions | length > 0) and (.files | length > 0)
+  any(.workspaces[]; .id == "60000000-0000-7000-8000-000000000030" and .project_id == null and
+      .template_id == "23000000-0000-7000-8000-000000000004" and .template_revision == 1 and .version == 1 and
+      .request_hash == ("a1" * 32) and .template_digest == ("44" * 32)) and
+  any(.revisions[]; .workspace_id == "60000000-0000-7000-8000-000000000030" and .version == 1 and
+      .artifact_hash == ("b2" * 32) and .user_id == ($root.workspaces[] | select(.id == "60000000-0000-7000-8000-000000000030") | .user_id)) and
+  any(.files[]; .workspace_id == "60000000-0000-7000-8000-000000000030" and .path == "main.py" and
+      .path_key == "main.py" and .content_hash == ("c3" * 32) and
+      .user_id == ($root.workspaces[] | select(.id == "60000000-0000-7000-8000-000000000030") | .user_id))
 ' "$work_dir/project_workspace_hashes.json" >/dev/null

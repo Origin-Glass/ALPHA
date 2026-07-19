@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 if [ "$#" -ne 2 ]; then
   printf '%s\n' "사용법: $0 OUTPUT_DIRECTORY SOURCE_DATABASE" >&2

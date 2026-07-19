@@ -167,6 +167,13 @@ async fn stalled_project(pool: &PgPool, user_id: Uuid) -> Uuid {
         .execute(pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO project_learning_events (id,user_id,project_id,event_kind,created_at) VALUES ($1,$2,$3,'project_created',now()-interval '7 days 1 hour')")
+        .bind(Uuid::now_v7())
+        .bind(user_id)
+        .bind(project_id)
+        .execute(pool)
+        .await
+        .unwrap();
     project_id
 }
 
@@ -283,10 +290,18 @@ async fn admin_operations_identifies_expired_provider_job_without_exposing_confi
         payload["learning"]["action_items"][0]["resource_id"],
         project_id.to_string()
     );
+    let learning_age = payload["learning"]["action_items"][0]["age_seconds"]
+        .as_i64()
+        .unwrap();
+    assert!((7 * 86_400 + 3_590..=7 * 86_400 + 3_700).contains(&learning_age));
     assert_eq!(
         payload["workspaces"]["action_items"][0]["resource_id"],
         workspace_run_id.to_string()
     );
+    let workspace_age = payload["workspaces"]["action_items"][0]["age_seconds"]
+        .as_i64()
+        .unwrap();
+    assert!((50..=120).contains(&workspace_age));
     assert!(!body.contains("secret-provider.example"));
     assert!(!body.contains("secret-model"));
     assert!(!body.contains("must-never-leak"));

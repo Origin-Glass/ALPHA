@@ -42,7 +42,7 @@ backup_file=$(./ops/backup.sh /srv/alpha/backups "$source_database")
 printf '%s\n' "$backup_file"
 ```
 
-먼저 API와 모든 writer를 중지하고 실제 `DATABASE_URL`의 database 이름을 `source_database`에 명시합니다. `backup.sh`는 dump 전 canonical digest, custom dump, dump 후 canonical digest 순으로 수행하며 원본 digest가 달라지면 staging 결과를 삭제하고 실패합니다. 성공 시 dump `.sha256`, backup-time four-dataset `.semantic.json`, manifest `.sha256`을 dump와 같은 filesystem에서 원자적으로 게시합니다. 네 파일을 한 세트로 이동·보관합니다. 성공 로그와 source database, 보관 위치, 실행 시각, 운영자를 변경 기록에 남깁니다.
+먼저 API와 모든 writer를 중지하고 실제 `DATABASE_URL`의 database 이름을 `source_database`에 명시합니다. 백업 대상 디렉터리는 운영 백업 계정이 소유하고 다른 계정이 쓸 수 없어야 합니다. `backup.sh`는 `umask 077`로 dump와 부속 파일을 소유자 전용으로 만들고, dump 전 canonical digest, custom dump, dump 후 canonical digest 순으로 수행하며 원본 digest가 달라지면 staging 결과를 삭제하고 실패합니다. 성공 시 dump `.sha256`, backup-time four-dataset `.semantic.json`, manifest `.sha256`을 dump와 같은 filesystem에서 원자적으로 게시합니다. 네 파일을 한 세트로 이동·보관합니다. 성공 로그와 source database, 보관 위치, 실행 시각, 운영자를 변경 기록에 남깁니다.
 
 ## 복구 훈련과 전환
 

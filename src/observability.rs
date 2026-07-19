@@ -264,7 +264,9 @@ async fn operational_action_items(pool: &PgPool) -> Result<Vec<OperationalAction
         ), learning AS (
           SELECT 'learning'::text category, project.id::text resource_id, project.status state,
                  'no_learning_event_7d'::text reason,
-                 greatest(0,extract(epoch FROM now()-project.created_at)::bigint) age_seconds
+                 greatest(0,extract(epoch FROM now()-coalesce(
+                   (SELECT max(event.created_at) FROM project_learning_events event WHERE event.project_id=project.id),
+                   project.created_at))::bigint) age_seconds
           FROM learner_projects project
           WHERE project.status='active' AND project.created_at<now()-interval '7 days'
             AND NOT EXISTS (SELECT 1 FROM project_learning_events event
@@ -273,7 +275,8 @@ async fn operational_action_items(pool: &PgPool) -> Result<Vec<OperationalAction
         ), workspaces AS (
           SELECT 'workspaces'::text category, id::text resource_id, status state,
                  CASE WHEN status IN ('leased','running') THEN 'expired_lease' ELSE 'workspace_failed' END reason,
-                 greatest(0,extract(epoch FROM now()-created_at)::bigint) age_seconds
+                 greatest(0,extract(epoch FROM now()-CASE WHEN status IN ('leased','running')
+                   THEN lease_expires_at ELSE coalesce(completed_at,created_at) END)::bigint) age_seconds
           FROM workspace_runs
           WHERE (status IN ('leased','running') AND lease_expires_at<=now()) OR status='failed'
           ORDER BY created_at LIMIT $1
