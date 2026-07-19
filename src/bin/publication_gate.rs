@@ -10,22 +10,22 @@ async fn main() -> ExitCode {
         eprintln!("publication gate could not connect to database");
         return ExitCode::from(2);
     };
-    let violations = match alpha::observability::publication_violations(&pool).await {
-        Ok(violations) => violations,
+    let status = match alpha::observability::publication_gate_status(&pool).await {
+        Ok(status) => status,
         Err(_) => {
             eprintln!("publication gate could not verify rights state");
             return ExitCode::from(2);
         }
     };
-    if violations.is_empty() {
+    if status.blocker_count == 0 {
         println!("publication rights gate passed");
         return ExitCode::SUCCESS;
     }
-    for violation in violations {
-        eprintln!(
-            "{} {}: {}",
-            violation.resource_kind, violation.resource_id, violation.reason
-        );
+    for blocker in status.blockers {
+        eprintln!("content_review {}: {}", blocker.resource_id, blocker.reason);
+    }
+    if status.blocker_count > 20 {
+        eprintln!("{} additional blockers omitted", status.blocker_count - 20);
     }
     ExitCode::FAILURE
 }

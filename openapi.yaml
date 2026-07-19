@@ -934,7 +934,16 @@ paths:
   /api/v1/admin/operations:
     get:
       operationId: adminOperations
-      responses: *ok
+      responses:
+        "200":
+          description: 비밀이 제거된 고정 상한 운영 진단
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OperationalSnapshot" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
   /api/v1/admin/audit:
     get:
       operationId: adminAuditLog
@@ -1393,6 +1402,78 @@ components:
               idempotency_key: { type: string, format: uuid }
 
   schemas:
+    OperationalActionItem:
+      type: object
+      additionalProperties: false
+      required: [resource_id, state, reason, age_seconds]
+      properties:
+        resource_id: { type: string, format: uuid }
+        state: { type: string }
+        reason:
+          type: string
+          enum: [provider_disabled, provider_unhealthy, provider_unverified, expired_lease, missing_credential, generation_failed, ai_review_pending, human_review_pending, rights_review_pending, pilot_pending, removal_pending, rights_not_approved, missing_provenance, missing_rights_approval, commercial_use_denied, redistribution_denied, stale_revision_evidence, no_learning_event_7d, workspace_failed]
+        age_seconds: { type: integer, format: int64, minimum: 0 }
+    OperationalSnapshot:
+      type: object
+      additionalProperties: false
+      required: [providers, generation_jobs, reviews, rights, learning, workspaces]
+      properties:
+        providers:
+          type: object
+          additionalProperties: false
+          required: [unhealthy, unverified, disabled, action_items]
+          properties:
+            unhealthy: { type: integer, format: int64, minimum: 0 }
+            unverified: { type: integer, format: int64, minimum: 0 }
+            disabled: { type: integer, format: int64, minimum: 0 }
+            action_items: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/OperationalActionItem" } }
+        generation_jobs:
+          type: object
+          additionalProperties: false
+          required: [queued, running, expired_leases, failed, blocked, action_items]
+          properties:
+            queued: { type: integer, format: int64, minimum: 0 }
+            running: { type: integer, format: int64, minimum: 0 }
+            expired_leases: { type: integer, format: int64, minimum: 0 }
+            failed: { type: integer, format: int64, minimum: 0 }
+            blocked: { type: integer, format: int64, minimum: 0 }
+            action_items: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/OperationalActionItem" } }
+        reviews:
+          type: object
+          additionalProperties: false
+          required: [ai_pending, human_pending, rights_pending, pilot_pending, removal_pending, action_items]
+          properties:
+            ai_pending: { type: integer, format: int64, minimum: 0 }
+            human_pending: { type: integer, format: int64, minimum: 0 }
+            rights_pending: { type: integer, format: int64, minimum: 0 }
+            pilot_pending: { type: integer, format: int64, minimum: 0 }
+            removal_pending: { type: integer, format: int64, minimum: 0 }
+            action_items: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/OperationalActionItem" } }
+        rights:
+          type: object
+          additionalProperties: false
+          required: [publication_blockers, action_items]
+          properties:
+            publication_blockers: { type: integer, format: int64, minimum: 0 }
+            action_items: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/OperationalActionItem" } }
+        learning:
+          type: object
+          additionalProperties: false
+          required: [active_projects, stalled_projects, action_items]
+          properties:
+            active_projects: { type: integer, format: int64, minimum: 0 }
+            stalled_projects: { type: integer, format: int64, minimum: 0 }
+            action_items: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/OperationalActionItem" } }
+        workspaces:
+          type: object
+          additionalProperties: false
+          required: [queued, running, expired_leases, failed, action_items]
+          properties:
+            queued: { type: integer, format: int64, minimum: 0 }
+            running: { type: integer, format: int64, minimum: 0 }
+            expired_leases: { type: integer, format: int64, minimum: 0 }
+            failed: { type: integer, format: int64, minimum: 0 }
+            action_items: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/OperationalActionItem" } }
     LearningPlanRequest:
       type: object
       additionalProperties: false
