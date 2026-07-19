@@ -60,17 +60,24 @@ const operationReason: Record<string, string> = {
   missing_provenance: "출처 근거 없음", missing_rights_approval: "권리 승인 없음", commercial_use_denied: "상업 이용 불허",
   redistribution_denied: "재배포 불허", stale_revision_evidence: "리비전 근거 만료", no_learning_event_7d: "7일간 학습 기록 없음", workspace_failed: "작업공간 실패",
 };
+const operationState: Record<string, string> = {
+  disabled: "비활성", unhealthy: "응답 이상", unverified: "검증 필요", queued: "대기", leased: "실행 중",
+  running: "실행 중", failed: "실패", blocked_disabled: "제공자 비활성으로 차단", blocked_missing_credential: "자격 증명 없어 차단",
+  ai_review_pending: "AI 검토 대기", human_review_pending: "사람 검토 대기", rights_review_pending: "권리 검토 대기",
+  pilot_pending: "파일럿 검토 대기", removal_pending: "제거 대기", approved: "승인", published: "게시 중",
+  unpublished: "게시 해제", active: "진행 중",
+};
 const elapsed = (seconds: number) => seconds >= 3600
   ? `${Math.floor(seconds / 3600)}시간${seconds % 3600 >= 60 ? ` ${Math.floor(seconds % 3600 / 60)}분` : ""} 경과`
   : seconds >= 60 ? `${Math.floor(seconds / 60)}분 경과` : "1분 미만 경과";
 
-function OperationSection({ title, metrics, actionLabel, actionHref, items }: {
-  title: string; metrics: Array<[string, number]>; actionLabel: string; actionHref: string; items: OperationalAction[];
+function OperationSection({ id, title, metrics, actionLabel, actionHref, items }: {
+  id: string; title: string; metrics: Array<[string, number]>; actionLabel: string; actionHref: string; items: OperationalAction[];
 }) {
-  return <section className="operation-section" aria-labelledby={`operations-${title}`}>
-    <div className="operation-section-heading"><h3 id={`operations-${title}`}>{title}</h3><a href={actionHref}>{actionLabel}</a></div>
+  return <section className="operation-section" aria-labelledby={`operations-${id}`}>
+    <div className="operation-section-heading"><h3 id={`operations-${id}`}>{title}</h3><a href={actionHref}>{actionLabel}</a></div>
     <dl className="operation-metrics">{metrics.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}건</dd></div>)}</dl>
-    {items.length ? <ul className="operation-items">{items.map((item, index) => <li key={`${item.resource_id}-${item.reason}`} aria-label={`${title} 조치 ${index + 1}: ${operationReason[item.reason] ?? item.reason}, ${elapsed(item.age_seconds)}`}><strong>{operationReason[item.reason] ?? item.reason}</strong><span>{item.state} · {elapsed(item.age_seconds)}</span></li>)}</ul> : <p className="dashboard-empty">조치할 운영 항목이 없습니다.</p>}
+    {items.length ? <ul className="operation-items">{items.map((item, index) => <li key={`${item.resource_id}-${item.reason}`} aria-label={`${title} 조치 ${index + 1}: ${operationReason[item.reason] ?? "알 수 없는 운영 사유"}, ${elapsed(item.age_seconds)}`}><strong>{operationReason[item.reason] ?? "알 수 없는 운영 사유"}</strong><span>{operationState[item.state] ?? "상태 확인 필요"} · {elapsed(item.age_seconds)}</span></li>)}</ul> : <p className="dashboard-empty">조치할 운영 항목이 없습니다.</p>}
   </section>;
 }
 
@@ -111,28 +118,30 @@ function AdminPage() {
   const [noticeBody, setNoticeBody] = useState("");
   const [noticePinned, setNoticePinned] = useState(false);
 
-  const loadOperations = async (roles: string[]) => {
+  const loadRoleData = async (roles: string[]) => {
+    const requests: Promise<void>[] = [];
     if (roles.some((role) => ["MODERATOR", "ADMIN"].includes(role))) {
-      const reportPayload = await jsonRequest("/api/v1/admin/community/reports");
-      setReports(reportPayload.items);
+      requests.push(jsonRequest("/api/v1/admin/community/reports").then((payload) => setReports(payload.items)));
     }
     if (roles.includes("ADMIN")) {
-      setOperationsLoading(true);
-      setOperationsError("");
-      try {
-      const [workerPayload, auditPayload, operationsPayload] = await Promise.all([
-        jsonRequest("/api/v1/admin/judge/workers"),
-        jsonRequest("/api/v1/admin/audit?limit=30"),
-        jsonRequest("/api/v1/admin/operations"),
-      ]);
-      setWorkers(workerPayload.items);
-      setAudits(auditPayload.items);
-      setOperations(operationsPayload);
-      } catch (error) {
-        setOperationsError(error instanceof Error ? error.message : "운영 진단을 불러오지 못했습니다.");
-      } finally {
-        setOperationsLoading(false);
-      }
+      requests.push(jsonRequest("/api/v1/admin/judge/workers").then((payload) => setWorkers(payload.items)));
+      requests.push(jsonRequest("/api/v1/admin/audit?limit=30").then((payload) => setAudits(payload.items)));
+    }
+    const failed = (await Promise.allSettled(requests)).find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") {
+      setMessage(failed.reason instanceof Error ? failed.reason.message : "운영 정보를 불러오지 못했습니다.");
+    }
+  };
+  const loadOperations = async () => {
+    setOperations(null);
+    setOperationsLoading(true);
+    setOperationsError("");
+    try {
+      setOperations(await jsonRequest("/api/v1/admin/operations"));
+    } catch (error) {
+      setOperationsError(error instanceof Error ? error.message : "운영 진단을 불러오지 못했습니다.");
+    } finally {
+      setOperationsLoading(false);
     }
   };
   useEffect(() => {
@@ -148,9 +157,8 @@ function AdminPage() {
       .then((user: Viewer | null) => {
         if (!user) return;
         setViewer(user);
-        loadOperations(user.roles).catch((error) =>
-          setMessage(error instanceof Error ? error.message : "운영 정보를 불러오지 못했습니다."),
-        );
+        void loadRoleData(user.roles);
+        if (user.roles.includes("ADMIN")) void loadOperations();
       })
       .catch((error) => setMessage(error instanceof Error ? error.message : "운영 정보를 불러오지 못했습니다."));
   }, []);
@@ -195,7 +203,7 @@ function AdminPage() {
         },
       );
       setMessage(`문제 리비전 ${payload.version}을 저장했습니다.`);
-      if (isAdmin) loadOperations(viewer?.roles ?? []);
+      if (isAdmin) void loadOperations();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "문제를 저장하지 못했습니다.");
     }
@@ -211,7 +219,7 @@ function AdminPage() {
       setNoticeTitle("");
       setNoticeBody("");
       setMessage("공지를 게시하고 감사 기록을 남겼습니다.");
-      loadOperations(viewer?.roles ?? []);
+      void loadRoleData(viewer?.roles ?? []);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "공지를 게시하지 못했습니다.");
     }
@@ -229,7 +237,7 @@ function AdminPage() {
       );
       setMessage(`재채점 ${payload.submission_count}건을 큐에 등록하고 감사 기록을 남겼습니다.`);
       setRejudgeReason("");
-      if (isAdmin) loadOperations(viewer?.roles ?? []);
+      if (isAdmin) void loadOperations();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "재채점을 요청하지 못했습니다.");
     }
@@ -247,7 +255,7 @@ function AdminPage() {
       });
       setResolutionNote("");
       setMessage(action === "hide" ? "콘텐츠를 숨기고 기록했습니다." : "신고를 기각하고 기록했습니다.");
-      loadOperations(viewer?.roles ?? []);
+      void loadRoleData(viewer?.roles ?? []);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "신고를 처리하지 못했습니다.");
     }
@@ -321,16 +329,16 @@ function AdminPage() {
         {isAdmin && (
           <>
             <section className="admin-section operations-panel" aria-labelledby="operations-title">
-              <div className="admin-section-heading"><div><p className="eyebrow">운영 진단</p><h2 id="operations-title">운영 현황</h2><p>항목 식별자와 비밀값 없이, 조치가 필요한 상태만 표시합니다.</p></div><button type="button" onClick={() => loadOperations(viewer?.roles ?? [])} disabled={operationsLoading}>운영 현황 다시 불러오기</button></div>
+              <div className="admin-section-heading"><div><p className="eyebrow">운영 진단</p><h2 id="operations-title">운영 현황</h2><p>항목 식별자와 비밀값 없이, 조치가 필요한 상태만 표시합니다.</p></div><button type="button" onClick={() => void loadOperations()} disabled={operationsLoading}>운영 현황 다시 불러오기</button></div>
               {operationsLoading && <p role="status">운영 현황을 불러오는 중입니다.</p>}
               {operationsError && <p role="alert" className="admin-message">{operationsError}</p>}
               {operations && !operationsLoading && <div className="operations-grid">
-                <OperationSection title="AI 제공자" actionLabel="제공자 관리" actionHref="/provider-controls" metrics={[["응답 이상", operations.providers.unhealthy], ["검증 필요", operations.providers.unverified], ["비활성", operations.providers.disabled]]} items={operations.providers.action_items} />
-                <OperationSection title="생성 작업" actionLabel="생성 작업 확인" actionHref="/content-studio" metrics={[["대기", operations.generation_jobs.queued], ["실행", operations.generation_jobs.running], ["임대 만료", operations.generation_jobs.expired_leases], ["실패", operations.generation_jobs.failed], ["차단", operations.generation_jobs.blocked]]} items={operations.generation_jobs.action_items} />
-                <OperationSection title="콘텐츠 검토" actionLabel="검토 대기열 확인" actionHref="/content-reviews" metrics={[["AI", operations.reviews.ai_pending], ["사람", operations.reviews.human_pending], ["권리", operations.reviews.rights_pending], ["파일럿", operations.reviews.pilot_pending], ["제거", operations.reviews.removal_pending]]} items={operations.reviews.action_items} />
-                <OperationSection title="게시 권리" actionLabel="게시 권리 확인" actionHref="/governance" metrics={[["게시 차단", operations.rights.publication_blockers]]} items={operations.rights.action_items} />
-                <OperationSection title="학습 프로젝트" actionLabel="프로젝트 확인" actionHref="/projects/workspace" metrics={[["진행 중", operations.learning.active_projects], ["정체", operations.learning.stalled_projects]]} items={operations.learning.action_items} />
-                <OperationSection title="작업공간" actionLabel="작업공간 확인" actionHref="/workspace" metrics={[["대기", operations.workspaces.queued], ["실행", operations.workspaces.running], ["임대 만료", operations.workspaces.expired_leases], ["실패", operations.workspaces.failed]]} items={operations.workspaces.action_items} />
+                <OperationSection id="providers" title="AI 제공자" actionLabel="제공자 관리" actionHref="/provider-controls" metrics={[["응답 이상", operations.providers.unhealthy], ["검증 필요", operations.providers.unverified], ["비활성", operations.providers.disabled]]} items={operations.providers.action_items} />
+                <OperationSection id="generation-jobs" title="생성 작업" actionLabel="생성 작업 확인" actionHref="/content-studio" metrics={[["대기", operations.generation_jobs.queued], ["실행", operations.generation_jobs.running], ["임대 만료", operations.generation_jobs.expired_leases], ["실패", operations.generation_jobs.failed], ["차단", operations.generation_jobs.blocked]]} items={operations.generation_jobs.action_items} />
+                <OperationSection id="reviews" title="콘텐츠 검토" actionLabel="검토 대기열 확인" actionHref="/content-reviews" metrics={[["AI", operations.reviews.ai_pending], ["사람", operations.reviews.human_pending], ["권리", operations.reviews.rights_pending], ["파일럿", operations.reviews.pilot_pending], ["제거", operations.reviews.removal_pending]]} items={operations.reviews.action_items} />
+                <OperationSection id="rights" title="게시 권리" actionLabel="게시 권리 확인" actionHref="/content-reviews" metrics={[["게시 차단", operations.rights.publication_blockers]]} items={operations.rights.action_items} />
+                <OperationSection id="learning" title="학습 프로젝트" actionLabel="프로젝트 확인" actionHref="/projects/ideas" metrics={[["진행 중", operations.learning.active_projects], ["정체", operations.learning.stalled_projects]]} items={operations.learning.action_items} />
+                <OperationSection id="workspaces" title="작업공간" actionLabel="작업공간 확인" actionHref="/workspace" metrics={[["대기", operations.workspaces.queued], ["실행", operations.workspaces.running], ["임대 만료", operations.workspaces.expired_leases], ["실패", operations.workspaces.failed]]} items={operations.workspaces.action_items} />
               </div>}
             </section>
             <section className="admin-grid">
@@ -345,7 +353,7 @@ function AdminPage() {
             </section>
             <section className="admin-section audit-section">
               <p className="eyebrow">감사 기록</p><h2>최근 감사 이벤트</h2>
-              <div>{audits.map((audit) => <article key={audit.id}><span>{date(audit.occurred_at)}</span><strong>{audit.action}</strong><span>{audit.actor_handle ? `@${audit.actor_handle}` : "시스템"}</span><small>{audit.target_type} · {audit.target_id ?? "-"}</small></article>)}</div>
+              <div tabIndex={0} aria-label="최근 감사 이벤트 목록">{audits.map((audit) => <article key={audit.id}><span>{date(audit.occurred_at)}</span><strong>{audit.action}</strong><span>{audit.actor_handle ? `@${audit.actor_handle}` : "시스템"}</span><small>{audit.target_type} · {audit.target_id ?? "-"}</small></article>)}</div>
             </section>
           </>
         )}

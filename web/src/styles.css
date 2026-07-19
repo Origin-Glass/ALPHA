@@ -719,7 +719,7 @@ footer strong { color: var(--ink); font-style: italic; }
 .worker-list { display: grid; gap: 10px; }
 .worker-list article { padding: 14px; display: grid; gap: 7px; border-radius: 13px; background: #e9eef4; }
 .worker-list article > div { display: flex; justify-content: space-between; gap: 15px; }
-.worker-list span, .worker-list small { color: var(--muted); font-size: .68rem; }
+.worker-list span, .worker-list small { color: #455463; font-size: .68rem; }
 .worker-list .healthy { color: #23715e; font-weight: 850; }
 .worker-list .stale { color: #9a4b54; font-weight: 850; }
 .worker-list code { overflow: hidden; color: #4c5967; font-size: .68rem; text-overflow: ellipsis; }
