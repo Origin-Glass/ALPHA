@@ -1,0 +1,48 @@
+name: Release image verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full Git commit digest embedded in provenance materials
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Install pinned cosign
+        run: |
+          go install github.com/sigstore/cosign/v2/cmd/cosign@v2.6.1
+          echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
+      - name: Verify remote digest, signature, provenance, and SBOM
+        env:
+          ALPHA_API_IMAGE: ${{ secrets.ALPHA_API_IMAGE }}
+          ALPHA_WEB_IMAGE: ${{ secrets.ALPHA_WEB_IMAGE }}
+          ALPHA_JUDGE_WORKER_IMAGE: ${{ secrets.ALPHA_JUDGE_WORKER_IMAGE }}
+          ALPHA_WORKSPACE_WORKER_IMAGE: ${{ secrets.ALPHA_WORKSPACE_WORKER_IMAGE }}
+          JUDGE_IMAGE: ${{ secrets.JUDGE_IMAGE }}
+          WORKSPACE_IMAGE: ${{ secrets.WORKSPACE_IMAGE }}
+          APPROVED_IMAGE_REGISTRIES: ${{ vars.APPROVED_IMAGE_REGISTRIES }}
+          APPROVED_BUILDERS: ${{ vars.APPROVED_BUILDERS }}
+          EXPECTED_SIGNER_IDENTITY: ${{ vars.EXPECTED_SIGNER_IDENTITY }}
+          EXPECTED_SOURCE_REPOSITORY: https://github.com/${{ github.repository }}
+          EXPECTED_COMMIT: ${{ inputs.commit }}
+          COSIGN_PUBLIC_KEY_VALUE: ${{ secrets.COSIGN_PUBLIC_KEY }}
+          POSTGRES_PASSWORD: not-a-secret-release-verification
+          DATABASE_URL: postgres://alpha:not-a-secret-release-verification@db:5432/alpha
+          SESSION_SECRET: not-a-secret-release-verification-value
+          WORKSPACE_RECEIPT_SECRET: not-a-secret-release-verification-value
+          PUBLIC_BASE_URL: https://alpha.example.com
+          ALPHA_JUDGE_WORKSPACE: /srv/alpha/judge-work
+          ALPHA_WORKSPACE_ROOT: /srv/alpha/workspace
+        run: |
+          test -n "$COSIGN_PUBLIC_KEY_VALUE"
+          printf '%s\n' "$COSIGN_PUBLIC_KEY_VALUE" >"$RUNNER_TEMP/cosign.pub"
+          docker compose -f compose.production.yaml config --format json >"$RUNNER_TEMP/compose.json"
+          RELEASE_COMPOSE_CONFIG="$RUNNER_TEMP/compose.json" COSIGN_PUBLIC_KEY="$RUNNER_TEMP/cosign.pub" sh ./ops/verify-release-images.sh

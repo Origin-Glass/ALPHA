@@ -55,11 +55,27 @@ services:
     logging: *bounded-logging
     restart: "no"
 
+  publication-gate:
+    image: ${ALPHA_API_IMAGE:?ALPHA_API_IMAGE digest is required}
+    command: ["publication_gate"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging: *bounded-logging
+    restart: "no"
+
   api:
     image: ${ALPHA_API_IMAGE:?ALPHA_API_IMAGE digest is required}
     environment: *app-environment
     depends_on:
-      migrate:
+      publication-gate:
         condition: service_completed_successfully
     read_only: true
     tmpfs:
@@ -103,7 +119,7 @@ services:
       <<: *app-environment
       METADATA_REFRESH_INTERVAL_SECONDS: ${METADATA_REFRESH_INTERVAL_SECONDS:-3600}
     depends_on:
-      migrate:
+      publication-gate:
         condition: service_completed_successfully
     read_only: true
     tmpfs:
@@ -129,7 +145,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       RUST_LOG: alpha=info,content_worker=info
     depends_on:
-      migrate:
+      publication-gate:
         condition: service_completed_successfully
     read_only: true
     tmpfs:
@@ -160,7 +176,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${ALPHA_JUDGE_WORKSPACE:?ALPHA_JUDGE_WORKSPACE is required}:${ALPHA_JUDGE_WORKSPACE:?ALPHA_JUDGE_WORKSPACE is required}
     depends_on:
-      migrate:
+      publication-gate:
         condition: service_completed_successfully
       judge-image:
         condition: service_completed_successfully
@@ -189,7 +205,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${ALPHA_WORKSPACE_ROOT:?ALPHA_WORKSPACE_ROOT is required}:${ALPHA_WORKSPACE_ROOT:?ALPHA_WORKSPACE_ROOT is required}
     depends_on:
-      migrate: { condition: service_completed_successfully }
+      publication-gate: { condition: service_completed_successfully }
       judge-image: { condition: service_completed_successfully }
     read_only: true
     tmpfs:

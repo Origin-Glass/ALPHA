@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, MouseEvent, useEffect, useState } from "react";
 import PortalHeader from "./PortalHeader";
 
 type Viewer = { handle: string; roles: string[] };
@@ -30,6 +30,15 @@ type Audit = {
   target_id: string | null;
   occurred_at: string;
 };
+type OperationalAction = { resource_id: string; state: string; reason: string; age_seconds: number };
+type OperationalSnapshot = {
+  providers: { unhealthy: number; unverified: number; disabled: number; action_items: OperationalAction[] };
+  generation_jobs: { queued: number; running: number; expired_leases: number; failed: number; blocked: number; action_items: OperationalAction[] };
+  reviews: { ai_pending: number; human_pending: number; rights_pending: number; pilot_pending: number; removal_pending: number; action_items: OperationalAction[] };
+  rights: { publication_blockers: number; action_items: OperationalAction[] };
+  learning: { active_projects: number; stalled_projects: number; action_items: OperationalAction[] };
+  workspaces: { queued: number; running: number; expired_leases: number; failed: number; action_items: OperationalAction[] };
+};
 
 const csrf = () =>
   document.cookie
@@ -43,6 +52,48 @@ const date = (value: string) =>
     timeStyle: "short",
     timeZone: "Asia/Seoul",
   }).format(new Date(value));
+const operationReason: Record<string, string> = {
+  provider_disabled: "제공자 비활성화", provider_unhealthy: "제공자 응답 이상", provider_unverified: "제공자 검증 필요",
+  expired_lease: "임대 만료", missing_credential: "자격 증명 없음", generation_failed: "생성 실패",
+  ai_review_pending: "AI 검토 대기", human_review_pending: "사람 검토 대기", rights_review_pending: "권리 검토 대기",
+  pilot_pending: "파일럿 검토 대기", removal_pending: "제거 대기", rights_not_approved: "권리 미승인",
+  missing_provenance: "출처 근거 없음", missing_rights_approval: "권리 승인 없음", commercial_use_denied: "상업 이용 불허",
+  redistribution_denied: "재배포 불허", stale_revision_evidence: "리비전 근거 만료", no_learning_event_7d: "7일간 학습 기록 없음", workspace_failed: "작업공간 실패",
+};
+const operationState: Record<string, string> = {
+  disabled: "비활성", unhealthy: "응답 이상", unverified: "검증 필요", queued: "대기", leased: "실행 중",
+  running: "실행 중", failed: "실패", blocked_disabled: "제공자 비활성으로 차단", blocked_missing_credential: "자격 증명 없어 차단",
+  ai_review_pending: "AI 검토 대기", human_review_pending: "사람 검토 대기", rights_review_pending: "권리 검토 대기",
+  pilot_pending: "파일럿 검토 대기", removal_pending: "제거 대기", approved: "승인", published: "게시 중",
+  unpublished: "게시 해제", active: "진행 중",
+};
+const elapsed = (seconds: number) => seconds >= 3600
+  ? `${Math.floor(seconds / 3600)}시간${seconds % 3600 >= 60 ? ` ${Math.floor(seconds % 3600 / 60)}분` : ""} 경과`
+  : seconds >= 60 ? `${Math.floor(seconds / 60)}분 경과` : "1분 미만 경과";
+const operationItemId = (domain: string, resourceId: string) => `operation-${domain}-${encodeURIComponent(resourceId)}`;
+const operationContextHref = (domain: string, resourceId?: string) => resourceId
+  ? `/admin?${new URLSearchParams({ operation_domain: domain, resource_id: resourceId })}#${operationItemId(domain, resourceId)}`
+  : `/admin#operations-${domain}`;
+const selectedOperationFromLocation = () => {
+  const query = new URLSearchParams(window.location.search);
+  const domain = query.get("operation_domain") ?? "";
+  return ["learning", "workspaces"].includes(domain)
+    ? { domain, resource: query.get("resource_id") ?? "" }
+    : { domain: "", resource: "" };
+};
+
+function OperationSection({ id, title, metrics, actionLabel, actionHref, items, selectedResourceId, remediation, onAction, onSelectItem }: {
+  id: string; title: string; metrics: Array<[string, number]>; actionLabel: string; actionHref: string; items: OperationalAction[]; selectedResourceId?: string; remediation?: string; onAction?: (event: MouseEvent<HTMLAnchorElement>) => void; onSelectItem?: (resourceId: string, event: MouseEvent<HTMLAnchorElement>) => void;
+}) {
+  return <section className="operation-section" aria-labelledby={`operations-${id}`}>
+    <div className="operation-section-heading"><h3 id={`operations-${id}`}>{title}</h3><a href={actionHref} onClick={onAction}>{actionLabel}</a></div>
+    <dl className="operation-metrics">{metrics.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}건</dd></div>)}</dl>
+    {items.length ? <ul className="operation-items">{items.map((item, index) => {
+      const selected = item.resource_id === selectedResourceId;
+      return <li key={`${item.resource_id}-${item.reason}`} id={remediation ? operationItemId(id, item.resource_id) : undefined} className={selected ? "operation-item-selected" : undefined} tabIndex={selected ? -1 : undefined} aria-current={selected ? "true" : undefined} aria-label={`${title} 조치 ${index + 1}: ${operationReason[item.reason] ?? "알 수 없는 운영 사유"}, ${elapsed(item.age_seconds)}${remediation ? `. 리소스 ${item.resource_id}. ${remediation}` : ""}`}><strong>{operationReason[item.reason] ?? "알 수 없는 운영 사유"}</strong><span>{operationState[item.state] ?? "상태 확인 필요"} · {elapsed(item.age_seconds)}</span>{remediation && <><code>{item.resource_id}</code><p>{remediation}</p><a href={operationContextHref(id, item.resource_id)} onClick={(event) => onSelectItem?.(item.resource_id, event)}>이 항목 위치 열기</a></>}</li>;
+    })}</ul> : <p className="dashboard-empty">조치할 운영 항목이 없습니다.</p>}
+  </section>;
+}
 
 async function jsonRequest(url: string, options?: RequestInit) {
   const response = await fetch(url, { credentials: "include", ...options });
@@ -53,10 +104,16 @@ async function jsonRequest(url: string, options?: RequestInit) {
 }
 
 function AdminPage() {
+  const [selectedOperation, setSelectedOperation] = useState(selectedOperationFromLocation);
+  const selectedOperationDomain = selectedOperation.domain;
+  const selectedOperationResource = selectedOperation.resource;
   const [viewer, setViewer] = useState<Viewer | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [audits, setAudits] = useState<Audit[]>([]);
+  const [operations, setOperations] = useState<OperationalSnapshot | null>(null);
+  const [operationsLoading, setOperationsLoading] = useState(false);
+  const [operationsError, setOperationsError] = useState("");
   const [message, setMessage] = useState("");
   const [resolutionNote, setResolutionNote] = useState("");
 
@@ -77,19 +134,36 @@ function AdminPage() {
   const [noticeTitle, setNoticeTitle] = useState("");
   const [noticeBody, setNoticeBody] = useState("");
   const [noticePinned, setNoticePinned] = useState(false);
+  const selectOperation = (domain: string, resource: string, event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    window.history.pushState({}, "", operationContextHref(domain, resource));
+    setSelectedOperation({ domain, resource });
+  };
 
-  const loadOperations = async (roles: string[]) => {
+  const loadRoleData = async (roles: string[]) => {
+    const requests: Promise<void>[] = [];
     if (roles.some((role) => ["MODERATOR", "ADMIN"].includes(role))) {
-      const reportPayload = await jsonRequest("/api/v1/admin/community/reports");
-      setReports(reportPayload.items);
+      requests.push(jsonRequest("/api/v1/admin/community/reports").then((payload) => setReports(payload.items)));
     }
     if (roles.includes("ADMIN")) {
-      const [workerPayload, auditPayload] = await Promise.all([
-        jsonRequest("/api/v1/admin/judge/workers"),
-        jsonRequest("/api/v1/admin/audit?limit=30"),
-      ]);
-      setWorkers(workerPayload.items);
-      setAudits(auditPayload.items);
+      requests.push(jsonRequest("/api/v1/admin/judge/workers").then((payload) => setWorkers(payload.items)));
+      requests.push(jsonRequest("/api/v1/admin/audit?limit=30").then((payload) => setAudits(payload.items)));
+    }
+    const failed = (await Promise.allSettled(requests)).find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") {
+      setMessage(failed.reason instanceof Error ? failed.reason.message : "운영 정보를 불러오지 못했습니다.");
+    }
+  };
+  const loadOperations = async () => {
+    setOperations(null);
+    setOperationsLoading(true);
+    setOperationsError("");
+    try {
+      setOperations(await jsonRequest("/api/v1/admin/operations"));
+    } catch (error) {
+      setOperationsError(error instanceof Error ? error.message : "운영 진단을 불러오지 못했습니다.");
+    } finally {
+      setOperationsLoading(false);
     }
   };
   useEffect(() => {
@@ -105,11 +179,22 @@ function AdminPage() {
       .then((user: Viewer | null) => {
         if (!user) return;
         setViewer(user);
-        loadOperations(user.roles).catch((error) =>
-          setMessage(error instanceof Error ? error.message : "운영 정보를 불러오지 못했습니다."),
-        );
+        void loadRoleData(user.roles);
+        if (user.roles.includes("ADMIN")) void loadOperations();
       })
       .catch((error) => setMessage(error instanceof Error ? error.message : "운영 정보를 불러오지 못했습니다."));
+  }, []);
+  useEffect(() => {
+    if (!operations || !selectedOperationResource || !["learning", "workspaces"].includes(selectedOperationDomain)) return;
+    const items = selectedOperationDomain === "learning" ? operations.learning.action_items : operations.workspaces.action_items;
+    if (items.some((item) => item.resource_id === selectedOperationResource)) {
+      document.getElementById(operationItemId(selectedOperationDomain, selectedOperationResource))?.focus();
+    }
+  }, [operations, selectedOperationDomain, selectedOperationResource]);
+  useEffect(() => {
+    const restoreOperation = () => setSelectedOperation(selectedOperationFromLocation());
+    window.addEventListener("popstate", restoreOperation);
+    return () => window.removeEventListener("popstate", restoreOperation);
   }, []);
 
   const canSetProblems = viewer?.roles.some((role) =>
@@ -152,7 +237,7 @@ function AdminPage() {
         },
       );
       setMessage(`문제 리비전 ${payload.version}을 저장했습니다.`);
-      if (isAdmin) loadOperations(viewer?.roles ?? []);
+      if (isAdmin) void loadOperations();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "문제를 저장하지 못했습니다.");
     }
@@ -168,7 +253,7 @@ function AdminPage() {
       setNoticeTitle("");
       setNoticeBody("");
       setMessage("공지를 게시하고 감사 기록을 남겼습니다.");
-      loadOperations(viewer?.roles ?? []);
+      void loadRoleData(viewer?.roles ?? []);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "공지를 게시하지 못했습니다.");
     }
@@ -186,7 +271,7 @@ function AdminPage() {
       );
       setMessage(`재채점 ${payload.submission_count}건을 큐에 등록하고 감사 기록을 남겼습니다.`);
       setRejudgeReason("");
-      if (isAdmin) loadOperations(viewer?.roles ?? []);
+      if (isAdmin) void loadOperations();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "재채점을 요청하지 못했습니다.");
     }
@@ -204,7 +289,7 @@ function AdminPage() {
       });
       setResolutionNote("");
       setMessage(action === "hide" ? "콘텐츠를 숨기고 기록했습니다." : "신고를 기각하고 기록했습니다.");
-      loadOperations(viewer?.roles ?? []);
+      void loadRoleData(viewer?.roles ?? []);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "신고를 처리하지 못했습니다.");
     }
@@ -277,6 +362,19 @@ function AdminPage() {
 
         {isAdmin && (
           <>
+            <section className="admin-section operations-panel" aria-labelledby="operations-title">
+              <div className="admin-section-heading"><div><p className="eyebrow">운영 진단</p><h2 id="operations-title">운영 현황</h2><p>소유자 정보와 비밀값 없이 조치 상태를 표시하며, 전역 항목은 담당자에게 전달할 리소스 식별자만 제공합니다.</p></div><button type="button" onClick={() => void loadOperations()} disabled={operationsLoading}>운영 현황 다시 불러오기</button></div>
+              {operationsLoading && <p role="status">운영 현황을 불러오는 중입니다.</p>}
+              {operationsError && <p role="alert" className="admin-message">{operationsError}</p>}
+              {operations && !operationsLoading && <div className="operations-grid">
+                <OperationSection id="providers" title="AI 제공자" actionLabel="제공자 관리" actionHref="/provider-controls" metrics={[["응답 이상", operations.providers.unhealthy], ["검증 필요", operations.providers.unverified], ["비활성", operations.providers.disabled]]} items={operations.providers.action_items} />
+                <OperationSection id="generation-jobs" title="생성 작업" actionLabel="생성 작업 확인" actionHref="/content-studio" metrics={[["대기", operations.generation_jobs.queued], ["실행", operations.generation_jobs.running], ["임대 만료", operations.generation_jobs.expired_leases], ["실패", operations.generation_jobs.failed], ["차단", operations.generation_jobs.blocked]]} items={operations.generation_jobs.action_items} />
+                <OperationSection id="reviews" title="콘텐츠 검토" actionLabel="검토 대기열 확인" actionHref="/content-reviews" metrics={[["AI", operations.reviews.ai_pending], ["사람", operations.reviews.human_pending], ["권리", operations.reviews.rights_pending], ["파일럿", operations.reviews.pilot_pending], ["제거", operations.reviews.removal_pending]]} items={operations.reviews.action_items} />
+                <OperationSection id="rights" title="게시 권리" actionLabel="게시 권리 확인" actionHref="/content-reviews" metrics={[["게시 차단", operations.rights.publication_blockers]]} items={operations.rights.action_items} />
+                <OperationSection id="learning" title="학습 프로젝트" actionLabel="프로젝트 확인" actionHref={operationContextHref("learning", operations.learning.action_items[0]?.resource_id)} onAction={operations.learning.action_items[0] ? (event) => selectOperation("learning", operations.learning.action_items[0].resource_id, event) : undefined} onSelectItem={(resource, event) => selectOperation("learning", resource, event)} metrics={[["진행 중", operations.learning.active_projects], ["정체", operations.learning.stalled_projects]]} items={operations.learning.action_items} selectedResourceId={selectedOperationDomain === "learning" ? selectedOperationResource : undefined} remediation="학습 정체 원인을 확인하고 담당자에게 프로젝트 식별자를 전달하세요." />
+                <OperationSection id="workspaces" title="작업공간" actionLabel="작업공간 확인" actionHref={operationContextHref("workspaces", operations.workspaces.action_items[0]?.resource_id)} onAction={operations.workspaces.action_items[0] ? (event) => selectOperation("workspaces", operations.workspaces.action_items[0].resource_id, event) : undefined} onSelectItem={(resource, event) => selectOperation("workspaces", resource, event)} metrics={[["대기", operations.workspaces.queued], ["실행", operations.workspaces.running], ["임대 만료", operations.workspaces.expired_leases], ["실패", operations.workspaces.failed]]} items={operations.workspaces.action_items} selectedResourceId={selectedOperationDomain === "workspaces" ? selectedOperationResource : undefined} remediation="실행 실패나 임대 만료 상태를 확인하고 담당자에게 실행 식별자를 전달하세요." />
+              </div>}
+            </section>
             <section className="admin-grid">
               <section className="admin-section notice-authoring">
                 <p className="eyebrow">공지</p><h2>공지 게시</h2>
@@ -289,7 +387,7 @@ function AdminPage() {
             </section>
             <section className="admin-section audit-section">
               <p className="eyebrow">감사 기록</p><h2>최근 감사 이벤트</h2>
-              <div>{audits.map((audit) => <article key={audit.id}><span>{date(audit.occurred_at)}</span><strong>{audit.action}</strong><span>{audit.actor_handle ? `@${audit.actor_handle}` : "시스템"}</span><small>{audit.target_type} · {audit.target_id ?? "-"}</small></article>)}</div>
+              <div tabIndex={0} aria-label="최근 감사 이벤트 목록">{audits.map((audit) => <article key={audit.id}><span>{date(audit.occurred_at)}</span><strong>{audit.action}</strong><span>{audit.actor_handle ? `@${audit.actor_handle}` : "시스템"}</span><small>{audit.target_type} · {audit.target_id ?? "-"}</small></article>)}</div>
             </section>
           </>
         )}

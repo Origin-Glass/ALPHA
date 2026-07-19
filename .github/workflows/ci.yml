@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -31,14 +31,33 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-targets
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: OAuth·문제 풀이·판정 큐·대회·수업·테넌트·게시 게이트 통합 회귀
+        run: >-
+          cargo test --locked
+          --test session_api --test problem_api --test judge_pipeline
+          --test contests --test classes --test tenant_boundary --test operations
+      - name: 나머지 API·DB 통합 회귀
+        run: >-
+          cargo test --locked --lib --bins
+          --test activities --test community_admin --test config
+          --test content_factory --test content_reviews --test entitlements
+          --test gamification --test governance --test http --test onboarding
+          --test problem_metadata --test project_learning
+          --test workspace_understanding
+      - name: 게시 게이트 DB 오류 fail-closed
+        run: |
+          cargo build --locked --bin publication_gate
+          if DATABASE_URL=invalid ./target/debug/publication_gate; then
+            echo "게시 게이트가 DB 구성 오류를 성공으로 처리했습니다." >&2
+            exit 1
+          fi
 
   web:
     name: 웹 검증
@@ -47,8 +66,8 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: npm
@@ -63,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -77,17 +96,17 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
       JUDGE_TEST_IMAGE: alpha-judge-runner:test
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: 판정 이미지 빌드
         run: docker build --tag "$JUDGE_TEST_IMAGE" judge
       - name: 언어·오류·격리 판정
-        run: cargo test --test judge_docker -- --ignored --test-threads=1
+        run: cargo test --locked --test judge_docker -- --ignored --test-threads=1
       - name: 다중 파일 작업공간 격리 실행
         env:
           WORKSPACE_TEST_IMAGE: alpha-judge-runner:test
-        run: cargo test --test workspace_docker -- --ignored --test-threads=1
+        run: cargo test --locked --test workspace_docker -- --ignored --test-threads=1
 
   compose-e2e:
     name: 클린 설치·브라우저·복구
@@ -97,8 +116,8 @@ jobs:
       TEST_IDENTITY_ENABLED: "true"
       PLAYWRIGHT_BASE_URL: http://127.0.0.1:18080
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: npm
@@ -107,6 +126,16 @@ jobs:
         run: docker compose config --quiet
       - name: 전체 스택 클린 기동
         run: docker compose up --build --detach
+      - name: runtime·web 법적 고지 패키징 확인
+        run: |
+          for image in alpha-api:local alpha-web:local; do
+            for notice in LICENSE LEGAL_NOTICE.md THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt THIRD_PARTY_LICENSES.txt.sha256; do
+              expected=$(sha256sum "$notice" | awk '{print $1}')
+              actual=$(docker run --rm --entrypoint sha256sum "$image" "/usr/share/doc/alpha/$notice" | awk '{print $1}')
+              test "$actual" = "$expected"
+            done
+            docker run --rm --entrypoint sh "$image" -c 'cd /usr/share/doc/alpha && sha256sum -c THIRD_PARTY_LICENSES.txt.sha256'
+          done
       - name: API·워커 준비 확인
         run: |
           curl --fail --retry 30 --retry-delay 2 http://127.0.0.1:18080/api/v1/problems
@@ -121,9 +150,91 @@ jobs:
           npx playwright install --with-deps chromium
       - name: 접근성·로그인·실제 판정 E2E
         working-directory: web
-        run: npm run test:e2e
+        run: |
+          curl --fail --header 'content-type: application/json' \
+            --data '{"handle":"e2e-operator"}' \
+            http://127.0.0.1:18080/api/v1/auth/test-session >/dev/null
+          docker compose --project-directory .. exec -T db psql --username alpha --dbname alpha \
+            --set ON_ERROR_STOP=1 --command \
+            "INSERT INTO user_roles(user_id,role) SELECT user_id,'ADMIN' FROM oauth_identities WHERE provider='test' AND subject='e2e-operator' ON CONFLICT DO NOTHING"
+          npm run test:e2e
       - name: 백업·새 DB 복구·데이터 지문 비교
-        run: ./ops/recovery-smoke.sh
+        run: |
+          mkdir -p /tmp/alpha-recovery-smoke
+          suffix=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+          source_database="alpha_source_$suffix"
+          restored_database="alpha_restore_$suffix"
+          collision_database="alpha_collision_$suffix"
+          writer_pid=
+          cleanup() {
+            [ -z "$writer_pid" ] || kill "$writer_pid" >/dev/null 2>&1 || true
+            [ "${restored_created:-false}" = true ] && docker compose exec -T db dropdb --username alpha "$restored_database" >/dev/null
+            [ "${collision_created:-false}" = true ] && docker compose exec -T db dropdb --username alpha "$collision_database" >/dev/null
+            [ "${source_created:-false}" = true ] && docker compose exec -T db dropdb --username alpha "$source_database" >/dev/null
+          }
+          trap cleanup EXIT HUP INT TERM
+
+          docker compose exec -T db pg_dump --username alpha --dbname alpha --format custom --no-owner --no-acl >/tmp/alpha-recovery-smoke/source-base.dump
+          docker compose exec -T db createdb --username alpha "$source_database"
+          source_created=true
+          docker compose exec -T db pg_restore --username alpha --dbname "$source_database" --exit-on-error --no-owner --no-acl </tmp/alpha-recovery-smoke/source-base.dump
+          docker compose exec -T db psql --username alpha --dbname "$source_database" <ops/recovery-fixture.sql
+          sh ./ops/assert-recovery-fixture.sh "$source_database"
+
+          (
+            for second in $(seq 1 20); do
+              docker compose exec -T db psql --username alpha --dbname "$source_database" --command \
+                "UPDATE content_generation_jobs SET updated_at=clock_timestamp() WHERE id='60000000-0000-7000-8000-000000000002'" >/dev/null
+              sleep 0.1
+            done
+          ) &
+          writer_pid=$!
+          sleep 0.2
+          if ./ops/backup.sh /tmp/alpha-recovery-smoke "$source_database"; then
+            echo "동시 쓰기가 있는 백업이 성공했습니다." >&2
+            exit 1
+          fi
+          wait "$writer_pid"
+          writer_pid=
+
+          backup_file=$(./ops/backup.sh /tmp/alpha-recovery-smoke "$source_database")
+
+          docker compose exec -T db createdb --username alpha "$collision_database"
+          collision_created=true
+          if ./ops/restore.sh "$backup_file" "$collision_database"; then
+            echo "기존 복구 DB 충돌을 허용했습니다." >&2
+            exit 1
+          fi
+          docker compose exec -T db psql --username alpha --dbname "$collision_database" --command "SELECT 1" >/dev/null
+          docker compose exec -T db dropdb --username alpha "$collision_database"
+          collision_created=false
+
+          ./ops/restore.sh "$backup_file" "$restored_database" >/dev/null
+          restored_created=true
+          sh ./ops/assert-recovery-fixture.sh "$restored_database"
+          docker compose exec -T db psql --username alpha --dbname "$source_database" --command \
+            "UPDATE content_generation_jobs SET updated_at=clock_timestamp() WHERE id='60000000-0000-7000-8000-000000000002'" >/dev/null
+          recovery_output=$(sh ./ops/recovery-smoke.sh "$backup_file" "$restored_database" "$source_database")
+          printf '%s\n' "$recovery_output" | grep 'rpo_divergence:generation'
+
+          tampered_dump=/tmp/alpha-recovery-smoke/tampered.dump
+          cp "$backup_file" "$tampered_dump"
+          cp "$backup_file.sha256" "$tampered_dump.sha256"
+          cp "$backup_file.semantic.json" "$tampered_dump.semantic.json"
+          cp "$backup_file.semantic.json.sha256" "$tampered_dump.semantic.json.sha256"
+          printf ' ' >>"$tampered_dump.semantic.json"
+          if sh ./ops/recovery-smoke.sh "$tampered_dump" "$restored_database"; then
+            echo "변조된 semantic manifest를 허용했습니다." >&2
+            exit 1
+          fi
+
+          cp "$backup_file.semantic.json" "$tampered_dump.semantic.json"
+          ruby -rjson -e 'p=ARGV.fetch(0); data=JSON.parse(File.read(p)); data["dump_sha256"]="0"*64; File.write(p,JSON.generate(data)+"\n")' "$tampered_dump.semantic.json"
+          sha256sum "$tampered_dump.semantic.json" | awk '{print $1}' >"$tampered_dump.semantic.json.sha256"
+          if sh ./ops/recovery-smoke.sh "$tampered_dump" "$restored_database"; then
+            echo "다른 dump와 연결된 semantic manifest를 허용했습니다." >&2
+            exit 1
+          fi
       - name: 실패 로그
         if: failure()
         run: docker compose logs --no-color --tail=300
@@ -138,16 +249,20 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: RustSec 감사
         run: |
-          cargo install cargo-audit --locked
+          cargo install cargo-audit --version 0.22.2 --locked
           cargo audit
-      - uses: actions/setup-node@v7
+      - name: Rust 라이선스·출처 감사
+        run: |
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo deny check licenses sources
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: npm
@@ -157,9 +272,19 @@ jobs:
         run: |
           npm ci
           npm audit --audit-level=high
+          node ../ops/check-npm-lock.mjs
+          node ../ops/npm-lock-policy-smoke.mjs
+      - name: lockfile attribution bundle freshness
+        run: >-
+          docker run --rm --volume "$PWD:/repo" --workdir /repo
+          rust:1.97.1-slim-bookworm@sha256:99e09cb2284e2ddbb73a995deee3e91783fd04d177602ccf6eab326d778ee777
+          sh -c 'apt-get update >/dev/null && apt-get install -y --no-install-recommends ruby >/dev/null && ruby ops/generate-third-party-licenses.rb --check'
       - name: 변경 의존성 검토
         if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v5
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          deny-licenses: AGPL-1.0-only, AGPL-1.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later, GPL-2.0-only, GPL-2.0-or-later, GPL-3.0-only, GPL-3.0-or-later
       - name: 비밀 스캔
         run: >-
           docker run --rm --volume "$PWD:/repo"
@@ -171,7 +296,7 @@ jobs:
     name: 운영 구성·문서 정책
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
       - name: 필수 운영값 누락 시 실패
@@ -184,27 +309,45 @@ jobs:
         env:
           POSTGRES_PASSWORD: production-check
           DATABASE_URL: postgres://alpha:production-check@db:5432/alpha
-          SESSION_SECRET: 0123456789abcdef0123456789abcdef
-          WORKSPACE_RECEIPT_SECRET: abcdef0123456789abcdef0123456789
+          SESSION_SECRET: not-a-secret-static-compose-value
+          WORKSPACE_RECEIPT_SECRET: not-a-secret-static-compose-value
           PUBLIC_BASE_URL: https://alpha.example.com
-          ALPHA_API_IMAGE: registry.example/alpha-api@sha256:0000000000000000000000000000000000000000000000000000000000000000
-          ALPHA_WEB_IMAGE: registry.example/alpha-web@sha256:0000000000000000000000000000000000000000000000000000000000000000
-          ALPHA_JUDGE_WORKER_IMAGE: registry.example/alpha-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
-          ALPHA_WORKSPACE_WORKER_IMAGE: registry.example/alpha-workspace-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
-          JUDGE_IMAGE: registry.example/alpha-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
-          WORKSPACE_IMAGE: registry.example/alpha-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          ALPHA_API_IMAGE: docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+          ALPHA_WEB_IMAGE: docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+          ALPHA_JUDGE_WORKER_IMAGE: docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+          ALPHA_WORKSPACE_WORKER_IMAGE: docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+          JUDGE_IMAGE: docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+          WORKSPACE_IMAGE: docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
           ALPHA_JUDGE_WORKSPACE: /srv/alpha/judge-work
           ALPHA_WORKSPACE_ROOT: /srv/alpha/workspace
         run: |
           docker compose -f compose.production.yaml config --quiet
-          if grep '^FROM ' Dockerfile | grep -Ev '(@sha256:[0-9a-f]{64}([[:space:]]|$)|^FROM runtime AS worker$)'; then
-            echo "Dockerfile 기반 이미지가 digest로 고정되지 않았습니다." >&2
-            exit 1
-          fi
+          APPROVED_IMAGE_REGISTRIES=docker.io,ghcr.io ruby ops/check-container-policy.rb
           if docker compose -f compose.production.yaml config --images | grep -Ev '@sha256:[0-9a-f]{64}$'; then
             echo "운영 Compose 이미지가 digest로 고정되지 않았습니다." >&2
             exit 1
           fi
+          docker compose -f compose.production.yaml config --images | while IFS= read -r image; do
+            first=${image%%/*}
+            case "$image" in
+              */*) registry=$first ;;
+              *) registry=docker.io ;;
+            esac
+            case "$registry" in
+              docker.io|ghcr.io) ;;
+              *) echo "운영 Compose image registry가 승인되지 않았습니다: $image" >&2; exit 1 ;;
+            esac
+          done
+          docker compose -f compose.production.yaml config --format json | jq -e '
+            .services["publication-gate"].command == ["publication_gate"] and
+            .services["publication-gate"].depends_on.migrate.condition == "service_completed_successfully" and
+            .services.api.depends_on["publication-gate"].condition == "service_completed_successfully" and
+            .services["metadata-worker"].depends_on["publication-gate"].condition == "service_completed_successfully" and
+            .services["content-worker"].depends_on["publication-gate"].condition == "service_completed_successfully" and
+            .services["judge-worker"].depends_on["publication-gate"].condition == "service_completed_successfully" and
+            .services["workspace-worker"].depends_on["publication-gate"].condition == "service_completed_successfully"
+          '
+          ruby ops/release-policy-smoke.rb
       - name: OpenAPI 라우트 일치
         run: ruby ops/check-openapi.rb
       - name: main 대상 개발 문서 차단
