@@ -51,10 +51,10 @@ docker compose -f compose.production.yaml up -d
 ```bash
 ./ops/backup.sh backups alpha
 ./ops/restore.sh backups/alpha-YYYYMMDDTHHMMSSZ-PID.dump alpha_recovered
-sh ./ops/recovery-smoke.sh alpha backups/alpha-YYYYMMDDTHHMMSSZ-PID.dump alpha_recovered
+sh ./ops/recovery-smoke.sh backups/alpha-YYYYMMDDTHHMMSSZ-PID.dump alpha_recovered alpha
 ```
 
-백업은 active source DB 이름을 필수 인자로 받고 PostgreSQL custom format과 SHA-256 체크섬을 함께 생성합니다. dump 전후 canonical digest가 달라지면 쓰기가 계속된 것으로 보고 dump를 폐기합니다. 복구는 기존 DB와 `alpha` 운영 DB를 덮어쓰지 않고 새 DB에만 수행합니다. 복구 smoke는 선택한 source DB, dump, restored DB의 생성 작업, 검토 영수증, 정책 동의, 프로젝트/작업공간 해시를 정렬된 canonical JSON으로 만들고 SHA-256과 원문을 모두 비교합니다. 검증 후 `DATABASE_URL`을 새 DB로 바꾸고 API·작업자를 재기동해 전환합니다. 이후 백업에도 새 database 이름을 명시해야 합니다. production Compose에서는 배포 디렉터리의 `.env`를 채우고 `COMPOSE_FILE=compose.production.yaml`을 지정해 같은 스크립트를 실행합니다.
+백업은 active source DB 이름을 필수 인자로 받고 PostgreSQL custom format, dump checksum, backup-time canonical semantic digest manifest와 manifest checksum을 원자적으로 생성합니다. dump 전후 canonical digest가 달라지면 staging 결과를 폐기합니다. 복구 smoke는 restored DB를 선택 dump에 결합된 historical manifest와 비교합니다. 세 번째 live source DB 인자는 선택 사항이며 backup 이후 변경을 RPO divergence로 보고할 뿐 복구 손상으로 판정하지 않습니다. 검증 후 `DATABASE_URL`을 새 DB로 바꾸고 API·작업자를 재기동해 전환합니다.
 
 공개 운영 전 [`LEGAL_NOTICE.md`](LEGAL_NOTICE.md)의 미확정 운영자 정보를 채우고 화면의 이용약관·개인정보 처리방침과 일치시켜야 합니다. 프로젝트와 제3자 구성요소 고지는 [`LICENSE`](LICENSE), [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)를 확인하세요.
 

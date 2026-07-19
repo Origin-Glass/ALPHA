@@ -9,6 +9,6 @@ RUN npm run build
 
 FROM nginxinc/nginx-unprivileged:1.28-alpine@sha256:7377697a821c131a924a7105fafbe7414db4e9fcc77a6f08f776f33f141ec3f8
 COPY web/nginx.conf /etc/nginx/conf.d/default.conf
-COPY LICENSE LEGAL_NOTICE.md THIRD_PARTY_NOTICES.md /usr/share/doc/alpha/
+COPY LICENSE LEGAL_NOTICE.md THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt THIRD_PARTY_LICENSES.txt.sha256 /usr/share/doc/alpha/
 COPY --from=builder /build/dist /usr/share/nginx/html
 EXPOSE 8080

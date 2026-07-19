@@ -19,7 +19,7 @@ Rust 허용 목록은 `deny.toml`의 Apache-2.0, BSD-3-Clause, CDLA-Permissive-2
 - C++ compiler/runtime, Python 3, OpenJDK 21: 각 GCC Runtime Library Exception/GPL 계열 조건, Python Software Foundation License, GPL-2.0-with-Classpath-Exception 및 포함 구성요소 조건
 - gitleaks: MIT License
 
-Dockerfile과 운영 Compose의 외부 이미지는 승인 registry와 digest로 제한됩니다. runtime과 web release image는 `LICENSE`, `LEGAL_NOTICE.md`, 이 파일을 `/usr/share/doc/alpha`에 포함합니다. 실제 release workflow는 remote digest 해석, 신뢰 공개키 서명, SLSA provenance attestation과 SPDX JSON SBOM attestation을 모두 확인하며 입력·trust root가 없으면 실패합니다.
+Dockerfile과 운영 Compose의 외부 이미지는 승인 registry와 digest로 제한됩니다. runtime과 web release image는 `LICENSE`, `LEGAL_NOTICE.md`, 이 파일, lockfile-derived `THIRD_PARTY_LICENSES.txt`와 checksum을 `/usr/share/doc/alpha`에 포함합니다. bundle은 431개 transitive Cargo/npm package의 declared license, 이용 가능한 author/copyright, required license text를 포함합니다. 실제 release workflow는 Compose에서 파생한 6개 named image role의 완전·중복 없는 set, remote digest, 신뢰 공개키와 signed identity, exact source/commit material, approved builder, SLSA v1 predicate와 nonempty SPDX package inventory를 확인합니다.
 
 ## 재현 가능한 확인
 
@@ -31,6 +31,7 @@ cargo deny check licenses sources
 cd web && npm ci && npm audit --audit-level=high
 APPROVED_IMAGE_REGISTRIES=docker.io,ghcr.io ruby ops/check-container-policy.rb
 node ops/check-npm-lock.mjs
+ruby ops/generate-third-party-licenses.rb --check
 ```
 
-PR CI는 고정 commit의 GitHub Actions, 고정 버전 감사 도구, `Cargo.lock`, 승인 npm registry의 `package-lock.json` URL/integrity, gitleaks digest, 발견된 모든 Dockerfile/운영 image digest를 검사합니다. production image는 `.github/workflows/release-verification.yml`을 실행해 별도로 검증하며 `RELEASE_IMAGE_REFS`, `APPROVED_IMAGE_REGISTRIES`, `COSIGN_PUBLIC_KEY`가 필요합니다. private registry라면 workflow 실행 전에 registry 인증 단계도 제공해야 합니다. 의존성을 추가하거나 올릴 때 이 고지의 구성요소와 허용 정책도 함께 갱신합니다.
+PR CI는 고정 commit의 GitHub Actions, 고정 버전 감사 도구, `Cargo.lock`, exact-origin approved npm registry의 `package-lock.json` URL/integrity, deterministic attribution bundle, gitleaks digest와 모든 Dockerfile/운영 image digest를 검사합니다. production workflow는 6개 named image secret, `APPROVED_IMAGE_REGISTRIES`, `APPROVED_BUILDERS`, `EXPECTED_SIGNER_IDENTITY`, `COSIGN_PUBLIC_KEY`와 full commit input을 요구합니다. private registry라면 실행 전에 registry 인증 단계도 제공해야 합니다.

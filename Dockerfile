@@ -15,7 +15,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin alpha
 
-COPY LICENSE LEGAL_NOTICE.md THIRD_PARTY_NOTICES.md /usr/share/doc/alpha/
+COPY LICENSE LEGAL_NOTICE.md THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt THIRD_PARTY_LICENSES.txt.sha256 /usr/share/doc/alpha/
 
 COPY --from=builder /build/target/release/api /usr/local/bin/api
 COPY --from=builder /build/target/release/judge_worker /usr/local/bin/judge_worker

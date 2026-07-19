@@ -129,11 +129,12 @@ jobs:
       - name: runtime·web 법적 고지 패키징 확인
         run: |
           for image in alpha-api:local alpha-web:local; do
-            for notice in LICENSE LEGAL_NOTICE.md THIRD_PARTY_NOTICES.md; do
+            for notice in LICENSE LEGAL_NOTICE.md THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt THIRD_PARTY_LICENSES.txt.sha256; do
               expected=$(sha256sum "$notice" | awk '{print $1}')
               actual=$(docker run --rm --entrypoint sha256sum "$image" "/usr/share/doc/alpha/$notice" | awk '{print $1}')
               test "$actual" = "$expected"
             done
+            docker run --rm --entrypoint sh "$image" -c 'cd /usr/share/doc/alpha && sha256sum -c THIRD_PARTY_LICENSES.txt.sha256'
           done
       - name: API·워커 준비 확인
         run: |
@@ -204,7 +205,29 @@ jobs:
           ./ops/restore.sh "$backup_file" "$restored_database" >/dev/null
           restored_created=true
           sh ./ops/assert-recovery-fixture.sh "$restored_database"
-          sh ./ops/recovery-smoke.sh "$source_database" "$backup_file" "$restored_database"
+          docker compose exec -T db psql --username alpha --dbname "$source_database" --command \
+            "UPDATE content_generation_jobs SET updated_at=clock_timestamp() WHERE id='60000000-0000-7000-8000-000000000002'" >/dev/null
+          recovery_output=$(sh ./ops/recovery-smoke.sh "$backup_file" "$restored_database" "$source_database")
+          printf '%s\n' "$recovery_output" | grep 'rpo_divergence:generation'
+
+          tampered_dump=/tmp/alpha-recovery-smoke/tampered.dump
+          cp "$backup_file" "$tampered_dump"
+          cp "$backup_file.sha256" "$tampered_dump.sha256"
+          cp "$backup_file.semantic.json" "$tampered_dump.semantic.json"
+          cp "$backup_file.semantic.json.sha256" "$tampered_dump.semantic.json.sha256"
+          printf ' ' >>"$tampered_dump.semantic.json"
+          if sh ./ops/recovery-smoke.sh "$tampered_dump" "$restored_database"; then
+            echo "변조된 semantic manifest를 허용했습니다." >&2
+            exit 1
+          fi
+
+          cp "$backup_file.semantic.json" "$tampered_dump.semantic.json"
+          ruby -rjson -e 'p=ARGV.fetch(0); data=JSON.parse(File.read(p)); data["dump_sha256"]="0"*64; File.write(p,JSON.generate(data)+"\n")' "$tampered_dump.semantic.json"
+          sha256sum "$tampered_dump.semantic.json" | awk '{print $1}' >"$tampered_dump.semantic.json.sha256"
+          if sh ./ops/recovery-smoke.sh "$tampered_dump" "$restored_database"; then
+            echo "다른 dump와 연결된 semantic manifest를 허용했습니다." >&2
+            exit 1
+          fi
       - name: 실패 로그
         if: failure()
         run: docker compose logs --no-color --tail=300
@@ -243,6 +266,12 @@ jobs:
           npm ci
           npm audit --audit-level=high
           node ../ops/check-npm-lock.mjs
+          node ../ops/npm-lock-policy-smoke.mjs
+      - name: lockfile attribution bundle freshness
+        run: >-
+          docker run --rm --volume "$PWD:/repo" --workdir /repo
+          rust:1.97.1-slim-bookworm@sha256:99e09cb2284e2ddbb73a995deee3e91783fd04d177602ccf6eab326d778ee777
+          sh -c 'apt-get update >/dev/null && apt-get install -y --no-install-recommends ruby >/dev/null && ruby ops/generate-third-party-licenses.rb --check'
       - name: 변경 의존성 검토
         if: github.event_name == 'pull_request'
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
@@ -311,6 +340,7 @@ jobs:
             .services["judge-worker"].depends_on["publication-gate"].condition == "service_completed_successfully" and
             .services["workspace-worker"].depends_on["publication-gate"].condition == "service_completed_successfully"
           '
+          ruby ops/release-policy-smoke.rb
       - name: OpenAPI 라우트 일치
         run: ruby ops/check-openapi.rb
       - name: main 대상 개발 문서 차단

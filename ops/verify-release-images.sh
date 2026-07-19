@@ -1,21 +1,25 @@
 #!/bin/sh
 set -eu
 
-: "${RELEASE_IMAGE_REFS:?RELEASE_IMAGE_REFS is required}"
+: "${RELEASE_COMPOSE_CONFIG:?RELEASE_COMPOSE_CONFIG is required}"
 : "${APPROVED_IMAGE_REGISTRIES:?APPROVED_IMAGE_REGISTRIES is required}"
 : "${COSIGN_PUBLIC_KEY:?COSIGN_PUBLIC_KEY is required}"
+: "${EXPECTED_SIGNER_IDENTITY:?EXPECTED_SIGNER_IDENTITY is required}"
+: "${EXPECTED_SOURCE_REPOSITORY:?EXPECTED_SOURCE_REPOSITORY is required}"
+: "${EXPECTED_COMMIT:?EXPECTED_COMMIT is required}"
+: "${APPROVED_BUILDERS:?APPROVED_BUILDERS is required}"
 command -v cosign >/dev/null
 command -v docker >/dev/null
-printf '%s\n' "$RELEASE_IMAGE_REFS" | grep -Eq '[^[:space:]]'
+command -v ruby >/dev/null
+
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/alpha-release-policy.XXXXXX")
+trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
+ruby ops/release-policy.rb images "$RELEASE_COMPOSE_CONFIG" >"$work_dir/images"
 
 approved_registry() {
   image=$1
   case "$image" in
     */*) registry=${image%%/*} ;;
-    *) registry=docker.io ;;
-  esac
-  case "$registry" in
-    *.*|*:*|localhost|docker.io) ;;
     *) registry=docker.io ;;
   esac
   old_ifs=$IFS
@@ -30,24 +34,21 @@ approved_registry() {
   return 1
 }
 
-printf '%s\n' "$RELEASE_IMAGE_REFS" | while IFS= read -r image; do
-  [ -n "$image" ] || continue
-  if ! printf '%s\n' "$image" | grep -Eq '@sha256:[0-9a-f]{64}$'; then
-    printf '%s\n' "release image must use repository@sha256: digest: $image" >&2
-    exit 1
-  fi
-  case "$image" in
-    *@sha256:0000000000000000000000000000000000000000000000000000000000000000)
-      printf '%s\n' "zero digest is forbidden: $image" >&2
-      exit 1
-      ;;
-  esac
+while IFS= read -r image; do
   approved_registry "$image" || {
     printf '%s\n' "release image registry is not approved: $image" >&2
     exit 1
   }
+  if command -v sha256sum >/dev/null 2>&1; then
+    name=$(printf '%s' "$image" | sha256sum | awk '{print $1}')
+  else
+    name=$(printf '%s' "$image" | shasum -a 256 | awk '{print $1}')
+  fi
   docker buildx imagetools inspect "$image" >/dev/null
-  cosign verify --key "$COSIGN_PUBLIC_KEY" "$image" >/dev/null
-  cosign verify-attestation --key "$COSIGN_PUBLIC_KEY" --type slsaprovenance "$image" >/dev/null
-  cosign verify-attestation --key "$COSIGN_PUBLIC_KEY" --type spdxjson "$image" >/dev/null
-done
+  cosign verify --output=json --key "$COSIGN_PUBLIC_KEY" "$image" >"$work_dir/$name-signature.json"
+  ruby ops/release-policy.rb signature "$image" "$work_dir/$name-signature.json"
+  cosign verify-attestation --output=json --key "$COSIGN_PUBLIC_KEY" --type slsaprovenance "$image" >"$work_dir/$name-provenance.json"
+  ruby ops/release-policy.rb provenance "$image" "$work_dir/$name-provenance.json"
+  cosign verify-attestation --output=json --key "$COSIGN_PUBLIC_KEY" --type spdxjson "$image" >"$work_dir/$name-sbom.json"
+  ruby ops/release-policy.rb sbom "$image" "$work_dir/$name-sbom.json"
+done <"$work_dir/images"

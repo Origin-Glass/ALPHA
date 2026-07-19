@@ -42,7 +42,7 @@ backup_file=$(./ops/backup.sh /srv/alpha/backups "$source_database")
 printf '%s\n' "$backup_file"
 ```
 
-먼저 API와 모든 writer를 중지하고 실제 `DATABASE_URL`의 database 이름을 `source_database`에 명시합니다. `backup.sh`는 dump 전 canonical digest, custom dump, dump 후 canonical digest 순으로 수행하며 원본 digest가 달라지면 dump를 삭제하고 실패합니다. 성공 후 `pg_restore --list`와 SHA-256을 기록합니다. 성공 로그와 source database, 보관 위치, 실행 시각, 운영자를 변경 기록에 남깁니다. DB dump에는 계정·소스 코드·학습 기록이 포함될 수 있으므로 암호화, 최소 권한, 보존기간과 파기 기록을 적용합니다.
+먼저 API와 모든 writer를 중지하고 실제 `DATABASE_URL`의 database 이름을 `source_database`에 명시합니다. `backup.sh`는 dump 전 canonical digest, custom dump, dump 후 canonical digest 순으로 수행하며 원본 digest가 달라지면 staging 결과를 삭제하고 실패합니다. 성공 시 dump `.sha256`, backup-time four-dataset `.semantic.json`, manifest `.sha256`을 dump와 같은 filesystem에서 원자적으로 게시합니다. 네 파일을 한 세트로 이동·보관합니다. 성공 로그와 source database, 보관 위치, 실행 시각, 운영자를 변경 기록에 남깁니다.
 
 ## 복구 훈련과 전환
 
@@ -54,16 +54,16 @@ source_database=alpha
 backup_file=/srv/alpha/backups/alpha-YYYYMMDDTHHMMSSZ-PID.dump
 restored_database=alpha_recovered_YYYYMMDD_unique
 ./ops/restore.sh "$backup_file" "$restored_database"
-sh ./ops/recovery-smoke.sh "$source_database" "$backup_file" "$restored_database"
+sh ./ops/recovery-smoke.sh "$backup_file" "$restored_database" "$source_database"
 ```
 
-성공하려면 생성 작업·attempt·artifact, AI/사람/권리/pilot 검토 영수증, 정책 버전·동의, 프로젝트 입력·작업공간 revision/file 해시의 정렬된 canonical JSON과 SHA-256이 원본과 정확히 같아야 합니다. 출력된 4개 digest를 훈련 기록에 보관합니다.
+성공하려면 생성 작업·attempt·artifact, AI/사람/권리/pilot 검토 영수증, 정책 버전·동의, 프로젝트 입력·작업공간 revision/file hash가 backup-time manifest의 4개 digest와 정확히 같아야 합니다. live source digest가 달라져도 historical restore는 성공하며 차이는 `rpo_divergence:*`로 기록합니다.
 
 실제 사고 복구는 다음 순서를 지킵니다.
 
 1. API와 모든 worker를 중지해 원본 DB 쓰기를 멈추고 마지막 정상 backup dump와 `.sha256`을 선택합니다.
 2. `./ops/restore.sh BACKUP.dump alpha_recovered_YYYYMMDD`로 같은 PostgreSQL 인스턴스의 새 DB에 복원합니다.
-3. 원본을 사용할 수 있으면 `sh ./ops/recovery-smoke.sh SOURCE_DATABASE BACKUP.dump RESTORED_DATABASE`로 방금 선택한 세 대상을 직접 검증합니다. 원본이 손실됐다면 dump checksum, `pg_restore --list`, 애플리케이션 준비 상태와 핵심 사용자 흐름을 별도 확인합니다.
+3. `sh ./ops/recovery-smoke.sh BACKUP.dump RESTORED_DATABASE [LIVE_SOURCE_DATABASE]`로 선택 dump/checksum/manifest와 restored DB를 직접 검증합니다. live source는 RPO 비교가 필요할 때만 추가합니다. 원본이 손실돼도 historical manifest 검증은 동일하게 수행합니다.
 4. `.env`의 `DATABASE_URL` database 이름만 새 DB로 바꾸고 `config --quiet`를 실행합니다.
 5. `up -d`를 실행합니다. migration과 publication gate가 모두 성공하기 전에는 트래픽을 전환하지 않습니다.
 6. `/health/ready`, `/metrics`, OAuth 로그인, 문제 조회·제출, C++/Python/Java 판정, 수업 tenant 경계를 점검합니다.
