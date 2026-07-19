@@ -44,5 +44,5 @@ jobs:
         run: |
           test -n "$COSIGN_PUBLIC_KEY_VALUE"
           printf '%s\n' "$COSIGN_PUBLIC_KEY_VALUE" >"$RUNNER_TEMP/cosign.pub"
-          docker compose -f compose.production.yaml config --format json >"$RUNNER_TEMP/compose.json"
+          docker compose -f compose.production.yaml --profile content-ai config --format json >"$RUNNER_TEMP/compose.json"
           RELEASE_COMPOSE_CONFIG="$RUNNER_TEMP/compose.json" COSIGN_PUBLIC_KEY="$RUNNER_TEMP/cosign.pub" sh ./ops/verify-release-images.sh

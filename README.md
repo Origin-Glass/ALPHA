@@ -44,7 +44,7 @@ docker compose -f compose.production.yaml up -d
 
 `docker compose ... up -d`는 마이그레이션 뒤 `publication_gate`를 실행합니다. 현재 리비전에 상업 이용·재배포가 승인되지 않은 콘텐츠가 하나라도 있거나 DB 검증이 실패하면 API와 작업자는 시작하지 않습니다. 운영 절차와 장애 대응은 [`OPERATIONS.md`](OPERATIONS.md)를 따릅니다.
 
-결제는 production에서도 강제로 비활성화됩니다. 콘텐츠 AI는 기본 비활성화이며 provider 계약·권리·개인정보 처리와 credential 주입을 확인한 운영자만 명시적으로 활성화합니다. API와 DB는 호스트에 공개하지 않으며 웹 프록시만 공개합니다. 현재 `compose.production.yaml`은 판정·작업공간 작업자를 포함한 단일 호스트 구성입니다. 별도 host override가 제공되기 전에는 전용 호스트 분리가 구현됐다고 간주하지 않습니다.
+결제는 production에서도 강제로 비활성화됩니다. 콘텐츠 AI worker는 기본 Compose profile에서 제외됩니다. provider 계약·권리·개인정보 처리와 credential 주입을 확인한 운영자만 `CONTENT_AI_ENABLED=true`와 `COMPOSE_PROFILES=content-ai`를 함께 설정해 활성화합니다. API와 DB는 호스트에 공개하지 않으며 웹 프록시만 공개합니다. 현재 `compose.production.yaml`은 판정·작업공간 작업자를 포함한 단일 호스트 구성입니다. 별도 host override가 제공되기 전에는 전용 호스트 분리가 구현됐다고 간주하지 않습니다.
 
 ## 백업과 복구
 
