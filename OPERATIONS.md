@@ -14,6 +14,23 @@ ruby ops/check-openapi.rb
 
 `docker compose -f compose.production.yaml up -d`는 db, migrate, publication-gate, API/worker, web 순서로 기동합니다. `publication-gate`가 종료 코드 0이 아니면 뒤 서비스는 시작되지 않습니다.
 
+콘텐츠 AI worker는 `content-ai` profile이라 기본 기동에서 제외됩니다. provider 계약·권리·개인정보 처리와 credential 준비를 승인한 경우에만 배포 환경에 `CONTENT_AI_ENABLED=true`와 `COMPOSE_PROFILES=content-ai`를 함께 저장하고 다음처럼 기동합니다. profile 없이 `CONTENT_AI_ENABLED`만 바꾸지 않습니다.
+
+```bash
+export CONTENT_AI_ENABLED=true
+export COMPOSE_PROFILES=content-ai
+docker compose -f compose.production.yaml config --quiet
+docker compose -f compose.production.yaml up -d
+```
+
+전체 `up -d`가 API와 worker를 같은 AI 설정으로 재생성합니다. 활성 worker는 `restart: unless-stopped`로 host/Docker daemon 재시작 뒤 복구됩니다. AI를 끌 때는 worker를 먼저 중지하고 배포 환경에서 두 값을 제거한 뒤 기본 profile 전체 stack을 다시 조정합니다.
+
+```bash
+docker compose -f compose.production.yaml stop content-worker
+unset CONTENT_AI_ENABLED COMPOSE_PROFILES
+docker compose -f compose.production.yaml up -d
+```
+
 ## 게시 게이트
 
 배포 전 또는 권리 검토 변경 뒤 직접 실행합니다.

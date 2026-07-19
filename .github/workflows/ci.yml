@@ -322,12 +322,13 @@ jobs:
           ALPHA_WORKSPACE_ROOT: /srv/alpha/workspace
         run: |
           docker compose -f compose.production.yaml config --quiet
+          docker compose -f compose.production.yaml --profile content-ai config --quiet
           APPROVED_IMAGE_REGISTRIES=docker.io,ghcr.io ruby ops/check-container-policy.rb
-          if docker compose -f compose.production.yaml config --images | grep -Ev '@sha256:[0-9a-f]{64}$'; then
+          if docker compose -f compose.production.yaml --profile content-ai config --images | grep -Ev '@sha256:[0-9a-f]{64}$'; then
             echo "운영 Compose 이미지가 digest로 고정되지 않았습니다." >&2
             exit 1
           fi
-          docker compose -f compose.production.yaml config --images | while IFS= read -r image; do
+          docker compose -f compose.production.yaml --profile content-ai config --images | while IFS= read -r image; do
             first=${image%%/*}
             case "$image" in
               */*) registry=$first ;;
@@ -339,11 +340,16 @@ jobs:
             esac
           done
           docker compose -f compose.production.yaml config --format json | jq -e '
+            .services | has("content-worker") | not
+          '
+          docker compose -f compose.production.yaml --profile content-ai config --format json | jq -e '
             .services["publication-gate"].command == ["publication_gate"] and
             .services["publication-gate"].depends_on.migrate.condition == "service_completed_successfully" and
             .services.api.depends_on["publication-gate"].condition == "service_completed_successfully" and
             .services["metadata-worker"].depends_on["publication-gate"].condition == "service_completed_successfully" and
             .services["content-worker"].depends_on["publication-gate"].condition == "service_completed_successfully" and
+            .services["content-worker"].profiles == ["content-ai"] and
+            .services["content-worker"].restart == "unless-stopped" and
             .services["judge-worker"].depends_on["publication-gate"].condition == "service_completed_successfully" and
             .services["workspace-worker"].depends_on["publication-gate"].condition == "service_completed_successfully"
           '

@@ -133,6 +133,7 @@ services:
     restart: unless-stopped
 
   content-worker:
+    profiles: [content-ai]
     image: ${ALPHA_API_IMAGE:?ALPHA_API_IMAGE digest is required}
     command: ["content_worker"]
     environment:

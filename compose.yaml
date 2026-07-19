@@ -103,6 +103,7 @@ services:
     restart: unless-stopped
 
   content-worker:
+    profiles: [content-ai]
     image: alpha-api:local
     command: ["content_worker"]
     environment:
