@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: ALPHA API
-  version: 1.0.0
+  version: 1.0.1
   description: 한국어 우선 온라인 저지·소프트웨어 학습 플랫폼의 운영 API 계약
   license:
     name: MIT

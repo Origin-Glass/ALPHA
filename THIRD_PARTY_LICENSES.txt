@@ -1,7 +1,7 @@
 ALPHA deterministic third-party attribution and license bundle
 format-version: 1
-Cargo.lock-sha256: f231884492d179a8a954a674790a16dcfa2bcec07c4f24bada05ad2ab8fc6098
-package-lock.json-sha256: 4584a5b08fe879b6ee9c559b1a4d8bb86a08067fd84c8a1eff4e0ae79c81e8bc
+Cargo.lock-sha256: 914f197c83fe77ebca4b8c0e49cb39a72ba15596580ae2e6770c3eeb0310356a
+package-lock.json-sha256: 432cc16a352bef272614629f38154ef94fe34409e42841b8615334dc94d1afe7
 packages: 431
 license-texts: 263
 
