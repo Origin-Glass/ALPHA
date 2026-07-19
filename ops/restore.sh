@@ -55,7 +55,17 @@ if [ "$exists" = "1" ]; then
   exit 65
 fi
 
+created=false
+cleanup_failed_restore() {
+  if [ "$created" = true ]; then
+    docker compose exec -T db dropdb --username alpha "$target_database" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_failed_restore EXIT HUP INT TERM
+
 docker compose exec -T db createdb --username alpha "$target_database"
+created=true
 docker compose exec -T db pg_restore --username alpha --dbname "$target_database" --exit-on-error --no-owner --no-acl <"$backup_file"
 
 docker compose exec -T db psql --username alpha --dbname "$target_database" --tuples-only --no-align --command "SELECT COUNT(*) FROM _sqlx_migrations"
+created=false

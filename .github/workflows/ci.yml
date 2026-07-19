@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        image: postgres:17.6-bookworm@sha256:f3bd19c606e442c3d7bdfa8002e03fe260a1023351e0ea4598032022b68dd6e3
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -126,6 +126,15 @@ jobs:
         run: docker compose config --quiet
       - name: 전체 스택 클린 기동
         run: docker compose up --build --detach
+      - name: runtime·web 법적 고지 패키징 확인
+        run: |
+          for image in alpha-api:local alpha-web:local; do
+            for notice in LICENSE LEGAL_NOTICE.md THIRD_PARTY_NOTICES.md; do
+              expected=$(sha256sum "$notice" | awk '{print $1}')
+              actual=$(docker run --rm --entrypoint sha256sum "$image" "/usr/share/doc/alpha/$notice" | awk '{print $1}')
+              test "$actual" = "$expected"
+            done
+          done
       - name: API·워커 준비 확인
         run: |
           curl --fail --retry 30 --retry-delay 2 http://127.0.0.1:18080/api/v1/problems
@@ -142,7 +151,60 @@ jobs:
         working-directory: web
         run: npm run test:e2e
       - name: 백업·새 DB 복구·데이터 지문 비교
-        run: ./ops/recovery-smoke.sh
+        run: |
+          mkdir -p /tmp/alpha-recovery-smoke
+          suffix=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+          source_database="alpha_source_$suffix"
+          restored_database="alpha_restore_$suffix"
+          collision_database="alpha_collision_$suffix"
+          writer_pid=
+          cleanup() {
+            [ -z "$writer_pid" ] || kill "$writer_pid" >/dev/null 2>&1 || true
+            [ "${restored_created:-false}" = true ] && docker compose exec -T db dropdb --username alpha "$restored_database" >/dev/null
+            [ "${collision_created:-false}" = true ] && docker compose exec -T db dropdb --username alpha "$collision_database" >/dev/null
+            [ "${source_created:-false}" = true ] && docker compose exec -T db dropdb --username alpha "$source_database" >/dev/null
+          }
+          trap cleanup EXIT HUP INT TERM
+
+          docker compose exec -T db pg_dump --username alpha --dbname alpha --format custom --no-owner --no-acl >/tmp/alpha-recovery-smoke/source-base.dump
+          docker compose exec -T db createdb --username alpha "$source_database"
+          source_created=true
+          docker compose exec -T db pg_restore --username alpha --dbname "$source_database" --exit-on-error --no-owner --no-acl </tmp/alpha-recovery-smoke/source-base.dump
+          docker compose exec -T db psql --username alpha --dbname "$source_database" <ops/recovery-fixture.sql
+          sh ./ops/assert-recovery-fixture.sh "$source_database"
+
+          (
+            for second in $(seq 1 20); do
+              docker compose exec -T db psql --username alpha --dbname "$source_database" --command \
+                "UPDATE content_generation_jobs SET updated_at=clock_timestamp() WHERE id='60000000-0000-7000-8000-000000000002'" >/dev/null
+              sleep 0.1
+            done
+          ) &
+          writer_pid=$!
+          sleep 0.2
+          if ./ops/backup.sh /tmp/alpha-recovery-smoke "$source_database"; then
+            echo "동시 쓰기가 있는 백업이 성공했습니다." >&2
+            exit 1
+          fi
+          wait "$writer_pid"
+          writer_pid=
+
+          backup_file=$(./ops/backup.sh /tmp/alpha-recovery-smoke "$source_database")
+
+          docker compose exec -T db createdb --username alpha "$collision_database"
+          collision_created=true
+          if ./ops/restore.sh "$backup_file" "$collision_database"; then
+            echo "기존 복구 DB 충돌을 허용했습니다." >&2
+            exit 1
+          fi
+          docker compose exec -T db psql --username alpha --dbname "$collision_database" --command "SELECT 1" >/dev/null
+          docker compose exec -T db dropdb --username alpha "$collision_database"
+          collision_created=false
+
+          ./ops/restore.sh "$backup_file" "$restored_database" >/dev/null
+          restored_created=true
+          sh ./ops/assert-recovery-fixture.sh "$restored_database"
+          sh ./ops/recovery-smoke.sh "$source_database" "$backup_file" "$restored_database"
       - name: 실패 로그
         if: failure()
         run: docker compose logs --no-color --tail=300
@@ -180,13 +242,13 @@ jobs:
         run: |
           npm ci
           npm audit --audit-level=high
-          node -e 'const l=require("./package-lock.json"),a=new Set(["0BSD","Apache-2.0","BSD-2-Clause","BSD-3-Clause","BlueOak-1.0.0","CC0-1.0","ISC","MIT","MIT-0","MPL-2.0"]),bad=Object.entries(l.packages).filter(([p,v])=>p&&(!v.integrity||!v.resolved||!a.has(v.license)));if(bad.length){console.error(bad.map(([p,v])=>`${p}: ${v.license||"missing license/provenance"}`).join("\n"));process.exit(1)}'
+          node ../ops/check-npm-lock.mjs
       - name: 변경 의존성 검토
         if: github.event_name == 'pull_request'
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
-          deny-licenses: AGPL-1.0-only, AGPL-1.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later, GPL-2.0-only, GPL-3.0-only
+          deny-licenses: AGPL-1.0-only, AGPL-1.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later, GPL-2.0-only, GPL-2.0-or-later, GPL-3.0-only, GPL-3.0-or-later
       - name: 비밀 스캔
         run: >-
           docker run --rm --volume "$PWD:/repo"
@@ -211,30 +273,40 @@ jobs:
         env:
           POSTGRES_PASSWORD: production-check
           DATABASE_URL: postgres://alpha:production-check@db:5432/alpha
-          SESSION_SECRET: 0123456789abcdef0123456789abcdef
-          WORKSPACE_RECEIPT_SECRET: abcdef0123456789abcdef0123456789
+          SESSION_SECRET: not-a-secret-static-compose-value
+          WORKSPACE_RECEIPT_SECRET: not-a-secret-static-compose-value
           PUBLIC_BASE_URL: https://alpha.example.com
-          ALPHA_API_IMAGE: registry.example/alpha-api@sha256:0000000000000000000000000000000000000000000000000000000000000000
-          ALPHA_WEB_IMAGE: registry.example/alpha-web@sha256:0000000000000000000000000000000000000000000000000000000000000000
-          ALPHA_JUDGE_WORKER_IMAGE: registry.example/alpha-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
-          ALPHA_WORKSPACE_WORKER_IMAGE: registry.example/alpha-workspace-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
-          JUDGE_IMAGE: registry.example/alpha-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
-          WORKSPACE_IMAGE: registry.example/alpha-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          ALPHA_API_IMAGE: docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+          ALPHA_WEB_IMAGE: docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+          ALPHA_JUDGE_WORKER_IMAGE: docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+          ALPHA_WORKSPACE_WORKER_IMAGE: docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+          JUDGE_IMAGE: docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+          WORKSPACE_IMAGE: docker.io/library/debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
           ALPHA_JUDGE_WORKSPACE: /srv/alpha/judge-work
           ALPHA_WORKSPACE_ROOT: /srv/alpha/workspace
         run: |
           docker compose -f compose.production.yaml config --quiet
-          if grep -h '^FROM ' Dockerfile judge/Dockerfile web/Dockerfile | grep -Ev '(@sha256:[0-9a-f]{64}([[:space:]]|$)|^FROM runtime AS worker$)'; then
-            echo "Dockerfile 기반 이미지가 digest로 고정되지 않았습니다." >&2
-            exit 1
-          fi
+          APPROVED_IMAGE_REGISTRIES=docker.io,ghcr.io ruby ops/check-container-policy.rb
           if docker compose -f compose.production.yaml config --images | grep -Ev '@sha256:[0-9a-f]{64}$'; then
             echo "운영 Compose 이미지가 digest로 고정되지 않았습니다." >&2
             exit 1
           fi
+          docker compose -f compose.production.yaml config --images | while IFS= read -r image; do
+            first=${image%%/*}
+            case "$image" in
+              */*) registry=$first ;;
+              *) registry=docker.io ;;
+            esac
+            case "$registry" in
+              docker.io|ghcr.io) ;;
+              *) echo "운영 Compose image registry가 승인되지 않았습니다: $image" >&2; exit 1 ;;
+            esac
+          done
           docker compose -f compose.production.yaml config --format json | jq -e '
             .services["publication-gate"].command == ["publication_gate"] and
+            .services["publication-gate"].depends_on.migrate.condition == "service_completed_successfully" and
             .services.api.depends_on["publication-gate"].condition == "service_completed_successfully" and
+            .services["metadata-worker"].depends_on["publication-gate"].condition == "service_completed_successfully" and
             .services["content-worker"].depends_on["publication-gate"].condition == "service_completed_successfully" and
             .services["judge-worker"].depends_on["publication-gate"].condition == "service_completed_successfully" and
             .services["workspace-worker"].depends_on["publication-gate"].condition == "service_completed_successfully"

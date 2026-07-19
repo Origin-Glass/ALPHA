@@ -44,17 +44,17 @@ docker compose -f compose.production.yaml up -d
 
 `docker compose ... up -d`는 마이그레이션 뒤 `publication_gate`를 실행합니다. 현재 리비전에 상업 이용·재배포가 승인되지 않은 콘텐츠가 하나라도 있거나 DB 검증이 실패하면 API와 작업자는 시작하지 않습니다. 운영 절차와 장애 대응은 [`OPERATIONS.md`](OPERATIONS.md)를 따릅니다.
 
-결제는 production에서도 강제로 비활성화됩니다. 콘텐츠 AI는 기본 비활성화이며 provider 계약·권리·개인정보 처리와 credential 주입을 확인한 운영자만 명시적으로 활성화합니다. API와 DB는 호스트에 공개하지 않으며 웹 프록시만 공개합니다. 판정 작업자는 Docker 소켓을 가지므로 전용 호스트에 배치하고 일반 API·웹 노드와 분리해야 합니다.
+결제는 production에서도 강제로 비활성화됩니다. 콘텐츠 AI는 기본 비활성화이며 provider 계약·권리·개인정보 처리와 credential 주입을 확인한 운영자만 명시적으로 활성화합니다. API와 DB는 호스트에 공개하지 않으며 웹 프록시만 공개합니다. 현재 `compose.production.yaml`은 판정·작업공간 작업자를 포함한 단일 호스트 구성입니다. 별도 host override가 제공되기 전에는 전용 호스트 분리가 구현됐다고 간주하지 않습니다.
 
 ## 백업과 복구
 
 ```bash
-./ops/backup.sh
+./ops/backup.sh backups alpha
 ./ops/restore.sh backups/alpha-YYYYMMDDTHHMMSSZ-PID.dump alpha_recovered
-./ops/recovery-smoke.sh
+sh ./ops/recovery-smoke.sh alpha backups/alpha-YYYYMMDDTHHMMSSZ-PID.dump alpha_recovered
 ```
 
-백업은 PostgreSQL custom format과 SHA-256 체크섬을 함께 생성합니다. 복구는 기존 DB와 `alpha` 운영 DB를 덮어쓰지 않고 새 DB에만 수행합니다. 복구 smoke는 생성 작업, 검토 영수증, 정책 동의, 프로젝트/작업공간 해시를 정렬된 canonical JSON으로 만들고 원본·복원 SHA-256과 원문을 모두 비교합니다. 검증 후 `DATABASE_URL`을 새 DB로 바꾸고 API·작업자를 재기동해 전환합니다. production Compose에서는 배포 디렉터리의 `.env`를 채우고 `COMPOSE_FILE=compose.production.yaml`을 지정해 같은 스크립트를 실행합니다.
+백업은 active source DB 이름을 필수 인자로 받고 PostgreSQL custom format과 SHA-256 체크섬을 함께 생성합니다. dump 전후 canonical digest가 달라지면 쓰기가 계속된 것으로 보고 dump를 폐기합니다. 복구는 기존 DB와 `alpha` 운영 DB를 덮어쓰지 않고 새 DB에만 수행합니다. 복구 smoke는 선택한 source DB, dump, restored DB의 생성 작업, 검토 영수증, 정책 동의, 프로젝트/작업공간 해시를 정렬된 canonical JSON으로 만들고 SHA-256과 원문을 모두 비교합니다. 검증 후 `DATABASE_URL`을 새 DB로 바꾸고 API·작업자를 재기동해 전환합니다. 이후 백업에도 새 database 이름을 명시해야 합니다. production Compose에서는 배포 디렉터리의 `.env`를 채우고 `COMPOSE_FILE=compose.production.yaml`을 지정해 같은 스크립트를 실행합니다.
 
 공개 운영 전 [`LEGAL_NOTICE.md`](LEGAL_NOTICE.md)의 미확정 운영자 정보를 채우고 화면의 이용약관·개인정보 처리방침과 일치시켜야 합니다. 프로젝트와 제3자 구성요소 고지는 [`LICENSE`](LICENSE), [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)를 확인하세요.
 

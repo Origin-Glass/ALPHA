@@ -1,0 +1,26 @@
+name: Release image verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Install pinned cosign
+        run: |
+          go install github.com/sigstore/cosign/v2/cmd/cosign@v2.6.1
+          echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
+      - name: Verify remote digest, signature, provenance, and SBOM
+        env:
+          RELEASE_IMAGE_REFS: ${{ secrets.RELEASE_IMAGE_REFS }}
+          APPROVED_IMAGE_REGISTRIES: ${{ vars.APPROVED_IMAGE_REGISTRIES }}
+          COSIGN_PUBLIC_KEY_VALUE: ${{ secrets.COSIGN_PUBLIC_KEY }}
+        run: |
+          test -n "$COSIGN_PUBLIC_KEY_VALUE"
+          printf '%s\n' "$COSIGN_PUBLIC_KEY_VALUE" >"$RUNNER_TEMP/cosign.pub"
+          COSIGN_PUBLIC_KEY="$RUNNER_TEMP/cosign.pub" sh ./ops/verify-release-images.sh
