@@ -45,6 +45,49 @@ test('한국어 문제 탐색은 모바일과 키보드에서 접근 가능하�
   expect(browserFailures).toEqual([]);
 });
 
+test('관리자는 모바일 운영 현황에서 키보드로 조치 화면을 선택할 수 있다', async ({ page }) => {
+  const browserFailures = watchBrowserFailures(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/login');
+  await page.getByLabel('개발용 테스트 식별자').fill('e2e-operator');
+  await page.getByRole('button', { name: '검증 계정 시작' }).click();
+  await page.getByRole('checkbox', { name: /이용약관에 동의합니다/ }).check();
+  await page.getByRole('checkbox', { name: /개인정보 처리방침에 동의합니다/ }).check();
+  const onboardingLoaded = page.waitForResponse((response) => response.url().endsWith('/api/v1/onboarding') && response.ok());
+  await page.getByRole('button', { name: '동의하고 진단 시작' }).click();
+  await onboardingLoaded;
+  await page.goto('/admin');
+
+  const panel = page.locator('.operations-panel');
+  await expect(panel.getByRole('heading', { name: '운영 현황' })).toBeVisible();
+  const providerAction = panel.getByRole('link', { name: '제공자 관리' });
+  await providerAction.focus();
+  await expect(providerAction).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(panel.getByRole('link', { name: '생성 작업 확인' })).toBeFocused();
+
+  const accessibility = await new AxeBuilder({ page }).include('.operations-panel').withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(accessibility.violations.filter((violation) => violation.impact === 'serious' || violation.impact === 'critical')).toEqual([]);
+  expect(await providerAction.evaluate((element) => {
+    const channel = (value: string) => Number.parseInt(value, 10) / 255;
+    const luminance = (value: string) => {
+      const [red, green, blue] = value.match(/\d+/g)!.slice(0, 3).map(channel).map((part) => part <= .03928 ? part / 12.92 : ((part + .055) / 1.055) ** 2.4);
+      return .2126 * red + .7152 * green + .0722 * blue;
+    };
+    const style = getComputedStyle(element);
+    const [light, dark] = [luminance(style.color), luminance(style.backgroundColor)].sort((a, b) => b - a);
+    return (light + .05) / (dark + .05);
+  })).toBeGreaterThanOrEqual(4.5);
+
+  const cards = await panel.locator('.operation-section').evaluateAll((elements) => elements.map((element) => {
+    const rect = element.getBoundingClientRect();
+    return { title: element.querySelector('h3')?.textContent, left: rect.left, top: rect.top };
+  }));
+  expect(cards.map((card) => card.title)).toEqual(['AI 제공자', '생성 작업', '콘텐츠 검토', '게시 권리', '학습 프로젝트', '작업공간']);
+  expect(cards.every((card, index) => index === 0 || (card.left === cards[0].left && card.top > cards[index - 1].top))).toBe(true);
+  expect(browserFailures).toEqual([]);
+});
+
 test('로그인부터 Docker 정답 판정과 로그아웃까지 이어진다', async ({ page }) => {
   const browserFailures = watchBrowserFailures(page);
   const handle = `e2e-${Date.now().toString(36).slice(-8)}`;

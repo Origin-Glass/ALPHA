@@ -30,6 +30,15 @@ type Audit = {
   target_id: string | null;
   occurred_at: string;
 };
+type OperationalAction = { resource_id: string; state: string; reason: string; age_seconds: number };
+type OperationalSnapshot = {
+  providers: { unhealthy: number; unverified: number; disabled: number; action_items: OperationalAction[] };
+  generation_jobs: { queued: number; running: number; expired_leases: number; failed: number; blocked: number; action_items: OperationalAction[] };
+  reviews: { ai_pending: number; human_pending: number; rights_pending: number; pilot_pending: number; removal_pending: number; action_items: OperationalAction[] };
+  rights: { publication_blockers: number; action_items: OperationalAction[] };
+  learning: { active_projects: number; stalled_projects: number; action_items: OperationalAction[] };
+  workspaces: { queued: number; running: number; expired_leases: number; failed: number; action_items: OperationalAction[] };
+};
 
 const csrf = () =>
   document.cookie
@@ -43,6 +52,27 @@ const date = (value: string) =>
     timeStyle: "short",
     timeZone: "Asia/Seoul",
   }).format(new Date(value));
+const operationReason: Record<string, string> = {
+  provider_disabled: "제공자 비활성화", provider_unhealthy: "제공자 응답 이상", provider_unverified: "제공자 검증 필요",
+  expired_lease: "임대 만료", missing_credential: "자격 증명 없음", generation_failed: "생성 실패",
+  ai_review_pending: "AI 검토 대기", human_review_pending: "사람 검토 대기", rights_review_pending: "권리 검토 대기",
+  pilot_pending: "파일럿 검토 대기", removal_pending: "제거 대기", rights_not_approved: "권리 미승인",
+  missing_provenance: "출처 근거 없음", missing_rights_approval: "권리 승인 없음", commercial_use_denied: "상업 이용 불허",
+  redistribution_denied: "재배포 불허", stale_revision_evidence: "리비전 근거 만료", no_learning_event_7d: "7일간 학습 기록 없음", workspace_failed: "작업공간 실패",
+};
+const elapsed = (seconds: number) => seconds >= 3600
+  ? `${Math.floor(seconds / 3600)}시간${seconds % 3600 >= 60 ? ` ${Math.floor(seconds % 3600 / 60)}분` : ""} 경과`
+  : seconds >= 60 ? `${Math.floor(seconds / 60)}분 경과` : "1분 미만 경과";
+
+function OperationSection({ title, metrics, actionLabel, actionHref, items }: {
+  title: string; metrics: Array<[string, number]>; actionLabel: string; actionHref: string; items: OperationalAction[];
+}) {
+  return <section className="operation-section" aria-labelledby={`operations-${title}`}>
+    <div className="operation-section-heading"><h3 id={`operations-${title}`}>{title}</h3><a href={actionHref}>{actionLabel}</a></div>
+    <dl className="operation-metrics">{metrics.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}건</dd></div>)}</dl>
+    {items.length ? <ul className="operation-items">{items.map((item, index) => <li key={`${item.resource_id}-${item.reason}`} aria-label={`${title} 조치 ${index + 1}: ${operationReason[item.reason] ?? item.reason}, ${elapsed(item.age_seconds)}`}><strong>{operationReason[item.reason] ?? item.reason}</strong><span>{item.state} · {elapsed(item.age_seconds)}</span></li>)}</ul> : <p className="dashboard-empty">조치할 운영 항목이 없습니다.</p>}
+  </section>;
+}
 
 async function jsonRequest(url: string, options?: RequestInit) {
   const response = await fetch(url, { credentials: "include", ...options });
@@ -57,6 +87,9 @@ function AdminPage() {
   const [reports, setReports] = useState<Report[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [audits, setAudits] = useState<Audit[]>([]);
+  const [operations, setOperations] = useState<OperationalSnapshot | null>(null);
+  const [operationsLoading, setOperationsLoading] = useState(false);
+  const [operationsError, setOperationsError] = useState("");
   const [message, setMessage] = useState("");
   const [resolutionNote, setResolutionNote] = useState("");
 
@@ -84,12 +117,22 @@ function AdminPage() {
       setReports(reportPayload.items);
     }
     if (roles.includes("ADMIN")) {
-      const [workerPayload, auditPayload] = await Promise.all([
+      setOperationsLoading(true);
+      setOperationsError("");
+      try {
+      const [workerPayload, auditPayload, operationsPayload] = await Promise.all([
         jsonRequest("/api/v1/admin/judge/workers"),
         jsonRequest("/api/v1/admin/audit?limit=30"),
+        jsonRequest("/api/v1/admin/operations"),
       ]);
       setWorkers(workerPayload.items);
       setAudits(auditPayload.items);
+      setOperations(operationsPayload);
+      } catch (error) {
+        setOperationsError(error instanceof Error ? error.message : "운영 진단을 불러오지 못했습니다.");
+      } finally {
+        setOperationsLoading(false);
+      }
     }
   };
   useEffect(() => {
@@ -277,6 +320,19 @@ function AdminPage() {
 
         {isAdmin && (
           <>
+            <section className="admin-section operations-panel" aria-labelledby="operations-title">
+              <div className="admin-section-heading"><div><p className="eyebrow">운영 진단</p><h2 id="operations-title">운영 현황</h2><p>항목 식별자와 비밀값 없이, 조치가 필요한 상태만 표시합니다.</p></div><button type="button" onClick={() => loadOperations(viewer?.roles ?? [])} disabled={operationsLoading}>운영 현황 다시 불러오기</button></div>
+              {operationsLoading && <p role="status">운영 현황을 불러오는 중입니다.</p>}
+              {operationsError && <p role="alert" className="admin-message">{operationsError}</p>}
+              {operations && !operationsLoading && <div className="operations-grid">
+                <OperationSection title="AI 제공자" actionLabel="제공자 관리" actionHref="/provider-controls" metrics={[["응답 이상", operations.providers.unhealthy], ["검증 필요", operations.providers.unverified], ["비활성", operations.providers.disabled]]} items={operations.providers.action_items} />
+                <OperationSection title="생성 작업" actionLabel="생성 작업 확인" actionHref="/content-studio" metrics={[["대기", operations.generation_jobs.queued], ["실행", operations.generation_jobs.running], ["임대 만료", operations.generation_jobs.expired_leases], ["실패", operations.generation_jobs.failed], ["차단", operations.generation_jobs.blocked]]} items={operations.generation_jobs.action_items} />
+                <OperationSection title="콘텐츠 검토" actionLabel="검토 대기열 확인" actionHref="/content-reviews" metrics={[["AI", operations.reviews.ai_pending], ["사람", operations.reviews.human_pending], ["권리", operations.reviews.rights_pending], ["파일럿", operations.reviews.pilot_pending], ["제거", operations.reviews.removal_pending]]} items={operations.reviews.action_items} />
+                <OperationSection title="게시 권리" actionLabel="게시 권리 확인" actionHref="/governance" metrics={[["게시 차단", operations.rights.publication_blockers]]} items={operations.rights.action_items} />
+                <OperationSection title="학습 프로젝트" actionLabel="프로젝트 확인" actionHref="/projects/workspace" metrics={[["진행 중", operations.learning.active_projects], ["정체", operations.learning.stalled_projects]]} items={operations.learning.action_items} />
+                <OperationSection title="작업공간" actionLabel="작업공간 확인" actionHref="/workspace" metrics={[["대기", operations.workspaces.queued], ["실행", operations.workspaces.running], ["임대 만료", operations.workspaces.expired_leases], ["실패", operations.workspaces.failed]]} items={operations.workspaces.action_items} />
+              </div>}
+            </section>
             <section className="admin-grid">
               <section className="admin-section notice-authoring">
                 <p className="eyebrow">공지</p><h2>공지 게시</h2>
