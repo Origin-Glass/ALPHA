@@ -6,6 +6,7 @@ import AdminPage from "./AdminPage";
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  window.history.replaceState({}, "", "/admin");
 });
 
 const response = (payload: unknown, status = 200) => Promise.resolve({
@@ -23,7 +24,10 @@ const operations = {
   workspaces: { queued: 1, running: 1, expired_leases: 0, failed: 1, action_items: [{ resource_id: "00000000-0000-7000-8000-000000000006", state: "failed", reason: "workspace_failed", age_seconds: 10 }] },
 };
 
-test("관리자가 비밀과 식별자 없이 운영 대기열을 판단하고 담당 화면으로 이동한다", async () => {
+test("관리자가 비밀과 사용자 식별자 없이 운영 대기열과 정확한 전역 항목을 찾는다", async () => {
+  const learningId = operations.learning.action_items[0].resource_id;
+  const workspaceId = operations.workspaces.action_items[0].resource_id;
+  window.history.replaceState({}, "", `/admin?operation_domain=learning&resource_id=${learningId}#operation-learning-${learningId}`);
   const fetchMock = vi.fn().mockImplementation((path: string) => {
     if (path === "/api/v1/auth/me") return response({ handle: "admin", roles: ["ADMIN"] });
     if (path === "/api/v1/admin/operations") return response(operations);
@@ -41,13 +45,17 @@ test("관리자가 비밀과 식별자 없이 운영 대기열을 판단하고 �
   expect(screen.getByRole("link", { name: "생성 작업 확인" })).toHaveAttribute("href", "/content-studio");
   expect(screen.getByRole("link", { name: "검토 대기열 확인" })).toHaveAttribute("href", "/content-reviews");
   expect(screen.getByRole("link", { name: "게시 권리 확인" })).toHaveAttribute("href", "/content-reviews");
-  expect(screen.getByRole("link", { name: "프로젝트 확인" })).toHaveAttribute("href", "/projects/ideas");
-  expect(screen.getByRole("link", { name: "작업공간 확인" })).toHaveAttribute("href", "/workspace");
+  expect(screen.getByRole("link", { name: "프로젝트 확인" })).toHaveAttribute("href", `/admin?operation_domain=learning&resource_id=${learningId}#operation-learning-${learningId}`);
+  expect(screen.getByRole("link", { name: "작업공간 확인" })).toHaveAttribute("href", `/admin?operation_domain=workspaces&resource_id=${workspaceId}#operation-workspaces-${workspaceId}`);
   expect(screen.getByText("생성 실패")).toBeInTheDocument();
   expect(screen.getByLabelText("AI 제공자 조치 1: 제공자 비활성화, 1시간 5분 경과")).toBeInTheDocument();
   expect(screen.getByText(/상태 확인 필요 · 1시간 5분 경과/)).toBeInTheDocument();
   expect(screen.queryByText(/new_raw_state/)).not.toBeInTheDocument();
   expect(document.getElementById("operations-learning")).toHaveTextContent("학습 프로젝트");
+  expect(screen.getByText(learningId)).toBeInTheDocument();
+  expect(screen.getByText(/학습 정체 원인을 확인하고 담당자에게 프로젝트 식별자를 전달하세요/)).toBeInTheDocument();
+  expect(document.getElementById(`operation-learning-${learningId}`)).toHaveFocus();
+  expect(document.getElementById(`operation-learning-${learningId}`)).toHaveClass("operation-item-selected");
   expect([...document.querySelectorAll("[id]")].some((element) => /\s/.test(element.id))).toBe(false);
   expect(screen.queryByText("00000000-0000-7000-8000-000000000001")).not.toBeInTheDocument();
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/operations", { credentials: "include" }));

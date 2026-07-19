@@ -684,8 +684,12 @@ footer strong { color: var(--ink); font-style: italic; }
 .operation-metrics dd { margin: 3px 0 0; color: #17202a; font-size: .9rem; font-weight: 850; }
 .operation-items { margin: 0; padding: 0; display: grid; gap: 7px; list-style: none; }
 .operation-items li { padding: 10px; display: grid; gap: 3px; border-left: 3px solid #5a3fc5; border-radius: 7px; background: #edf2f7; }
+.operation-items li.operation-item-selected { outline: 3px solid #174ea6; outline-offset: 3px; background: #fff; scroll-margin: 24px; }
 .operation-items strong { color: #263543; font-size: .78rem; }
 .operation-items span { color: #455463; font-size: .72rem; }
+.operation-items code { margin-top: 5px; color: #263543; font-size: .7rem; overflow-wrap: anywhere; }
+.operation-items p { margin: 4px 0; color: #455463; font-size: .72rem; line-height: 1.5; }
+.operation-items a { width: fit-content; color: #4930aa; font-size: .72rem; font-weight: 800; }
 .admin-forbidden p, .problem-authoring > div > p:last-child { color: var(--muted); line-height: 1.65; }
 .admin-section-heading { display: flex; justify-content: space-between; gap: 30px; align-items: end; }
 .admin-section-heading label { width: min(360px, 100%); }

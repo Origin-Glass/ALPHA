@@ -39,7 +39,7 @@ const loginOperator = async (page: import('@playwright/test').Page, redirectAfte
     await page.getByRole('button', { name: '동의하고 진단 시작' }).click();
     await onboardingLoaded;
   }
-  await page.goto(redirectAfter);
+  if (new URL(page.url()).pathname !== redirectAfter) await page.goto(redirectAfter);
 };
 
 const contrastRatio = (locator: import('@playwright/test').Locator) => locator.evaluate((element) => {
@@ -52,6 +52,20 @@ const contrastRatio = (locator: import('@playwright/test').Locator) => locator.e
   const [light, dark] = [luminance(style.color), luminance(style.backgroundColor)].sort((a, b) => b - a);
   return (light + .05) / (dark + .05);
 });
+
+const globalOperationIds = {
+  learning: '00000000-0000-7000-8000-000000000105',
+  workspace: '00000000-0000-7000-8000-000000000106',
+};
+
+const operationsWithGlobalItems = {
+  providers: { unhealthy: 0, unverified: 0, disabled: 0, action_items: [] },
+  generation_jobs: { queued: 0, running: 0, expired_leases: 0, failed: 0, blocked: 0, action_items: [] },
+  reviews: { ai_pending: 0, human_pending: 0, rights_pending: 0, pilot_pending: 0, removal_pending: 0, action_items: [] },
+  rights: { publication_blockers: 0, action_items: [] },
+  learning: { active_projects: 1, stalled_projects: 1, action_items: [{ resource_id: globalOperationIds.learning, state: 'active', reason: 'no_learning_event_7d', age_seconds: 604800 }] },
+  workspaces: { queued: 0, running: 0, expired_leases: 0, failed: 1, action_items: [{ resource_id: globalOperationIds.workspace, state: 'failed', reason: 'workspace_failed', age_seconds: 120 }] },
+};
 
 test('한국어 문제 탐색은 모바일과 키보드에서 접근 가능하다', async ({ page }) => {
   const browserFailures = watchBrowserFailures(page);
@@ -74,6 +88,7 @@ test('한국어 문제 탐색은 모바일과 키보드에서 접근 가능하�
 test('관리자는 모바일 운영 현황에서 키보드로 조치 화면을 선택할 수 있다', async ({ page }) => {
   const browserFailures = watchBrowserFailures(page);
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.route('**/api/v1/admin/operations', (route) => route.fulfill({ json: operationsWithGlobalItems }));
   await loginOperator(page, '/admin');
 
   const panel = page.locator('.operations-panel');
@@ -98,30 +113,56 @@ test('관리자는 모바일 운영 현황에서 키보드로 조치 화면을 �
   expect(cards.map((card) => card.title)).toEqual(['AI 제공자', '생성 작업', '콘텐츠 검토', '게시 권리', '학습 프로젝트', '작업공간']);
   expect(cards.every((card, index) => index === 0 || (card.left === cards[0].left && card.top > cards[index - 1].top))).toBe(true);
 
-  await panel.getByRole('link', { name: '게시 권리 확인' }).click();
-  await expect(page.getByRole('heading', { name: '콘텐츠 검토 작업대' })).toBeVisible();
-  await page.goBack();
   await panel.getByRole('link', { name: '프로젝트 확인' }).click();
-  await expect(page.getByRole('heading', { name: '관심을 작은 결과로' })).toBeVisible();
+  const learningItem = panel.getByText(globalOperationIds.learning).locator('..');
+  await expect(page).toHaveURL(new RegExp(`operation_domain=learning.*resource_id=${globalOperationIds.learning}`));
+  await expect(learningItem).toBeFocused();
+  await expect(learningItem).toHaveClass(/operation-item-selected/);
+  await page.waitForLoadState('networkidle');
+  await panel.getByRole('link', { name: '작업공간 확인' }).click();
+  const workspaceItem = panel.getByText(globalOperationIds.workspace).locator('..');
+  await expect(page).toHaveURL(new RegExp(`operation_domain=workspaces.*resource_id=${globalOperationIds.workspace}`));
+  await expect(workspaceItem).toBeFocused();
+  await expect(workspaceItem).toHaveClass(/operation-item-selected/);
+  await page.waitForLoadState('networkidle');
   expect(browserFailures).toEqual([]);
 });
 
 test('제작자는 모바일 콘텐츠 생성 흐름을 키보드와 명확한 이름으로 사용할 수 있다', async ({ page }) => {
   const browserFailures = watchBrowserFailures(page);
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.route('**/api/v1/content/providers', (route) => route.fulfill({ json: { providers: [{ id: 'provider-e2e', name: '로컬 검증 제공자', kind: 'local', protocol: 'openai_compatible', model: 'fixture', cost_per_generation_microunits: 1, liability_cost_per_generation_microunits: 1, enabled: true, credential_available: true }] } }));
+  await page.route('**/api/v1/content/jobs', (route) => route.fulfill({ json: { jobs: [] } }));
   await loginOperator(page, '/content-studio');
 
   await expect(page.getByRole('heading', { name: /제공자는 바꿔도/ })).toBeVisible();
+  const provider = page.getByLabel('AI 제공자');
+  const contentType = page.getByLabel('콘텐츠 유형');
+  const topic = page.getByLabel('생성 주제');
+  const count = page.getByLabel('생성 수');
+  const submit = page.getByRole('button', { name: '생성 작업 요청' });
+  await expect(provider).not.toHaveValue('');
+  let firstFocused = '';
+  for (let index = 0; index < 40 && !await provider.evaluate((element) => element === document.activeElement); index += 1) {
+    await page.keyboard.press('Tab');
+    firstFocused ||= await page.locator(':focus').getAttribute('aria-label') ?? await page.locator(':focus').textContent() ?? '';
+  }
+  expect(firstFocused).toContain('ALPHA');
+  await expect(provider).toBeFocused();
   await page.keyboard.press('Tab');
-  await expect(page.getByRole('link', { name: 'ALPHA 홈' })).toBeFocused();
-  await expect(page.getByLabel('AI 제공자')).toBeVisible();
-  await expect(page.getByLabel('콘텐츠 유형')).toBeVisible();
-  await expect(page.getByLabel('생성 주제')).toBeVisible();
-  await expect(page.getByLabel('생성 수')).toBeVisible();
+  await expect(contentType).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(topic).toBeFocused();
+  await page.keyboard.type('키보드 접근성 생성 주제');
+  await page.keyboard.press('Tab');
+  await expect(count).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(submit).toBeFocused();
+  await expect(submit).toBeEnabled();
 
   const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(accessibility.violations).toEqual([]);
-  expect(await contrastRatio(page.getByRole('link', { name: '검토 작업대 열기' }))).toBeGreaterThanOrEqual(4.5);
+  expect(await contrastRatio(submit)).toBeGreaterThanOrEqual(4.5);
 
   const sections = await page.locator('.factory-grid > section').evaluateAll((elements) => elements.map((element) => {
     const rect = element.getBoundingClientRect();

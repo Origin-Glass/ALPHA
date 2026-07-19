@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, MouseEvent, useEffect, useState } from "react";
 import PortalHeader from "./PortalHeader";
 
 type Viewer = { handle: string; roles: string[] };
@@ -70,14 +70,21 @@ const operationState: Record<string, string> = {
 const elapsed = (seconds: number) => seconds >= 3600
   ? `${Math.floor(seconds / 3600)}시간${seconds % 3600 >= 60 ? ` ${Math.floor(seconds % 3600 / 60)}분` : ""} 경과`
   : seconds >= 60 ? `${Math.floor(seconds / 60)}분 경과` : "1분 미만 경과";
+const operationItemId = (domain: string, resourceId: string) => `operation-${domain}-${encodeURIComponent(resourceId)}`;
+const operationContextHref = (domain: string, resourceId?: string) => resourceId
+  ? `/admin?${new URLSearchParams({ operation_domain: domain, resource_id: resourceId })}#${operationItemId(domain, resourceId)}`
+  : `/admin#operations-${domain}`;
 
-function OperationSection({ id, title, metrics, actionLabel, actionHref, items }: {
-  id: string; title: string; metrics: Array<[string, number]>; actionLabel: string; actionHref: string; items: OperationalAction[];
+function OperationSection({ id, title, metrics, actionLabel, actionHref, items, selectedResourceId, remediation, onAction, onSelectItem }: {
+  id: string; title: string; metrics: Array<[string, number]>; actionLabel: string; actionHref: string; items: OperationalAction[]; selectedResourceId?: string; remediation?: string; onAction?: (event: MouseEvent<HTMLAnchorElement>) => void; onSelectItem?: (resourceId: string, event: MouseEvent<HTMLAnchorElement>) => void;
 }) {
   return <section className="operation-section" aria-labelledby={`operations-${id}`}>
-    <div className="operation-section-heading"><h3 id={`operations-${id}`}>{title}</h3><a href={actionHref}>{actionLabel}</a></div>
+    <div className="operation-section-heading"><h3 id={`operations-${id}`}>{title}</h3><a href={actionHref} onClick={onAction}>{actionLabel}</a></div>
     <dl className="operation-metrics">{metrics.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}건</dd></div>)}</dl>
-    {items.length ? <ul className="operation-items">{items.map((item, index) => <li key={`${item.resource_id}-${item.reason}`} aria-label={`${title} 조치 ${index + 1}: ${operationReason[item.reason] ?? "알 수 없는 운영 사유"}, ${elapsed(item.age_seconds)}`}><strong>{operationReason[item.reason] ?? "알 수 없는 운영 사유"}</strong><span>{operationState[item.state] ?? "상태 확인 필요"} · {elapsed(item.age_seconds)}</span></li>)}</ul> : <p className="dashboard-empty">조치할 운영 항목이 없습니다.</p>}
+    {items.length ? <ul className="operation-items">{items.map((item, index) => {
+      const selected = item.resource_id === selectedResourceId;
+      return <li key={`${item.resource_id}-${item.reason}`} id={remediation ? operationItemId(id, item.resource_id) : undefined} className={selected ? "operation-item-selected" : undefined} tabIndex={selected ? -1 : undefined} aria-current={selected ? "true" : undefined} aria-label={`${title} 조치 ${index + 1}: ${operationReason[item.reason] ?? "알 수 없는 운영 사유"}, ${elapsed(item.age_seconds)}`}><strong>{operationReason[item.reason] ?? "알 수 없는 운영 사유"}</strong><span>{operationState[item.state] ?? "상태 확인 필요"} · {elapsed(item.age_seconds)}</span>{remediation && <><code>{item.resource_id}</code><p>{remediation}</p><a href={operationContextHref(id, item.resource_id)} onClick={(event) => onSelectItem?.(item.resource_id, event)}>이 항목 위치 열기</a></>}</li>;
+    })}</ul> : <p className="dashboard-empty">조치할 운영 항목이 없습니다.</p>}
   </section>;
 }
 
@@ -90,6 +97,13 @@ async function jsonRequest(url: string, options?: RequestInit) {
 }
 
 function AdminPage() {
+  const operationQuery = new URLSearchParams(window.location.search);
+  const [selectedOperation, setSelectedOperation] = useState(() => ({
+    domain: operationQuery.get("operation_domain") ?? "",
+    resource: operationQuery.get("resource_id") ?? "",
+  }));
+  const selectedOperationDomain = selectedOperation.domain;
+  const selectedOperationResource = selectedOperation.resource;
   const [viewer, setViewer] = useState<Viewer | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
@@ -117,6 +131,11 @@ function AdminPage() {
   const [noticeTitle, setNoticeTitle] = useState("");
   const [noticeBody, setNoticeBody] = useState("");
   const [noticePinned, setNoticePinned] = useState(false);
+  const selectOperation = (domain: string, resource: string, event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    window.history.pushState({}, "", operationContextHref(domain, resource));
+    setSelectedOperation({ domain, resource });
+  };
 
   const loadRoleData = async (roles: string[]) => {
     const requests: Promise<void>[] = [];
@@ -162,6 +181,13 @@ function AdminPage() {
       })
       .catch((error) => setMessage(error instanceof Error ? error.message : "운영 정보를 불러오지 못했습니다."));
   }, []);
+  useEffect(() => {
+    if (!operations || !selectedOperationResource || !["learning", "workspaces"].includes(selectedOperationDomain)) return;
+    const items = selectedOperationDomain === "learning" ? operations.learning.action_items : operations.workspaces.action_items;
+    if (items.some((item) => item.resource_id === selectedOperationResource)) {
+      document.getElementById(operationItemId(selectedOperationDomain, selectedOperationResource))?.focus();
+    }
+  }, [operations, selectedOperationDomain, selectedOperationResource]);
 
   const canSetProblems = viewer?.roles.some((role) =>
     ["PROBLEM_SETTER", "ADMIN"].includes(role),
@@ -329,7 +355,7 @@ function AdminPage() {
         {isAdmin && (
           <>
             <section className="admin-section operations-panel" aria-labelledby="operations-title">
-              <div className="admin-section-heading"><div><p className="eyebrow">운영 진단</p><h2 id="operations-title">운영 현황</h2><p>항목 식별자와 비밀값 없이, 조치가 필요한 상태만 표시합니다.</p></div><button type="button" onClick={() => void loadOperations()} disabled={operationsLoading}>운영 현황 다시 불러오기</button></div>
+              <div className="admin-section-heading"><div><p className="eyebrow">운영 진단</p><h2 id="operations-title">운영 현황</h2><p>소유자 정보와 비밀값 없이 조치 상태를 표시하며, 전역 항목은 담당자에게 전달할 리소스 식별자만 제공합니다.</p></div><button type="button" onClick={() => void loadOperations()} disabled={operationsLoading}>운영 현황 다시 불러오기</button></div>
               {operationsLoading && <p role="status">운영 현황을 불러오는 중입니다.</p>}
               {operationsError && <p role="alert" className="admin-message">{operationsError}</p>}
               {operations && !operationsLoading && <div className="operations-grid">
@@ -337,8 +363,8 @@ function AdminPage() {
                 <OperationSection id="generation-jobs" title="생성 작업" actionLabel="생성 작업 확인" actionHref="/content-studio" metrics={[["대기", operations.generation_jobs.queued], ["실행", operations.generation_jobs.running], ["임대 만료", operations.generation_jobs.expired_leases], ["실패", operations.generation_jobs.failed], ["차단", operations.generation_jobs.blocked]]} items={operations.generation_jobs.action_items} />
                 <OperationSection id="reviews" title="콘텐츠 검토" actionLabel="검토 대기열 확인" actionHref="/content-reviews" metrics={[["AI", operations.reviews.ai_pending], ["사람", operations.reviews.human_pending], ["권리", operations.reviews.rights_pending], ["파일럿", operations.reviews.pilot_pending], ["제거", operations.reviews.removal_pending]]} items={operations.reviews.action_items} />
                 <OperationSection id="rights" title="게시 권리" actionLabel="게시 권리 확인" actionHref="/content-reviews" metrics={[["게시 차단", operations.rights.publication_blockers]]} items={operations.rights.action_items} />
-                <OperationSection id="learning" title="학습 프로젝트" actionLabel="프로젝트 확인" actionHref="/projects/ideas" metrics={[["진행 중", operations.learning.active_projects], ["정체", operations.learning.stalled_projects]]} items={operations.learning.action_items} />
-                <OperationSection id="workspaces" title="작업공간" actionLabel="작업공간 확인" actionHref="/workspace" metrics={[["대기", operations.workspaces.queued], ["실행", operations.workspaces.running], ["임대 만료", operations.workspaces.expired_leases], ["실패", operations.workspaces.failed]]} items={operations.workspaces.action_items} />
+                <OperationSection id="learning" title="학습 프로젝트" actionLabel="프로젝트 확인" actionHref={operationContextHref("learning", operations.learning.action_items[0]?.resource_id)} onAction={operations.learning.action_items[0] ? (event) => selectOperation("learning", operations.learning.action_items[0].resource_id, event) : undefined} onSelectItem={(resource, event) => selectOperation("learning", resource, event)} metrics={[["진행 중", operations.learning.active_projects], ["정체", operations.learning.stalled_projects]]} items={operations.learning.action_items} selectedResourceId={selectedOperationDomain === "learning" ? selectedOperationResource : undefined} remediation="학습 정체 원인을 확인하고 담당자에게 프로젝트 식별자를 전달하세요." />
+                <OperationSection id="workspaces" title="작업공간" actionLabel="작업공간 확인" actionHref={operationContextHref("workspaces", operations.workspaces.action_items[0]?.resource_id)} onAction={operations.workspaces.action_items[0] ? (event) => selectOperation("workspaces", operations.workspaces.action_items[0].resource_id, event) : undefined} onSelectItem={(resource, event) => selectOperation("workspaces", resource, event)} metrics={[["대기", operations.workspaces.queued], ["실행", operations.workspaces.running], ["임대 만료", operations.workspaces.expired_leases], ["실패", operations.workspaces.failed]]} items={operations.workspaces.action_items} selectedResourceId={selectedOperationDomain === "workspaces" ? selectedOperationResource : undefined} remediation="실행 실패나 임대 만료 상태를 확인하고 담당자에게 실행 식별자를 전달하세요." />
               </div>}
             </section>
             <section className="admin-grid">
