@@ -15,10 +15,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin alpha
 
+COPY LICENSE LEGAL_NOTICE.md THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt THIRD_PARTY_LICENSES.txt.sha256 /usr/share/doc/alpha/
+
 COPY --from=builder /build/target/release/api /usr/local/bin/api
 COPY --from=builder /build/target/release/judge_worker /usr/local/bin/judge_worker
 COPY --from=builder /build/target/release/metadata_worker /usr/local/bin/metadata_worker
+COPY --from=builder /build/target/release/content_worker /usr/local/bin/content_worker
+COPY --from=builder /build/target/release/workspace_worker /usr/local/bin/workspace_worker
 COPY --from=builder /build/target/release/migrate /usr/local/bin/migrate
+COPY --from=builder /build/target/release/publication_gate /usr/local/bin/publication_gate
 
 ENV BIND_ADDRESS=0.0.0.0:8080
 EXPOSE 8080

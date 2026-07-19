@@ -1,8 +1,12 @@
 [package]
 name = "alpha"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 license = "MIT"
+
+[[bin]]
+name = "content_worker"
+path = "src/bin/content_worker.rs"
 
 [dependencies]
 axum = "0.8.4"

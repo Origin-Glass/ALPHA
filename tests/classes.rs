@@ -54,7 +54,10 @@ async fn authenticated_app(pool: PgPool, handle: &str) -> (axum::Router, Uuid, S
                 .header(header::COOKIE, &cookie)
                 .header("x-csrf-token", &csrf)
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(json!({"version": "2026-07-18"}).to_string()))
+                .body(Body::from(
+                    json!({"version": "2026-07-18", "choices": {"terms": true, "privacy": true}})
+                        .to_string(),
+                ))
                 .unwrap(),
         )
         .await

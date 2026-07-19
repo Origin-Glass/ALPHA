@@ -20,6 +20,17 @@ import ClassDetailPage from './ClassDetailPage';
 import CommunityPage from './CommunityPage';
 import CommunityDetailPage from './CommunityDetailPage';
 import AdminPage from './AdminPage';
+import GovernancePage from './GovernancePage';
+import PoliciesPage from './PoliciesPage';
+import ContentStudioPage from './ContentStudioPage';
+import ProviderControlsPage from './ProviderControlsPage';
+import ReviewWorkspacePage from './ReviewWorkspacePage';
+import LearningPlanBuilderPage from './LearningPlanBuilderPage';
+import ProjectIdeationPage from './ProjectIdeationPage';
+import ProjectWorkspacePage from './ProjectWorkspacePage';
+import MultiFileWorkspacePage from './MultiFileWorkspacePage';
+import UnderstandingPage from './UnderstandingPage';
+import PortfolioPage from './PortfolioPage';
 
 const learningAxes = [
   { number: '01', title: '알고리즘 추론', description: '정답보다 사고 과정을 단단하게 만듭니다.' },
@@ -158,6 +169,12 @@ function App() {
   if (window.location.pathname === '/terms') return <TermsPage />;
   if (window.location.pathname === '/onboarding') return <OnboardingPage />;
   if (window.location.pathname === '/learn') return <LearningPathPage />;
+  if (window.location.pathname === '/learning-plan') return <LearningPlanBuilderPage />;
+  if (window.location.pathname === '/projects/ideas') return <ProjectIdeationPage />;
+  if (window.location.pathname === '/projects/workspace') return <ProjectWorkspacePage />;
+  if (window.location.pathname === '/workspace') return <MultiFileWorkspacePage />;
+  if (window.location.pathname === '/understanding') return <UnderstandingPage />;
+  if (window.location.pathname === '/portfolio') return <PortfolioPage />;
   if (window.location.pathname === '/activities') return <ActivitiesPage />;
   if (window.location.pathname.startsWith('/activities/')) return <ActivityDetailPage slug={decodeURIComponent(window.location.pathname.slice('/activities/'.length))} />;
   if (window.location.pathname === '/tracks/docs-builder') return <DocsTrackPage />;
@@ -172,6 +189,11 @@ function App() {
   if (window.location.pathname === '/community') return <CommunityPage />;
   if (window.location.pathname.startsWith('/community/')) return <CommunityDetailPage postId={decodeURIComponent(window.location.pathname.slice('/community/'.length))} />;
   if (window.location.pathname === '/admin') return <AdminPage />;
+  if (window.location.pathname === '/governance') return <GovernancePage />;
+  if (window.location.pathname === '/policies') return <PoliciesPage />;
+  if (window.location.pathname === '/content-studio') return <ContentStudioPage />;
+  if (window.location.pathname === '/provider-controls') return <ProviderControlsPage />;
+  if (window.location.pathname === '/content-reviews') return <ReviewWorkspacePage />;
   if (window.location.pathname === '/problems') return <ProblemsPage />;
   if (window.location.pathname.startsWith('/problems/')) return <ProblemDetailPage slug={decodeURIComponent(window.location.pathname.slice('/problems/'.length))} />;
   if (window.location.pathname.startsWith('/solve/')) return <SolvePage slug={decodeURIComponent(window.location.pathname.slice('/solve/'.length))} />;

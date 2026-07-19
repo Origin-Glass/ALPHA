@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
@@ -7,6 +7,7 @@ pub struct Settings {
     pub app_env: String,
     pub database_url: String,
     pub session_secret: String,
+    pub workspace_receipt_secret: String,
     pub test_identity_enabled: bool,
     pub payments_enabled: bool,
     pub payment_provider: String,
@@ -17,6 +18,8 @@ pub struct Settings {
     pub github_client_secret: String,
     pub solved_ac_enabled: bool,
     pub trust_proxy_headers: bool,
+    pub content_ai_enabled: bool,
+    content_ai_credentials: HashSet<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -29,6 +32,10 @@ pub enum ConfigError {
     MissingDatabaseUrl,
     #[error("production SESSION_SECRET은 32바이트 이상이어야 합니다")]
     ShortSessionSecret,
+    #[error(
+        "production WORKSPACE_RECEIPT_SECRET은 SESSION_SECRET과 다른 32바이트 이상 값이어야 합니다"
+    )]
+    InvalidWorkspaceReceiptSecret,
     #[error("{0} OAuth client id와 secret은 함께 설정해야 합니다")]
     IncompleteOauthProvider(&'static str),
     #[error("OAuth를 설정하려면 PUBLIC_BASE_URL이 필요합니다")]
@@ -56,6 +63,26 @@ impl Settings {
         let payment_provider = value("PAYMENT_PROVIDER");
         let solved_ac_enabled = value("SOLVED_AC_ENABLED") == "true";
         let trust_proxy_headers = value("TRUST_PROXY_HEADERS") == "true";
+        let content_ai_enabled = value("CONTENT_AI_ENABLED") == "true";
+        let allowed_content_ai_credentials = [
+            "CONTENT_AI_CUSTOM_API_KEY",
+            "OPENROUTER_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+        ];
+        let mut content_ai_credentials: std::collections::HashSet<String> =
+            allowed_content_ai_credentials
+                .into_iter()
+                .filter(|name| !value(name).is_empty())
+                .map(str::to_owned)
+                .collect();
+        for name in value("CONTENT_AI_CREDENTIALS_AVAILABLE")
+            .split(',')
+            .map(str::trim)
+            .filter(|name| allowed_content_ai_credentials.contains(name))
+        {
+            content_ai_credentials.insert(name.to_owned());
+        }
 
         if app_env == "production" && test_identity_enabled {
             return Err(ConfigError::ProductionTestIdentity);
@@ -67,6 +94,15 @@ impl Settings {
         let session_secret = value("SESSION_SECRET");
         if app_env == "production" && session_secret.len() < 32 {
             return Err(ConfigError::ShortSessionSecret);
+        }
+        let mut workspace_receipt_secret = value("WORKSPACE_RECEIPT_SECRET");
+        if app_env != "production" && workspace_receipt_secret.is_empty() {
+            workspace_receipt_secret = "alpha-local-workspace-receipt-secret-32".into();
+        }
+        if app_env == "production"
+            && (workspace_receipt_secret.len() < 32 || workspace_receipt_secret == session_secret)
+        {
+            return Err(ConfigError::InvalidWorkspaceReceiptSecret);
         }
         if payments_enabled && (payment_provider.is_empty() || payment_provider == "disabled") {
             return Err(ConfigError::MissingPaymentProvider);
@@ -98,6 +134,7 @@ impl Settings {
             app_env,
             database_url,
             session_secret,
+            workspace_receipt_secret,
             test_identity_enabled,
             payments_enabled,
             payment_provider,
@@ -108,6 +145,12 @@ impl Settings {
             github_client_secret,
             solved_ac_enabled,
             trust_proxy_headers,
+            content_ai_enabled,
+            content_ai_credentials,
         })
+    }
+
+    pub fn has_content_ai_credential(&self, name: &str) -> bool {
+        self.content_ai_credentials.contains(name)
     }
 }

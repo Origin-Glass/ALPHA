@@ -89,6 +89,120 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/auth/terms",
             axum::routing::post(crate::auth::accept_terms),
         )
+        .route("/api/v1/policies", get(crate::auth::policies))
+        .route(
+            "/api/v1/policies/consents",
+            axum::routing::post(crate::auth::accept_policy),
+        )
+        .route(
+            "/api/v1/data-requests",
+            axum::routing::post(crate::governance::create_data_request),
+        )
+        .route(
+            "/api/v1/data-requests/{id}",
+            get(crate::governance::data_request),
+        )
+        .route(
+            "/api/v1/data-requests/{id}/cancel",
+            axum::routing::post(crate::governance::cancel_data_request),
+        )
+        .route(
+            "/api/v1/content/providers",
+            get(crate::content_factory::list_providers)
+                .post(crate::content_factory::create_provider),
+        )
+        .route(
+            "/api/v1/content/providers/{id}",
+            axum::routing::put(crate::content_factory::update_provider),
+        )
+        .route(
+            "/api/v1/content/providers/{id}/validate",
+            axum::routing::post(crate::content_factory::validate_provider),
+        )
+        .route(
+            "/api/v1/content/jobs",
+            get(crate::content_factory::list_jobs).post(crate::content_factory::create_job),
+        )
+        .route(
+            "/api/v1/content/jobs/compare",
+            get(crate::content_factory::compare_jobs),
+        )
+        .route(
+            "/api/v1/content/jobs/{id}",
+            get(crate::content_factory::job_detail),
+        )
+        .route(
+            "/api/v1/content/jobs/{id}/cancel",
+            axum::routing::post(crate::content_factory::cancel_job),
+        )
+        .route(
+            "/api/v1/content/jobs/{id}/retry",
+            axum::routing::post(crate::content_factory::retry_job),
+        )
+        .route(
+            "/api/v1/content/jobs/{id}/clone",
+            axum::routing::post(crate::content_factory::clone_job),
+        )
+        .route(
+            "/api/v1/content/jobs/{id}/archive",
+            axum::routing::post(crate::content_factory::archive_job),
+        )
+        .route(
+            "/api/v1/content/reviews",
+            get(crate::content_reviews::list).post(crate::content_reviews::create),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}",
+            get(crate::content_reviews::detail),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/ai-receipts",
+            axum::routing::post(crate::content_reviews::ai_receipt),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/provenance",
+            axum::routing::post(crate::content_reviews::record_provenance),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/human",
+            axum::routing::post(crate::content_reviews::human),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/rights",
+            axum::routing::post(crate::content_reviews::rights),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/pilot",
+            axum::routing::post(crate::content_reviews::pilot),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/revise",
+            axum::routing::post(crate::content_reviews::revise),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/publish",
+            axum::routing::post(crate::content_reviews::publish),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/unpublish",
+            axum::routing::post(crate::content_reviews::unpublish),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/removal",
+            axum::routing::post(crate::content_reviews::removal),
+        )
+        .route(
+            "/api/v1/content/reviews/{id}/removal/complete",
+            axum::routing::post(crate::content_reviews::complete_removal),
+        )
+        .route(
+            "/api/v1/content/public/{id}",
+            get(crate::content_reviews::public),
+        )
+        .route(
+            "/api/v1/content/budget",
+            get(crate::content_factory::get_budget).post(crate::content_factory::update_budget),
+        )
         .route(
             "/api/v1/auth/{provider}/start",
             get(crate::auth::oauth_start),
@@ -110,6 +224,108 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/learning/path",
             get(crate::onboarding::learning_path),
+        )
+        .route(
+            "/api/v1/learning/plans",
+            get(crate::learning_plans::history).post(crate::learning_plans::create),
+        )
+        .route(
+            "/api/v1/learning/plans/{revision}/restore",
+            axum::routing::post(crate::learning_plans::restore),
+        )
+        .route(
+            "/api/v1/learning/recommendations/{key}/reject",
+            axum::routing::post(crate::learning_plans::reject),
+        )
+        .route(
+            "/api/v1/projects/ideas",
+            get(crate::projects::idea_history).post(crate::projects::create_idea),
+        )
+        .route(
+            "/api/v1/projects/ideas/{id}/confirm",
+            axum::routing::post(crate::projects::confirm_idea),
+        )
+        .route(
+            "/api/v1/projects/ideas/{id}/restore",
+            axum::routing::post(crate::projects::restore_idea),
+        )
+        .route(
+            "/api/v1/projects",
+            axum::routing::post(crate::projects::create),
+        )
+        .route("/api/v1/projects/{id}", get(crate::projects::detail))
+        .route(
+            "/api/v1/workspaces",
+            get(crate::workspaces::list).post(crate::workspaces::create),
+        )
+        .route(
+            "/api/v1/workspaces/{id}",
+            get(crate::workspaces::detail).put(crate::workspaces::save),
+        )
+        .route(
+            "/api/v1/workspaces/{id}/runs",
+            axum::routing::post(crate::workspaces::create_run),
+        )
+        .route(
+            "/api/v1/workspaces/{id}/revisions/{version}",
+            get(crate::workspaces::revision),
+        )
+        .route(
+            "/api/v1/classes/{class_id}/learners/{learner_id}/workspaces/{workspace_id}/revisions/{version}",
+            get(crate::workspaces::instructor_revision),
+        )
+        .route(
+            "/api/v1/workspaces/{id}/checkpoints",
+            axum::routing::post(crate::workspaces::checkpoint),
+        )
+        .route(
+            "/api/v1/workspaces/{id}/reset",
+            axum::routing::post(crate::workspaces::reset),
+        )
+        .route(
+            "/api/v1/workspace-runs/{id}",
+            get(crate::workspaces::run_detail),
+        )
+        .route(
+            "/api/v1/workspace-runs/{id}/cancel",
+            axum::routing::post(crate::workspaces::cancel_run),
+        )
+        .route(
+            "/api/v1/understanding/challenges",
+            axum::routing::post(crate::understanding::create),
+        )
+        .route(
+            "/api/v1/understanding/challenges/{id}/submit",
+            axum::routing::post(crate::understanding::submit),
+        )
+        .route(
+            "/api/v1/understanding/challenges/{id}/predictions",
+            axum::routing::post(crate::understanding::commit_predictions),
+        )
+        .route(
+            "/api/v1/portfolio",
+            get(crate::portfolio::list).post(crate::portfolio::create),
+        )
+        .route(
+            "/api/v1/portfolio/rights",
+            axum::routing::post(crate::portfolio::approve_rights),
+        )
+        .route(
+            "/api/v1/portfolio/public/{id}",
+            get(crate::portfolio::public_detail),
+        )
+        .route("/api/v1/portfolio/{id}", get(crate::portfolio::detail))
+        .route(
+            "/api/v1/portfolio/{id}/publish",
+            axum::routing::post(crate::portfolio::publish),
+        )
+        .route(
+            "/api/v1/projects/{id}/assistance/evidence",
+            axum::routing::post(crate::adaptive::evidence),
+        )
+        .route(
+            "/api/v1/projects/{id}/assistance",
+            axum::routing::post(crate::adaptive::help),
         )
         .route("/api/v1/activities", get(crate::activities::list))
         .route("/api/v1/activities/{slug}", get(crate::activities::detail))
@@ -191,6 +407,22 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(crate::admin::revise_problem),
         )
         .route(
+            "/api/v1/governance/problems/{slug}/rights",
+            axum::routing::post(crate::governance::record_rights),
+        )
+        .route(
+            "/api/v1/governance/problems/{slug}/reviews/content",
+            axum::routing::post(crate::governance::approve_content),
+        )
+        .route(
+            "/api/v1/governance/problems/{slug}/reviews/rights",
+            axum::routing::post(crate::governance::approve_rights),
+        )
+        .route(
+            "/api/v1/governance/problems/{slug}/publish",
+            axum::routing::post(crate::governance::publish),
+        )
+        .route(
             "/api/v1/admin/notices",
             axum::routing::post(crate::community::create_notice),
         )
@@ -203,6 +435,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(crate::community::resolve_report),
         )
         .route("/api/v1/admin/judge/workers", get(crate::admin::workers))
+        .route("/api/v1/admin/operations", get(crate::admin::operations))
         .route("/api/v1/admin/audit", get(crate::admin::audit_log))
         .route(
             "/api/v1/payments/checkout",
@@ -339,9 +572,10 @@ async fn metrics(State(state): State<AppState>) -> Response {
     )
     .fetch_one(state.pool())
     .await;
-    let (jobs, workers) = match (jobs, workers) {
-        (Ok(jobs), Ok(workers)) => (jobs, workers),
-        (Err(error), _) | (_, Err(error)) => {
+    let operations = crate::observability::operational_snapshot(state.pool()).await;
+    let (jobs, workers, operations) = match (jobs, workers, operations) {
+        (Ok(jobs), Ok(workers), Ok(operations)) => (jobs, workers, operations),
+        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
             tracing::warn!(%error, "운영 지표 조회 실패");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -364,6 +598,31 @@ async fn metrics(State(state): State<AppState>) -> Response {
             "# TYPE alpha_judge_workers gauge\n",
             "alpha_judge_workers{{health=\"healthy\"}} {}\n",
             "alpha_judge_workers{{health=\"stale\"}} {}\n",
+            "# TYPE alpha_content_providers gauge\n",
+            "alpha_content_providers{{state=\"unhealthy\"}} {}\n",
+            "alpha_content_providers{{state=\"unverified\"}} {}\n",
+            "alpha_content_providers{{state=\"disabled\"}} {}\n",
+            "# TYPE alpha_content_generation_jobs gauge\n",
+            "alpha_content_generation_jobs{{state=\"queued\"}} {}\n",
+            "alpha_content_generation_jobs{{state=\"running\"}} {}\n",
+            "alpha_content_generation_jobs{{state=\"expired_lease\"}} {}\n",
+            "alpha_content_generation_jobs{{state=\"failed\"}} {}\n",
+            "alpha_content_generation_jobs{{state=\"blocked\"}} {}\n",
+            "# TYPE alpha_content_reviews gauge\n",
+            "alpha_content_reviews{{state=\"ai_pending\"}} {}\n",
+            "alpha_content_reviews{{state=\"human_pending\"}} {}\n",
+            "alpha_content_reviews{{state=\"rights_pending\"}} {}\n",
+            "alpha_content_reviews{{state=\"pilot_pending\"}} {}\n",
+            "alpha_content_reviews{{state=\"removal_pending\"}} {}\n",
+            "alpha_publication_rights_blockers {}\n",
+            "# TYPE alpha_learning_projects gauge\n",
+            "alpha_learning_projects{{state=\"active\"}} {}\n",
+            "alpha_learning_projects{{state=\"stalled\"}} {}\n",
+            "# TYPE alpha_workspace_runs gauge\n",
+            "alpha_workspace_runs{{state=\"queued\"}} {}\n",
+            "alpha_workspace_runs{{state=\"running\"}} {}\n",
+            "alpha_workspace_runs{{state=\"expired_lease\"}} {}\n",
+            "alpha_workspace_runs{{state=\"failed\"}} {}\n",
             "alpha_metrics_up 1\n"
         ),
         state.runtime().request_count(),
@@ -373,6 +632,26 @@ async fn metrics(State(state): State<AppState>) -> Response {
         jobs.2,
         workers.0,
         workers.1,
+        operations.providers.unhealthy,
+        operations.providers.unverified,
+        operations.providers.disabled,
+        operations.generation_jobs.queued,
+        operations.generation_jobs.running,
+        operations.generation_jobs.expired_leases,
+        operations.generation_jobs.failed,
+        operations.generation_jobs.blocked,
+        operations.reviews.ai_pending,
+        operations.reviews.human_pending,
+        operations.reviews.rights_pending,
+        operations.reviews.pilot_pending,
+        operations.reviews.removal_pending,
+        operations.rights.publication_blockers,
+        operations.learning.active_projects,
+        operations.learning.stalled_projects,
+        operations.workspaces.queued,
+        operations.workspaces.running,
+        operations.workspaces.expired_leases,
+        operations.workspaces.failed,
     );
     (
         StatusCode::OK,

@@ -8,7 +8,8 @@ const csrfToken = () => document.cookie
 
 function TermsPage() {
   const [handle, setHandle] = useState('');
-  const [agreed, setAgreed] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [privacyAccepted, setPrivacyAccepted] = useState(false);
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -30,7 +31,7 @@ function TermsPage() {
 
   const accept = async (event: FormEvent) => {
     event.preventDefault();
-    if (!agreed) return;
+    if (!termsAccepted || !privacyAccepted) return;
     setSubmitting(true);
     setMessage('');
     try {
@@ -38,7 +39,7 @@ function TermsPage() {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken() },
-        body: JSON.stringify({ version: '2026-07-18' }),
+        body: JSON.stringify({ version: '2026-07-18', choices: { terms: true, privacy: true } }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error?.message ?? '동의를 저장하지 못했습니다');
@@ -66,10 +67,14 @@ function TermsPage() {
         </section>
         <form onSubmit={accept}>
           <label className="agreement">
-            <input type="checkbox" checked={agreed} onChange={(event) => setAgreed(event.target.checked)} />
-            <span><strong>이용약관과 개인정보 처리방침을 확인했습니다.</strong><small>버전 2026-07-18 · 전체 문서는 서비스 정책 페이지에서 확인할 수 있습니다.</small></span>
+            <input type="checkbox" checked={termsAccepted} onChange={(event) => setTermsAccepted(event.target.checked)} />
+            <span><strong>이용약관에 동의합니다.</strong><small>버전 2026-07-18 · 전체 문서는 서비스 정책 페이지에서 확인할 수 있습니다.</small></span>
           </label>
-          <button className="primary-action terms-submit" type="submit" disabled={!agreed || submitting}>
+          <label className="agreement">
+            <input type="checkbox" checked={privacyAccepted} onChange={(event) => setPrivacyAccepted(event.target.checked)} />
+            <span><strong>개인정보 처리방침에 동의합니다.</strong><small>학습 기록의 처리와 내보내기·삭제 권리를 확인했습니다.</small></span>
+          </label>
+          <button className="primary-action terms-submit" type="submit" disabled={!termsAccepted || !privacyAccepted || submitting}>
             {submitting ? '저장 중…' : '동의하고 진단 시작'}
           </button>
         </form>

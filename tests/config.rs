@@ -3,11 +3,31 @@ use std::collections::HashMap;
 use alpha::config::Settings;
 
 #[test]
+fn api_accepts_only_ai_credential_presence_references() {
+    let values = HashMap::from([
+        (
+            "CONTENT_AI_CREDENTIALS_AVAILABLE",
+            "OPENAI_API_KEY,SESSION_SECRET",
+        ),
+        ("SESSION_SECRET", "must-never-be-an-ai-provider-key"),
+    ]);
+
+    let settings = Settings::from_pairs(values).unwrap();
+
+    assert!(settings.has_content_ai_credential("OPENAI_API_KEY"));
+    assert!(!settings.has_content_ai_credential("SESSION_SECRET"));
+}
+
+#[test]
 fn production_rejects_test_identity() {
     let values = HashMap::from([
         ("APP_ENV", "production"),
         ("DATABASE_URL", "postgres://alpha:alpha@db/alpha"),
         ("SESSION_SECRET", "0123456789abcdef0123456789abcdef"),
+        (
+            "WORKSPACE_RECEIPT_SECRET",
+            "abcdef0123456789abcdef0123456789",
+        ),
         ("TEST_IDENTITY_ENABLED", "true"),
     ]);
 
@@ -16,6 +36,23 @@ fn production_rejects_test_identity() {
     assert_eq!(
         error.to_string(),
         "production에서는 test identity를 활성화할 수 없습니다"
+    );
+}
+
+#[test]
+fn production_requires_a_distinct_workspace_receipt_secret() {
+    let values = HashMap::from([
+        ("APP_ENV", "production"),
+        ("DATABASE_URL", "postgres://alpha:alpha@db/alpha"),
+        ("SESSION_SECRET", "0123456789abcdef0123456789abcdef"),
+        (
+            "WORKSPACE_RECEIPT_SECRET",
+            "0123456789abcdef0123456789abcdef",
+        ),
+    ]);
+    assert_eq!(
+        Settings::from_pairs(values).unwrap_err().to_string(),
+        "production WORKSPACE_RECEIPT_SECRET은 SESSION_SECRET과 다른 32바이트 이상 값이어야 합니다"
     );
 }
 
@@ -74,6 +111,10 @@ fn production_oauth_requires_https_public_url() {
         ("APP_ENV", "production"),
         ("DATABASE_URL", "postgres://alpha:alpha@db/alpha"),
         ("SESSION_SECRET", "0123456789abcdef0123456789abcdef"),
+        (
+            "WORKSPACE_RECEIPT_SECRET",
+            "abcdef0123456789abcdef0123456789",
+        ),
         ("PUBLIC_BASE_URL", "http://alpha.example"),
         ("GOOGLE_CLIENT_ID", "google-client"),
         ("GOOGLE_CLIENT_SECRET", "google-secret"),

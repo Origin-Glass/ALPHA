@@ -88,7 +88,13 @@ async fn logout_requires_csrf_and_immediately_invalidates_the_session(pool: PgPo
                 .header(header::COOKIE, &session_cookie)
                 .header("x-csrf-token", csrf)
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(json!({"version": "2026-07-18"}).to_string()))
+                .body(Body::from(
+                    json!({
+                        "version": "2026-07-18",
+                        "choices": {"terms": true, "privacy": true}
+                    })
+                    .to_string(),
+                ))
                 .unwrap(),
         )
         .await
