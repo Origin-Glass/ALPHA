@@ -56,6 +56,12 @@ test("관리자가 비밀과 사용자 식별자 없이 운영 대기열과 정�
   expect(screen.getByText(/학습 정체 원인을 확인하고 담당자에게 프로젝트 식별자를 전달하세요/)).toBeInTheDocument();
   expect(document.getElementById(`operation-learning-${learningId}`)).toHaveFocus();
   expect(document.getElementById(`operation-learning-${learningId}`)).toHaveClass("operation-item-selected");
+  expect(screen.getByLabelText(new RegExp(`${learningId}.*학습 정체 원인을 확인하고 담당자에게 프로젝트 식별자를 전달하세요`))).toHaveFocus();
+
+  window.history.pushState({}, "", `/admin?operation_domain=workspaces&resource_id=${workspaceId}#operation-workspaces-${workspaceId}`);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+  await waitFor(() => expect(document.getElementById(`operation-workspaces-${workspaceId}`)).toHaveFocus());
+  expect(document.getElementById(`operation-workspaces-${workspaceId}`)).toHaveClass("operation-item-selected");
   expect([...document.querySelectorAll("[id]")].some((element) => /\s/.test(element.id))).toBe(false);
   expect(screen.queryByText("00000000-0000-7000-8000-000000000001")).not.toBeInTheDocument();
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/operations", { credentials: "include" }));

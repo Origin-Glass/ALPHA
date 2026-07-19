@@ -124,6 +124,15 @@ test('관리자는 모바일 운영 현황에서 키보드로 조치 화면을 �
   await expect(page).toHaveURL(new RegExp(`operation_domain=workspaces.*resource_id=${globalOperationIds.workspace}`));
   await expect(workspaceItem).toBeFocused();
   await expect(workspaceItem).toHaveClass(/operation-item-selected/);
+  await expect(workspaceItem).toHaveAccessibleName(new RegExp(`${globalOperationIds.workspace}.*실행 실패나 임대 만료 상태를 확인하고 담당자에게 실행 식별자를 전달하세요`));
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`operation_domain=learning.*resource_id=${globalOperationIds.learning}`));
+  await expect(learningItem).toBeFocused();
+  await expect(learningItem).toHaveClass(/operation-item-selected/);
+  await page.goForward();
+  await expect(page).toHaveURL(new RegExp(`operation_domain=workspaces.*resource_id=${globalOperationIds.workspace}`));
+  await expect(workspaceItem).toBeFocused();
+  await expect(workspaceItem).toHaveClass(/operation-item-selected/);
   await page.waitForLoadState('networkidle');
   expect(browserFailures).toEqual([]);
 });

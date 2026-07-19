@@ -74,6 +74,13 @@ const operationItemId = (domain: string, resourceId: string) => `operation-${dom
 const operationContextHref = (domain: string, resourceId?: string) => resourceId
   ? `/admin?${new URLSearchParams({ operation_domain: domain, resource_id: resourceId })}#${operationItemId(domain, resourceId)}`
   : `/admin#operations-${domain}`;
+const selectedOperationFromLocation = () => {
+  const query = new URLSearchParams(window.location.search);
+  const domain = query.get("operation_domain") ?? "";
+  return ["learning", "workspaces"].includes(domain)
+    ? { domain, resource: query.get("resource_id") ?? "" }
+    : { domain: "", resource: "" };
+};
 
 function OperationSection({ id, title, metrics, actionLabel, actionHref, items, selectedResourceId, remediation, onAction, onSelectItem }: {
   id: string; title: string; metrics: Array<[string, number]>; actionLabel: string; actionHref: string; items: OperationalAction[]; selectedResourceId?: string; remediation?: string; onAction?: (event: MouseEvent<HTMLAnchorElement>) => void; onSelectItem?: (resourceId: string, event: MouseEvent<HTMLAnchorElement>) => void;
@@ -83,7 +90,7 @@ function OperationSection({ id, title, metrics, actionLabel, actionHref, items, 
     <dl className="operation-metrics">{metrics.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}건</dd></div>)}</dl>
     {items.length ? <ul className="operation-items">{items.map((item, index) => {
       const selected = item.resource_id === selectedResourceId;
-      return <li key={`${item.resource_id}-${item.reason}`} id={remediation ? operationItemId(id, item.resource_id) : undefined} className={selected ? "operation-item-selected" : undefined} tabIndex={selected ? -1 : undefined} aria-current={selected ? "true" : undefined} aria-label={`${title} 조치 ${index + 1}: ${operationReason[item.reason] ?? "알 수 없는 운영 사유"}, ${elapsed(item.age_seconds)}`}><strong>{operationReason[item.reason] ?? "알 수 없는 운영 사유"}</strong><span>{operationState[item.state] ?? "상태 확인 필요"} · {elapsed(item.age_seconds)}</span>{remediation && <><code>{item.resource_id}</code><p>{remediation}</p><a href={operationContextHref(id, item.resource_id)} onClick={(event) => onSelectItem?.(item.resource_id, event)}>이 항목 위치 열기</a></>}</li>;
+      return <li key={`${item.resource_id}-${item.reason}`} id={remediation ? operationItemId(id, item.resource_id) : undefined} className={selected ? "operation-item-selected" : undefined} tabIndex={selected ? -1 : undefined} aria-current={selected ? "true" : undefined} aria-label={`${title} 조치 ${index + 1}: ${operationReason[item.reason] ?? "알 수 없는 운영 사유"}, ${elapsed(item.age_seconds)}${remediation ? `. 리소스 ${item.resource_id}. ${remediation}` : ""}`}><strong>{operationReason[item.reason] ?? "알 수 없는 운영 사유"}</strong><span>{operationState[item.state] ?? "상태 확인 필요"} · {elapsed(item.age_seconds)}</span>{remediation && <><code>{item.resource_id}</code><p>{remediation}</p><a href={operationContextHref(id, item.resource_id)} onClick={(event) => onSelectItem?.(item.resource_id, event)}>이 항목 위치 열기</a></>}</li>;
     })}</ul> : <p className="dashboard-empty">조치할 운영 항목이 없습니다.</p>}
   </section>;
 }
@@ -97,11 +104,7 @@ async function jsonRequest(url: string, options?: RequestInit) {
 }
 
 function AdminPage() {
-  const operationQuery = new URLSearchParams(window.location.search);
-  const [selectedOperation, setSelectedOperation] = useState(() => ({
-    domain: operationQuery.get("operation_domain") ?? "",
-    resource: operationQuery.get("resource_id") ?? "",
-  }));
+  const [selectedOperation, setSelectedOperation] = useState(selectedOperationFromLocation);
   const selectedOperationDomain = selectedOperation.domain;
   const selectedOperationResource = selectedOperation.resource;
   const [viewer, setViewer] = useState<Viewer | null>(null);
@@ -188,6 +191,11 @@ function AdminPage() {
       document.getElementById(operationItemId(selectedOperationDomain, selectedOperationResource))?.focus();
     }
   }, [operations, selectedOperationDomain, selectedOperationResource]);
+  useEffect(() => {
+    const restoreOperation = () => setSelectedOperation(selectedOperationFromLocation());
+    window.addEventListener("popstate", restoreOperation);
+    return () => window.removeEventListener("popstate", restoreOperation);
+  }, []);
 
   const canSetProblems = viewer?.roles.some((role) =>
     ["PROBLEM_SETTER", "ADMIN"].includes(role),
