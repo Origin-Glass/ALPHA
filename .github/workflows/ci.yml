@@ -150,7 +150,14 @@ jobs:
           npx playwright install --with-deps chromium
       - name: 접근성·로그인·실제 판정 E2E
         working-directory: web
-        run: npm run test:e2e
+        run: |
+          curl --fail --header 'content-type: application/json' \
+            --data '{"handle":"e2e-operator"}' \
+            http://127.0.0.1:18080/api/v1/auth/test-session >/dev/null
+          docker compose --project-directory .. exec -T db psql --username alpha --dbname alpha \
+            --set ON_ERROR_STOP=1 --command \
+            "INSERT INTO user_roles(user_id,role) SELECT user_id,'ADMIN' FROM oauth_identities WHERE provider='test' AND subject='e2e-operator' ON CONFLICT DO NOTHING"
+          npm run test:e2e
       - name: 백업·새 DB 복구·데이터 지문 비교
         run: |
           mkdir -p /tmp/alpha-recovery-smoke
