@@ -31,14 +31,33 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-targets
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: OAuth·문제 풀이·판정 큐·대회·수업·테넌트·게시 게이트 통합 회귀
+        run: >-
+          cargo test --locked
+          --test session_api --test problem_api --test judge_pipeline
+          --test contests --test classes --test tenant_boundary --test operations
+      - name: 나머지 API·DB 통합 회귀
+        run: >-
+          cargo test --locked --lib --bins
+          --test activities --test community_admin --test config
+          --test content_factory --test content_reviews --test entitlements
+          --test gamification --test governance --test http --test onboarding
+          --test problem_metadata --test project_learning
+          --test workspace_understanding
+      - name: 게시 게이트 DB 오류 fail-closed
+        run: |
+          cargo build --locked --bin publication_gate
+          if DATABASE_URL=invalid ./target/debug/publication_gate; then
+            echo "게시 게이트가 DB 구성 오류를 성공으로 처리했습니다." >&2
+            exit 1
+          fi
 
   web:
     name: 웹 검증
@@ -47,8 +66,8 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: npm
@@ -77,17 +96,17 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
       JUDGE_TEST_IMAGE: alpha-judge-runner:test
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: 판정 이미지 빌드
         run: docker build --tag "$JUDGE_TEST_IMAGE" judge
       - name: 언어·오류·격리 판정
-        run: cargo test --test judge_docker -- --ignored --test-threads=1
+        run: cargo test --locked --test judge_docker -- --ignored --test-threads=1
       - name: 다중 파일 작업공간 격리 실행
         env:
           WORKSPACE_TEST_IMAGE: alpha-judge-runner:test
-        run: cargo test --test workspace_docker -- --ignored --test-threads=1
+        run: cargo test --locked --test workspace_docker -- --ignored --test-threads=1
 
   compose-e2e:
     name: 클린 설치·브라우저·복구
@@ -97,8 +116,8 @@ jobs:
       TEST_IDENTITY_ENABLED: "true"
       PLAYWRIGHT_BASE_URL: http://127.0.0.1:18080
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: npm
@@ -138,16 +157,20 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: RustSec 감사
         run: |
-          cargo install cargo-audit --locked
+          cargo install cargo-audit --version 0.22.2 --locked
           cargo audit
-      - uses: actions/setup-node@v7
+      - name: Rust 라이선스·출처 감사
+        run: |
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo deny check licenses sources
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: npm
@@ -157,9 +180,13 @@ jobs:
         run: |
           npm ci
           npm audit --audit-level=high
+          node -e 'const l=require("./package-lock.json"),a=new Set(["0BSD","Apache-2.0","BSD-2-Clause","BSD-3-Clause","BlueOak-1.0.0","CC0-1.0","ISC","MIT","MIT-0","MPL-2.0"]),bad=Object.entries(l.packages).filter(([p,v])=>p&&(!v.integrity||!v.resolved||!a.has(v.license)));if(bad.length){console.error(bad.map(([p,v])=>`${p}: ${v.license||"missing license/provenance"}`).join("\n"));process.exit(1)}'
       - name: 변경 의존성 검토
         if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v5
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          deny-licenses: AGPL-1.0-only, AGPL-1.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later, GPL-2.0-only, GPL-3.0-only
       - name: 비밀 스캔
         run: >-
           docker run --rm --volume "$PWD:/repo"
@@ -171,7 +198,7 @@ jobs:
     name: 운영 구성·문서 정책
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
       - name: 필수 운영값 누락 시 실패
@@ -197,7 +224,7 @@ jobs:
           ALPHA_WORKSPACE_ROOT: /srv/alpha/workspace
         run: |
           docker compose -f compose.production.yaml config --quiet
-          if grep '^FROM ' Dockerfile | grep -Ev '(@sha256:[0-9a-f]{64}([[:space:]]|$)|^FROM runtime AS worker$)'; then
+          if grep -h '^FROM ' Dockerfile judge/Dockerfile web/Dockerfile | grep -Ev '(@sha256:[0-9a-f]{64}([[:space:]]|$)|^FROM runtime AS worker$)'; then
             echo "Dockerfile 기반 이미지가 digest로 고정되지 않았습니다." >&2
             exit 1
           fi
@@ -205,6 +232,13 @@ jobs:
             echo "운영 Compose 이미지가 digest로 고정되지 않았습니다." >&2
             exit 1
           fi
+          docker compose -f compose.production.yaml config --format json | jq -e '
+            .services["publication-gate"].command == ["publication_gate"] and
+            .services.api.depends_on["publication-gate"].condition == "service_completed_successfully" and
+            .services["content-worker"].depends_on["publication-gate"].condition == "service_completed_successfully" and
+            .services["judge-worker"].depends_on["publication-gate"].condition == "service_completed_successfully" and
+            .services["workspace-worker"].depends_on["publication-gate"].condition == "service_completed_successfully"
+          '
       - name: OpenAPI 라우트 일치
         run: ruby ops/check-openapi.rb
       - name: main 대상 개발 문서 차단

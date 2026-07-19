@@ -2,6 +2,7 @@
   "name": "alpha-web",
   "private": true,
   "version": "1.0.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -10,20 +11,20 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "latest",
-    "react": "latest",
-    "react-dom": "latest",
-    "typescript": "latest",
-    "vite": "latest"
+    "@vitejs/plugin-react": "6.0.3",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "typescript": "7.0.2",
+    "vite": "8.1.5"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.12.1",
     "@playwright/test": "1.61.1",
-    "@testing-library/jest-dom": "latest",
-    "@testing-library/react": "latest",
-    "@types/react": "latest",
-    "@types/react-dom": "latest",
-    "jsdom": "latest",
-    "vitest": "latest"
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "jsdom": "29.1.1",
+    "vitest": "4.1.10"
   }
 }
